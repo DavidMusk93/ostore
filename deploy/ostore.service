@@ -1,0 +1,13 @@
+[Unit]
+Description=ostore object storage daemon
+After=network.target
+
+[Service]
+EnvironmentFile=/etc/ostore.env
+ExecStart=/root/ostore/target/release/ostore
+Restart=on-failure
+RestartSec=3
+User=root
+
+[Install]
+WantedBy=multi-user.target
