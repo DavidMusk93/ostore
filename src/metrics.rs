@@ -61,6 +61,9 @@ pub struct Metrics {
     pub webhook_dropped: AtomicU64,
     pub webhook_in_flight: AtomicI64,
     pub tmp_swept: AtomicU64,
+    pub thumbs_hit: AtomicU64,
+    pub thumbs_generated: AtomicU64,
+    pub thumbs_failed: AtomicU64,
 }
 
 impl Default for Metrics {
@@ -89,6 +92,9 @@ impl Metrics {
             webhook_dropped: AtomicU64::new(0),
             webhook_in_flight: AtomicI64::new(0),
             tmp_swept: AtomicU64::new(0),
+            thumbs_hit: AtomicU64::new(0),
+            thumbs_generated: AtomicU64::new(0),
+            thumbs_failed: AtomicU64::new(0),
         }
     }
 
@@ -149,6 +155,12 @@ impl Metrics {
         counter(o, "ostore_objects_written_total", "Objects committed (atomic rename done).", self.objects_written.load(Ordering::Relaxed));
         counter(o, "ostore_upload_failures_total", "Uploads aborted before commit.", self.upload_failures.load(Ordering::Relaxed));
         counter(o, "ostore_tmp_files_swept_total", "Stale temp files removed at startup.", self.tmp_swept.load(Ordering::Relaxed));
+
+        let _ = writeln!(o, "# HELP ostore_thumbnails_total Thumbnail requests by outcome.");
+        let _ = writeln!(o, "# TYPE ostore_thumbnails_total counter");
+        let _ = writeln!(o, "ostore_thumbnails_total{{result=\"hit\"}} {}", self.thumbs_hit.load(Ordering::Relaxed));
+        let _ = writeln!(o, "ostore_thumbnails_total{{result=\"generated\"}} {}", self.thumbs_generated.load(Ordering::Relaxed));
+        let _ = writeln!(o, "ostore_thumbnails_total{{result=\"failed\"}} {}", self.thumbs_failed.load(Ordering::Relaxed));
 
         let _ = writeln!(o, "# HELP ostore_events_published_total Object events published, by kind.");
         let _ = writeln!(o, "# TYPE ostore_events_published_total counter");

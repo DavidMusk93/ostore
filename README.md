@@ -76,6 +76,7 @@ are rejected with `400 BAD_PATH`.
 | PUT | `/api/files/{path}` | Raw-body streaming upload to an exact path. |
 | POST | `/api/upload?path=<dir>` | multipart/form-data upload (browser FormData). |
 | GET | `/api/files/{path}` | Download; supports `Range`. |
+| GET | `/api/thumb/{path}?w=` | JPEG thumbnail of an image (see [Thumbnails](#thumbnails)). |
 | DELETE | `/api/files/{path}?recursive=` | Delete file, or dir if empty (or `recursive=1`). |
 | POST | `/api/mkdir` | `{"path"}` — mkdir -p, idempotent. |
 | POST | `/api/move` | `{"from","to"}` — rename/move. |
@@ -241,6 +242,20 @@ it retries 3 times with backoff (1s, 5s, 15s), then drops that delivery — the
 registration itself is kept. Registrations persist across restarts in
 `<root>/.ostore/webhooks.json`.
 
+## Thumbnails
+
+`GET /api/thumb/{path}?w=256` returns a JPEG of an image object (jpg, png,
+gif, webp, bmp) fitted inside a `w`×`w` box: aspect ratio preserved, never
+cropped or upscaled, EXIF orientation applied, transparency flattened onto
+white. `w` snaps up to 128 / 256 / 512 / 1024. Thumbnails are cached in
+`<root>/.ostore/thumbs/` keyed by path + size + mtime + width (an overwrite
+gets a fresh one), served with a strong `ETag` and
+`Cache-Control: private, max-age=86400`, and swept at startup after 30 days
+without regeneration. Decodes run on the blocking pool behind a
+`cores - 1` semaphore with 16384 px / 512 MiB limits; sources over 64 MiB get
+`413`, non-images `415 NOT_AN_IMAGE`, undecodable files
+`422 DECODE_FAILED`.
+
 ## Metrics
 
 `GET /api/metrics` (bearer auth like every `/api` route) returns Prometheus
@@ -262,6 +277,7 @@ text format. Scrape config: `authorization: {credentials: <token>}`.
 | `ostore_webhook_deliveries_in_flight`, `ostore_webhooks_registered` | gauge | Webhook load |
 | `ostore_root_disk_total_bytes` / `ostore_root_disk_available_bytes` | gauge | Space under `OSTORE_ROOT` |
 | `ostore_tmp_files_swept_total` | counter | Crash leftovers removed at startup |
+| `ostore_thumbnails_total{result=hit\|generated\|failed}` | counter | Thumbnail cache outcomes |
 
 ## Durability
 

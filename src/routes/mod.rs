@@ -4,6 +4,7 @@ pub mod events;
 pub mod files;
 pub mod help;
 pub mod list;
+pub mod thumb;
 pub mod webhooks;
 
 use axum::extract::DefaultBodyLimit;
@@ -32,6 +33,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         // Multipart is the browser upload path for multi-GB videos; axum's
         // default 2 MB extractor limit would reject them.
+        .route("/thumb/{*path}", get(thumb::thumb))
         .route("/upload", post(files::upload_multipart).layer(DefaultBodyLimit::disable()))
         .route("/mkdir", post(files::mkdir))
         .route("/move", post(files::mv))

@@ -30,7 +30,13 @@ async fn main() {
     };
     let swept = tokio::task::spawn_blocking({
         let root = cfg.root.clone();
-        move || ostore::sweep_stale_tmp(&root)
+        move || {
+            let thumbs = ostore::routes::thumb::sweep_thumbs(&root);
+            if thumbs > 0 {
+                tracing::info!(removed = thumbs, "swept stale thumbnails");
+            }
+            ostore::sweep_stale_tmp(&root)
+        }
     })
     .await
     .unwrap_or(0);

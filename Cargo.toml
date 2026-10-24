@@ -12,6 +12,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio-util = { version = "0.7", features = ["io", "rt"] }
 libc = "0.2"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 futures = "0.3"
 sha2 = "0.10"

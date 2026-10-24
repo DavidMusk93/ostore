@@ -18,6 +18,7 @@ pub async fn help() -> Json<Value> {
             {"method": "PUT", "path": "/api/files/{path}", "body": "raw bytes", "description": "Stream-upload to an exact path. Parents auto-created; overwrites. Returns {path,size,sha256}."},
             {"method": "POST", "path": "/api/upload", "params": {"path": "target dir (default root)"}, "body": "multipart/form-data", "description": "Browser FormData upload; each file field's filename becomes the object name."},
             {"method": "GET", "path": "/api/files/{path}", "headers": {"Range": "bytes=start-end | start- | -suffix"}, "description": "Download. 206 + Content-Range on ranges; 416 if unsatisfiable. Weak ETag; If-None-Match -> 304."},
+            {"method": "GET", "path": "/api/thumb/{path}", "params": {"w": "box size, snaps to 128/256/512/1024 (default 256)"}, "description": "JPEG thumbnail of an image (jpg/png/gif/webp/bmp): fitted, never cropped, EXIF-rotated, cached. 415 NOT_AN_IMAGE for other types."},
             {"method": "DELETE", "path": "/api/files/{path}", "params": {"recursive": "1/true to delete non-empty dirs"}, "description": "Delete a file, or a dir only if empty unless recursive."},
             {"method": "POST", "path": "/api/mkdir", "body": {"path": "dir path"}, "description": "mkdir -p (idempotent)."},
             {"method": "POST", "path": "/api/move", "body": {"from": "source", "to": "destination"}, "description": "Rename/move. Destination parents auto-created; refuses to overwrite a non-empty dir."},

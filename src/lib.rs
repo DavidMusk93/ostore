@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use chrono::Utc;
+use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
 use crate::events::{EventBus, ObjectEvent};
@@ -46,6 +47,8 @@ pub struct AppState {
     /// Cancelled on SIGTERM/SIGINT so long-lived SSE streams end and the
     /// graceful shutdown can complete.
     pub shutdown: CancellationToken,
+    /// Caps concurrent thumbnail decodes (CPU/memory heavy).
+    pub thumb_permits: Arc<Semaphore>,
 }
 
 impl AppState {
@@ -62,6 +65,9 @@ impl AppState {
             events: Arc::new(EventBus::new()),
             metrics,
             shutdown: CancellationToken::new(),
+            thumb_permits: Arc::new(Semaphore::new(
+                std::thread::available_parallelism().map(|n| n.get().saturating_sub(1).max(1)).unwrap_or(1),
+            )),
         })
     }
 

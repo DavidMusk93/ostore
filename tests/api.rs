@@ -613,3 +613,54 @@ fn sweep_removes_stale_tmp_files() {
     assert_eq!(ostore::sweep_stale_tmp(root.path()), 1);
     assert!(root.path().join("a/keep.mp4").exists());
 }
+
+fn png_bytes(w: u32, h: u32) -> Vec<u8> {
+    let img = image::RgbaImage::from_fn(w, h, |x, _| image::Rgba([(x % 255) as u8, 80, 160, if x < w / 2 { 255 } else { 0 }]));
+    let mut out = std::io::Cursor::new(Vec::new());
+    img.write_to(&mut out, image::ImageFormat::Png).unwrap();
+    out.into_inner()
+}
+
+#[tokio::test]
+async fn thumbnail_fits_box_and_caches() {
+    let f = fixture();
+    put_file(&f.app, "pics/wide.png", &png_bytes(400, 200)).await;
+
+    let resp = f.app.clone().oneshot(req("GET", "/api/thumb/pics/wide.png?w=100")).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(resp.headers()[header::CONTENT_TYPE], "image/jpeg");
+    let etag = resp.headers()[header::ETAG].to_str().unwrap().to_string();
+    let bytes = body_bytes(resp).await;
+    let thumb = image::load_from_memory(&bytes).unwrap();
+    // w=100 snaps to 128; 2:1 aspect preserved, never cropped.
+    assert_eq!((thumb.width(), thumb.height()), (128, 64));
+
+    let resp = f.app.clone().oneshot(req("GET", "/api/thumb/pics/wide.png?w=128")).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(f.state.metrics.thumbs_hit.load(std::sync::atomic::Ordering::Relaxed), 1);
+    assert_eq!(f.state.metrics.thumbs_generated.load(std::sync::atomic::Ordering::Relaxed), 1);
+
+    let r = Request::builder()
+        .uri("/api/thumb/pics/wide.png?w=128")
+        .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+        .header(header::IF_NONE_MATCH, &etag)
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(f.app.clone().oneshot(r).await.unwrap().status(), StatusCode::NOT_MODIFIED);
+
+    // Cache lives in the hidden meta dir, never in listings.
+    let resp = f.app.clone().oneshot(req("GET", "/api/list?recursive=1")).await.unwrap();
+    let j = body_json(resp).await;
+    assert!(j["entries"].as_array().unwrap().iter().all(|e| !e["path"].as_str().unwrap().contains("thumbs")));
+}
+
+#[tokio::test]
+async fn thumbnail_rejects_non_images() {
+    let f = fixture();
+    put_file(&f.app, "notes.txt", b"hello").await;
+    let resp = f.app.clone().oneshot(req("GET", "/api/thumb/notes.txt")).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    put_file(&f.app, "fake.jpg", b"not really a jpeg").await;
+    let resp = f.app.clone().oneshot(req("GET", "/api/thumb/fake.jpg")).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+}
