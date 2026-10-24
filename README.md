@@ -79,10 +79,11 @@ are rejected with `400 BAD_PATH`.
 | DELETE | `/api/files/{path}?recursive=` | Delete file, or dir if empty (or `recursive=1`). |
 | POST | `/api/mkdir` | `{"path"}` — mkdir -p, idempotent. |
 | POST | `/api/move` | `{"from","to"}` — rename/move. |
-| GET | `/api/events` | SSE stream (last 100 events replayed, then live). |
+| GET | `/api/events?since=&replay=` | SSE stream; resumable by event id (see [Events](#events)). |
 | POST | `/api/webhooks` | `{"url","events"?}` — register webhook. |
 | GET | `/api/webhooks` | List webhook registrations. |
 | DELETE | `/api/webhooks/{id}` | Remove a registration. |
+| GET | `/api/metrics` | Prometheus metrics (see [Metrics](#metrics)). |
 
 ### Examples
 
@@ -126,8 +127,10 @@ curl -X POST -H "$AUTH" -H 'Content-Type: application/json' \
 curl -X DELETE -H "$AUTH" "$T/api/files/archive/a.jpg"
 curl -X DELETE -H "$AUTH" "$T/api/files/archive?recursive=1"
 
-# Watch events over SSE (replays last 100 events, then streams live)
+# Watch events over SSE (replays last 100 events, then streams live);
+# resume after a disconnect with ?since=<last id seen>, live-only with ?replay=0
 curl -N -H "$AUTH" "$T/api/events"
+curl -N -H "$AUTH" "$T/api/events?since=1792807221000123"
 # ... or from a browser where headers are impossible:
 #   new EventSource('/api/events?token=change-me')
 
@@ -201,12 +204,28 @@ Every mutation publishes an event, delivered two ways: the SSE stream
 | `object.moved` | Object renamed/moved | `from`, `size` (files) |
 | `object.mkdir` | Directory created by `/api/mkdir` | — |
 
-SSE frame (last 100 events replayed on connect, then live):
+Every event has a monotonically increasing `id` (seeded from the boot time
+in microseconds, so ids keep increasing across restarts) and a `type`
+(`file` / `dir`) describing the object. SSE frame:
 
 ```
+id: 1792807221000123
 event: object.created
-data: {"path":"videos/2026/video.mp4","size":12345,"ts":"2026-10-23T10:00:00Z"}
+data: {"id":1792807221000123,"path":"videos/2026/video.mp4","type":"file","size":12345,"ts":"2026-10-23T10:00:00Z"}
 ```
+
+Cursor rules for `GET /api/events` (the last 1024 events are retained):
+
+| Request | Replay before live events |
+|---|---|
+| `?since=<id>` or `Last-Event-ID: <id>` | Exactly the events after `<id>` |
+| no cursor | The last `?replay=N` events (default 100; `0` = live only) |
+| cursor older than the ring, or from a previous process | One `stream.reset` frame |
+
+Browsers send `Last-Event-ID` automatically when `EventSource` reconnects, so
+a reconnect never re-delivers old events. On `stream.reset` (also sent when
+a subscriber falls behind the live broadcast) a client must re-list what it
+mirrors, then keep consuming. Streams end cleanly on SIGTERM.
 
 Webhook delivery: `POST` JSON to the registered URL with the SSE `data`
 payload plus an `"event"` field:
@@ -215,10 +234,43 @@ payload plus an `"event"` field:
 {"event":"object.moved","path":"archive/a.jpg","from":"photos/a.jpg","size":123,"ts":"..."}
 ```
 
-Delivery runs on a background task and never blocks API handlers. On failure
+Delivery runs on background tasks (at most 32 in flight, so one slow
+target can't delay others or pile up unbounded) and never blocks API
+handlers. On failure
 it retries 3 times with backoff (1s, 5s, 15s), then drops that delivery — the
 registration itself is kept. Registrations persist across restarts in
 `<root>/.ostore/webhooks.json`.
+
+## Metrics
+
+`GET /api/metrics` (bearer auth like every `/api` route) returns Prometheus
+text format. Scrape config: `authorization: {credentials: <token>}`.
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `ostore_http_requests_total{route,method,status}` | counter | Requests by matched route template |
+| `ostore_http_request_duration_seconds{route,method}` | histogram | Time to response headers |
+| `ostore_http_requests_in_flight` | gauge | Requests not yet answered |
+| `ostore_upload_bytes_total` / `ostore_download_bytes_total` | counter | Bytes written / streamed |
+| `ostore_uploads_in_flight` | gauge | Objects being written right now |
+| `ostore_objects_written_total` / `ostore_upload_failures_total` | counter | Commits / aborted uploads |
+| `ostore_events_published_total{kind}` | counter | Events by kind |
+| `ostore_event_last_id`, `ostore_event_ring_len` | gauge | Event cursor head / retained events |
+| `ostore_sse_subscribers` | gauge | Open SSE streams |
+| `ostore_sse_resets_total` | counter | `stream.reset` frames (gaps, lagging clients) |
+| `ostore_webhook_deliveries_total{result=ok\|retry\|dropped}` | counter | Webhook outcomes |
+| `ostore_webhook_deliveries_in_flight`, `ostore_webhooks_registered` | gauge | Webhook load |
+| `ostore_root_disk_total_bytes` / `ostore_root_disk_available_bytes` | gauge | Space under `OSTORE_ROOT` |
+| `ostore_tmp_files_swept_total` | counter | Crash leftovers removed at startup |
+
+## Durability
+
+Uploads stream into a unique sibling temp file
+(`<name>.ostore-tmp-<pid>-<seq>`), are fsync'd, then atomically renamed, so
+readers only ever see complete objects and a committed object survives a
+crash. Temp files orphaned by a crash are swept at startup. Multipart
+uploads have no body size limit (videos are multi-GB); downloads carry a
+weak `ETag` (size + mtime) and answer `If-None-Match` with `304`.
 
 ## Security notes
 

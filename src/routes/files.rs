@@ -3,6 +3,7 @@
 
 use std::io::ErrorKind;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use axum::Json;
 use axum::body::{Body, Bytes};
@@ -13,12 +14,13 @@ use futures::StreamExt;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufWriter};
 use tokio_util::io::ReaderStream;
 
 use crate::AppState;
 use crate::error::ApiError;
 use crate::events;
+use crate::metrics::GaugeGuard;
 use crate::paths;
 use crate::range;
 
@@ -37,16 +39,23 @@ fn io_err(e: std::io::Error, not_found: &str) -> ApiError {
     }
 }
 
-/// Write a byte stream to `abs` atomically via `<path>.ostore-tmp-<pid>`,
-/// returning `(size, sha256_hex)`.
-async fn stream_to_disk<S, E>(abs: &std::path::Path, mut stream: S) -> Result<(u64, String), ApiError>
+static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// Write a byte stream to `abs` atomically via a unique sibling temp file
+/// (`<path>.ostore-tmp-<pid>-<seq>`, so concurrent uploads to one path never
+/// share a temp file), fsync'd before the rename so a committed object
+/// survives a crash. Returns `(size, sha256_hex)`.
+async fn stream_to_disk<S, E>(st: &AppState, abs: &std::path::Path, mut stream: S) -> Result<(u64, String), ApiError>
 where
     S: futures::Stream<Item = Result<Bytes, E>> + Unpin,
     E: std::fmt::Display,
 {
-    let tmp = PathBuf::from(format!("{}.ostore-tmp-{}", abs.display(), std::process::id()));
+    let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let tmp = PathBuf::from(format!("{}{}{}-{seq}", abs.display(), crate::TMP_MARKER, std::process::id()));
+    let _inflight = GaugeGuard::new(&st.metrics.uploads_in_flight);
     let written: Result<(u64, String), ApiError> = async {
-        let mut file = tokio::fs::File::create(&tmp).await.map_err(ApiError::internal)?;
+        let file = tokio::fs::File::create(&tmp).await.map_err(ApiError::internal)?;
+        let mut file = BufWriter::with_capacity(1 << 20, file);
         let mut hasher = Sha256::new();
         let mut size: u64 = 0;
         while let Some(chunk) = stream.next().await {
@@ -54,22 +63,36 @@ where
             file.write_all(&chunk).await.map_err(ApiError::internal)?;
             hasher.update(&chunk);
             size += chunk.len() as u64;
+            st.metrics.upload_bytes.fetch_add(chunk.len() as u64, Ordering::Relaxed);
         }
         file.flush().await.map_err(ApiError::internal)?;
-        drop(file);
+        file.get_ref().sync_all().await.map_err(ApiError::internal)?;
         Ok((size, hex::encode(hasher.finalize())))
     }
     .await;
     match written {
         Ok(ok) => {
             tokio::fs::rename(&tmp, abs).await.map_err(ApiError::internal)?;
+            st.metrics.objects_written.fetch_add(1, Ordering::Relaxed);
             Ok(ok)
         }
         Err(e) => {
+            st.metrics.upload_failures.fetch_add(1, Ordering::Relaxed);
             let _ = tokio::fs::remove_file(&tmp).await;
             Err(e)
         }
     }
+}
+
+/// Weak validator from size + mtime (no content hashing on the hot path).
+fn etag_of(meta: &std::fs::Metadata) -> String {
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("W/\"{:x}-{:x}\"", meta.len(), mtime)
 }
 
 /// PUT /api/files/{*path} — raw-body streaming upload to an exact path.
@@ -87,9 +110,9 @@ pub async fn put_file(
     }
     let existed = tokio::fs::metadata(&abs).await.is_ok();
     let stream = body.into_data_stream();
-    let (size, sha256) = stream_to_disk(&abs, stream).await?;
+    let (size, sha256) = stream_to_disk(&st, &abs, stream).await?;
     let kind = if existed { events::UPDATED } else { events::CREATED };
-    st.publish(kind, &rel, Some(size), None);
+    st.publish(kind, &rel, false, Some(size), None);
     tracing::info!(kind, path = %rel, size, "object written");
     Ok(Json(json!({ "path": rel, "size": size, "sha256": sha256 })))
 }
@@ -133,9 +156,9 @@ pub async fn upload_multipart(
         }
         let existed = tokio::fs::metadata(&abs).await.is_ok();
         let stream = field.map(|r| r.map_err(|e| e.to_string()));
-        let (size, _sha256) = stream_to_disk(&abs, stream).await?;
+        let (size, _sha256) = stream_to_disk(&st, &abs, stream).await?;
         let kind = if existed { events::UPDATED } else { events::CREATED };
-        st.publish(kind, &rel, Some(size), None);
+        st.publish(kind, &rel, false, Some(size), None);
         tracing::info!(kind, path = %rel, size, "multipart object written");
         uploaded.push(json!({ "path": rel, "size": size }));
     }
@@ -154,6 +177,14 @@ pub async fn get_file(
         return Err(ApiError::bad_request("IS_A_DIR", format!("{rel} is a directory")));
     }
     let size = meta.len();
+    let etag = etag_of(&meta);
+    let not_modified = headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.split(',').any(|t| t.trim() == etag || t.trim() == "*"));
+    if not_modified {
+        return Ok((StatusCode::NOT_MODIFIED, [(header::ETAG, hv(etag))]).into_response());
+    }
     let mime = mime_guess::from_path(&abs).first_or_octet_stream();
     let range_hdr = headers.get(header::RANGE).and_then(|v| v.to_str().ok());
 
@@ -183,12 +214,19 @@ pub async fn get_file(
     if start > 0 {
         file.seek(std::io::SeekFrom::Start(start)).await.map_err(ApiError::internal)?;
     }
-    let stream = ReaderStream::with_capacity(file.take(len), 256 * 1024);
+    let metrics = st.metrics.clone();
+    let stream = ReaderStream::with_capacity(file.take(len), 256 * 1024).inspect(move |r| {
+        if let Ok(b) = r {
+            metrics.download_bytes.fetch_add(b.len() as u64, Ordering::Relaxed);
+        }
+    });
     let mut builder = Response::builder()
         .status(status)
         .header(header::CONTENT_TYPE, hv(mime.to_string()))
         .header(header::CONTENT_LENGTH, len.to_string())
-        .header(header::ACCEPT_RANGES, "bytes");
+        .header(header::ACCEPT_RANGES, "bytes")
+        .header(header::ETAG, hv(etag))
+        .header(header::CACHE_CONTROL, "private, no-cache");
     if status == StatusCode::PARTIAL_CONTENT {
         builder = builder.header(header::CONTENT_RANGE, hv(format!("bytes {}-{}/{}", start, start + len - 1, size)));
     }
@@ -226,7 +264,7 @@ pub async fn delete_file(
     } else {
         tokio::fs::remove_file(&abs).await.map_err(|e| io_err(e, &rel))?;
     }
-    st.publish(events::DELETED, &rel, None, None);
+    st.publish(events::DELETED, &rel, meta.is_dir(), None, None);
     tracing::info!(path = %rel, "object deleted");
     Ok(Json(json!({ "deleted": rel })))
 }
@@ -245,7 +283,7 @@ pub async fn mkdir(
     let existed = tokio::fs::metadata(&abs).await.map(|m| m.is_dir()).unwrap_or(false);
     tokio::fs::create_dir_all(&abs).await.map_err(ApiError::internal)?;
     if !existed && !rel.is_empty() {
-        st.publish(events::MKDIR, &rel, None, None);
+        st.publish(events::MKDIR, &rel, true, None, None);
         tracing::info!(path = %rel, "directory created");
     }
     Ok(Json(json!({ "path": rel })))
@@ -289,7 +327,7 @@ pub async fn mv(
     }
     tokio::fs::rename(&from_abs, &to_abs).await.map_err(ApiError::internal)?;
     let size = if from_meta.is_file() { Some(from_meta.len()) } else { None };
-    st.publish(events::MOVED, &to_rel, size, Some(from_rel.clone()));
+    st.publish(events::MOVED, &to_rel, from_meta.is_dir(), size, Some(from_rel.clone()));
     tracing::info!(from = %from_rel, to = %to_rel, "object moved");
     Ok(Json(json!({ "from": from_rel, "to": to_rel })))
 }

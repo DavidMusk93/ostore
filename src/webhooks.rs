@@ -1,16 +1,24 @@
 //! Webhook registrations, persisted to `<root>/.ostore/webhooks.json`, with
 //! best-effort background delivery (3 retries: 1s / 5s / 15s, then drop the
 //! delivery — the registration itself is never removed on failure).
+//! Deliveries run concurrently, capped by a semaphore so a burst of events
+//! against a slow target can't spawn unbounded in-flight requests.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use tokio::sync::Semaphore;
+
 use crate::events::ObjectEvent;
+use crate::metrics::Metrics;
+
+/// Max concurrent webhook HTTP deliveries (including their backoff waits).
+const MAX_IN_FLIGHT: usize = 32;
 
 static ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -36,12 +44,14 @@ pub struct WebhookStore {
     file: PathBuf,
     hooks: RwLock<Vec<Webhook>>,
     client: reqwest::Client,
+    permits: Arc<Semaphore>,
+    metrics: Arc<Metrics>,
 }
 
 impl WebhookStore {
     /// Load registrations from `<root>/.ostore/webhooks.json` (empty if the
     /// file is missing or unreadable).
-    pub fn load(root: &Path) -> Self {
+    pub fn load(root: &Path, metrics: Arc<Metrics>) -> Self {
         let file = root.join(".ostore").join("webhooks.json");
         let hooks: Vec<Webhook> = std::fs::read_to_string(&file)
             .ok()
@@ -51,7 +61,7 @@ impl WebhookStore {
             .timeout(Duration::from_secs(10))
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
-        Self { file, hooks: RwLock::new(hooks), client }
+        Self { file, hooks: RwLock::new(hooks), client, permits: Arc::new(Semaphore::new(MAX_IN_FLIGHT)), metrics }
     }
 
     fn read(&self) -> Vec<Webhook> {
@@ -129,20 +139,31 @@ impl WebhookStore {
         if let Some(obj) = payload.as_object_mut() {
             obj.insert("event".to_string(), serde_json::Value::String(ev.kind.clone()));
         }
-        let client = self.client.clone();
-        tokio::spawn(async move {
-            for hook in targets {
-                deliver_one(&client, &hook, &payload).await;
-            }
-        });
+        let payload = Arc::new(payload);
+        for hook in targets {
+            let client = self.client.clone();
+            let permits = self.permits.clone();
+            let metrics = self.metrics.clone();
+            let payload = payload.clone();
+            metrics.webhook_in_flight.fetch_add(1, Ordering::Relaxed);
+            tokio::spawn(async move {
+                if let Ok(_permit) = permits.acquire_owned().await {
+                    deliver_one(&client, &hook, &payload, &metrics).await;
+                }
+                metrics.webhook_in_flight.fetch_sub(1, Ordering::Relaxed);
+            });
+        }
     }
 }
 
-async fn deliver_one(client: &reqwest::Client, hook: &Webhook, payload: &serde_json::Value) {
+async fn deliver_one(client: &reqwest::Client, hook: &Webhook, payload: &serde_json::Value, metrics: &Metrics) {
     const BACKOFF_SECS: [u64; 3] = [1, 5, 15];
     for attempt in 0..3 {
         match client.post(&hook.url).json(payload).send().await {
-            Ok(resp) if resp.status().is_success() => return,
+            Ok(resp) if resp.status().is_success() => {
+                metrics.webhook_ok.fetch_add(1, Ordering::Relaxed);
+                return;
+            }
             Ok(resp) => {
                 tracing::warn!(
                     url = %hook.url, status = %resp.status(), attempt,
@@ -154,9 +175,11 @@ async fn deliver_one(client: &reqwest::Client, hook: &Webhook, payload: &serde_j
             }
         }
         if attempt < 2 {
+            metrics.webhook_retries.fetch_add(1, Ordering::Relaxed);
             tokio::time::sleep(Duration::from_secs(BACKOFF_SECS[attempt])).await;
         }
     }
+    metrics.webhook_dropped.fetch_add(1, Ordering::Relaxed);
     tracing::warn!(url = %hook.url, "webhook delivery dropped after 3 attempts");
 }
 

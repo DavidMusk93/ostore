@@ -28,6 +28,14 @@ async fn main() {
             std::process::exit(2);
         }
     };
+    let swept = tokio::task::spawn_blocking({
+        let root = cfg.root.clone();
+        move || ostore::sweep_stale_tmp(&root)
+    })
+    .await
+    .unwrap_or(0);
+    state.metrics.tmp_swept.store(swept as u64, std::sync::atomic::Ordering::Relaxed);
+    let shutdown = state.shutdown.clone();
     let app = build_router(state);
     let listener = match tokio::net::TcpListener::bind((cfg.host.as_str(), cfg.port)).await {
         Ok(l) => l,
@@ -38,7 +46,11 @@ async fn main() {
     };
     tracing::info!(addr = %format!("{}:{}", cfg.host, cfg.port), root = %cfg.root.display(), "ostore listening");
     if let Err(e) = axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(async move {
+            shutdown_signal().await;
+            // Ends open SSE streams; otherwise graceful shutdown waits on them forever.
+            shutdown.cancel();
+        })
         .await
     {
         eprintln!("ostore: server error: {e}");

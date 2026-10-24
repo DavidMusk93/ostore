@@ -811,6 +811,7 @@ dependencies = [
  "futures",
  "hex",
  "http-body-util",
+ "libc",
  "mime_guess",
  "reqwest",
  "serde",
@@ -1434,6 +1435,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
+ "futures-util",
  "pin-project-lite",
  "tokio",
 ]

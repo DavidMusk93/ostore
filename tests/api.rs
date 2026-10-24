@@ -465,3 +465,151 @@ async fn move_refuses_to_overwrite_nonempty_dir() {
     let j = body_json(resp).await;
     assert_eq!(j["code"], "DIR_NOT_EMPTY");
 }
+
+/// Read SSE frames until `pred` matches the accumulated text (5s cap).
+async fn read_sse_until(resp: axum::response::Response, pred: impl Fn(&str) -> bool) -> String {
+    let mut body = resp.into_body();
+    let mut acc = String::new();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !pred(&acc) {
+        let frame = tokio::time::timeout_at(deadline, body.frame())
+            .await
+            .expect("timed out waiting for SSE frame")
+            .expect("stream ended")
+            .expect("frame error");
+        if let Some(data) = frame.data_ref() {
+            acc.push_str(&String::from_utf8_lossy(data));
+        }
+    }
+    acc
+}
+
+#[tokio::test]
+async fn multipart_accepts_bodies_over_2mb() {
+    let f = fixture();
+    let boundary = "X-BOUNDARY";
+    let payload = vec![b'v'; 3 * 1024 * 1024];
+    let mut body = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"files\"; filename=\"big.mp4\"\r\nContent-Type: video/mp4\r\n\r\n"
+    )
+    .into_bytes();
+    body.extend_from_slice(&payload);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    let r = Request::builder()
+        .method("POST")
+        .uri("/api/upload?path=v")
+        .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+        .header(header::CONTENT_TYPE, format!("multipart/form-data; boundary={boundary}"))
+        .body(Body::from(body))
+        .unwrap();
+    let resp = f.app.clone().oneshot(r).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let j = body_json(resp).await;
+    assert_eq!(j["uploaded"][0]["size"], payload.len());
+    // No temp file left behind after commit.
+    let names: Vec<String> = std::fs::read_dir(f._root.path().join("v"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(names, vec!["big.mp4".to_string()]);
+}
+
+#[tokio::test]
+async fn events_carry_ids_and_type() {
+    let f = fixture();
+    put_file(&f.app, "d/a.bin", b"a").await;
+    f.app.clone().oneshot(req_json("POST", "/api/mkdir", json!({"path": "e"}))).await.unwrap();
+    let evs = f.state.events.snapshot();
+    assert_eq!(evs.len(), 2);
+    assert!(evs[0].id < evs[1].id);
+    assert_eq!(evs[0].entry_type, "file");
+    assert_eq!(evs[1].entry_type, "dir");
+}
+
+#[tokio::test]
+async fn sse_resumes_after_cursor() {
+    let f = fixture();
+    put_file(&f.app, "one.bin", b"1").await;
+    put_file(&f.app, "two.bin", b"2").await;
+    let first = f.state.events.snapshot()[0].id;
+
+    let resp = f.app.clone().oneshot(req("GET", &format!("/api/events?since={first}"))).await.unwrap();
+    let acc = read_sse_until(resp, |a| a.contains("two.bin")).await;
+    assert!(!acc.contains("one.bin"), "event before the cursor was replayed");
+
+    // Browser reconnect path: Last-Event-ID header.
+    let r = Request::builder()
+        .uri("/api/events")
+        .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+        .header("Last-Event-ID", first.to_string())
+        .body(Body::empty())
+        .unwrap();
+    let acc = read_sse_until(f.app.clone().oneshot(r).await.unwrap(), |a| a.contains("two.bin")).await;
+    assert!(!acc.contains("one.bin"));
+    assert!(acc.contains(&format!("id: {}", first + 1)));
+}
+
+#[tokio::test]
+async fn sse_stale_cursor_sends_reset() {
+    let f = fixture();
+    put_file(&f.app, "x.bin", b"x").await;
+    let resp = f.app.clone().oneshot(req("GET", "/api/events?since=5")).await.unwrap();
+    let acc = read_sse_until(resp, |a| a.contains("stream.reset")).await;
+    assert!(!acc.contains("x.bin"));
+}
+
+#[tokio::test]
+async fn sse_ends_on_shutdown() {
+    let f = fixture();
+    let resp = f.app.clone().oneshot(req("GET", "/api/events?replay=0")).await.unwrap();
+    f.state.shutdown.cancel();
+    let collected = tokio::time::timeout(std::time::Duration::from_secs(5), resp.into_body().collect()).await;
+    assert!(collected.is_ok(), "SSE stream did not end after shutdown");
+}
+
+#[tokio::test]
+async fn download_etag_revalidates() {
+    let f = fixture();
+    put_file(&f.app, "c.bin", b"cached").await;
+    let resp = f.app.clone().oneshot(req("GET", "/api/files/c.bin")).await.unwrap();
+    let etag = resp.headers()[header::ETAG].to_str().unwrap().to_string();
+    let r = Request::builder()
+        .uri("/api/files/c.bin")
+        .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+        .header(header::IF_NONE_MATCH, &etag)
+        .body(Body::empty())
+        .unwrap();
+    let resp = f.app.clone().oneshot(r).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_MODIFIED);
+}
+
+#[tokio::test]
+async fn metrics_exposition() {
+    let f = fixture();
+    put_file(&f.app, "m.bin", b"12345").await;
+    let resp = f.app.clone().oneshot(req("GET", "/api/files/m.bin")).await.unwrap();
+    body_bytes(resp).await;
+    let resp = f.app.clone().oneshot(Request::builder().uri("/api/metrics").body(Body::empty()).unwrap()).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    let resp = f.app.clone().oneshot(req("GET", "/api/metrics")).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let text = String::from_utf8(body_bytes(resp).await.to_vec()).unwrap();
+    assert!(text.contains("ostore_upload_bytes_total 5"), "{text}");
+    assert!(text.contains("ostore_download_bytes_total 5"));
+    assert!(text.contains("ostore_objects_written_total 1"));
+    assert!(text.contains("ostore_events_published_total{kind=\"object.created\"} 1"));
+    assert!(text.contains("route=\"/api/files/{*path}\",method=\"PUT\",status=\"200\""), "{text}");
+    assert!(text.contains("route=\"/api/metrics\",method=\"GET\",status=\"401\""));
+    assert!(text.contains("ostore_root_disk_available_bytes"));
+}
+
+#[test]
+fn sweep_removes_stale_tmp_files() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join("a/b")).unwrap();
+    std::fs::write(root.path().join("a/b/v.mp4.ostore-tmp-1-0"), b"x").unwrap();
+    std::fs::write(root.path().join("a/keep.mp4"), b"x").unwrap();
+    assert_eq!(ostore::sweep_stale_tmp(root.path()), 1);
+    assert!(root.path().join("a/keep.mp4").exists());
+}
