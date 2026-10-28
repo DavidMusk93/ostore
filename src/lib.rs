@@ -13,6 +13,7 @@ pub mod metrics;
 pub mod paths;
 pub mod range;
 pub mod routes;
+pub mod s3;
 pub mod webhooks;
 
 use std::io;
@@ -25,6 +26,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::events::{EventBus, ObjectEvent};
 use crate::metrics::Metrics;
+use crate::s3::S3Auth;
 use crate::webhooks::WebhookStore;
 
 pub use routes::build_router;
@@ -49,12 +51,19 @@ pub struct AppState {
     pub shutdown: CancellationToken,
     /// Caps concurrent thumbnail decodes (CPU/memory heavy).
     pub thumb_permits: Arc<Semaphore>,
+    /// Credentials for the S3 read surface; `None` disables it.
+    pub s3: Option<Arc<S3Auth>>,
 }
 
 impl AppState {
     /// Create state, ensuring `<root>` and `<root>/.ostore/` exist and
     /// loading persisted webhook registrations.
     pub fn new(root: PathBuf, token: String) -> io::Result<Self> {
+        Self::with_s3(root, token, None)
+    }
+
+    /// [`AppState::new`], plus optional S3-surface credentials.
+    pub fn with_s3(root: PathBuf, token: String, s3: Option<S3Auth>) -> io::Result<Self> {
         std::fs::create_dir_all(&root)?;
         std::fs::create_dir_all(root.join(".ostore"))?;
         let metrics = Arc::new(Metrics::new());
@@ -68,6 +77,7 @@ impl AppState {
             thumb_permits: Arc::new(Semaphore::new(
                 std::thread::available_parallelism().map(|n| n.get().saturating_sub(1).max(1)).unwrap_or(1),
             )),
+            s3: s3.map(Arc::new),
         })
     }
 

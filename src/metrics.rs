@@ -64,6 +64,10 @@ pub struct Metrics {
     pub thumbs_hit: AtomicU64,
     pub thumbs_generated: AtomicU64,
     pub thumbs_failed: AtomicU64,
+    pub s3_gets: AtomicU64,
+    pub s3_heads: AtomicU64,
+    pub s3_denied: AtomicU64,
+    pub s3_bytes: AtomicU64,
 }
 
 impl Default for Metrics {
@@ -95,7 +99,16 @@ impl Metrics {
             thumbs_hit: AtomicU64::new(0),
             thumbs_generated: AtomicU64::new(0),
             thumbs_failed: AtomicU64::new(0),
+            s3_gets: AtomicU64::new(0),
+            s3_heads: AtomicU64::new(0),
+            s3_denied: AtomicU64::new(0),
+            s3_bytes: AtomicU64::new(0),
         }
+    }
+
+    /// Milliseconds since process start, used to seed per-request ids.
+    pub fn started_ms(&self) -> u64 {
+        self.started.elapsed().as_millis().try_into().unwrap_or(u64::MAX)
     }
 
     pub fn event_published(&self, kind: &str) {
@@ -155,6 +168,13 @@ impl Metrics {
         counter(o, "ostore_objects_written_total", "Objects committed (atomic rename done).", self.objects_written.load(Ordering::Relaxed));
         counter(o, "ostore_upload_failures_total", "Uploads aborted before commit.", self.upload_failures.load(Ordering::Relaxed));
         counter(o, "ostore_tmp_files_swept_total", "Stale temp files removed at startup.", self.tmp_swept.load(Ordering::Relaxed));
+
+        let _ = writeln!(o, "# HELP ostore_s3_requests_total S3-surface requests by method and outcome.");
+        let _ = writeln!(o, "# TYPE ostore_s3_requests_total counter");
+        let _ = writeln!(o, "ostore_s3_requests_total{{method=\"GET\"}} {}", self.s3_gets.load(Ordering::Relaxed));
+        let _ = writeln!(o, "ostore_s3_requests_total{{method=\"HEAD\"}} {}", self.s3_heads.load(Ordering::Relaxed));
+        counter(o, "ostore_s3_denied_total", "S3-surface requests rejected by signature verification.", self.s3_denied.load(Ordering::Relaxed));
+        counter(o, "ostore_s3_bytes_total", "Bytes streamed by the S3 surface.", self.s3_bytes.load(Ordering::Relaxed));
 
         let _ = writeln!(o, "# HELP ostore_thumbnails_total Thumbnail requests by outcome.");
         let _ = writeln!(o, "# TYPE ostore_thumbnails_total counter");

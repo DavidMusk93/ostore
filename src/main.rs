@@ -21,13 +21,22 @@ async fn main() {
             std::process::exit(2);
         }
     };
-    let state = match AppState::new(cfg.root.clone(), cfg.token.clone()) {
-        Ok(s) => s,
+    let state = match ostore::s3::S3Auth::from_env() {
+        Ok(s3) => match AppState::with_s3(cfg.root.clone(), cfg.token.clone(), s3) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("ostore: cannot initialize root {}: {e}", cfg.root.display());
+                std::process::exit(2);
+            }
+        },
         Err(e) => {
-            eprintln!("ostore: cannot initialize root {}: {e}", cfg.root.display());
+            eprintln!("ostore: config error: {e}");
             std::process::exit(2);
         }
     };
+    if state.s3.is_some() {
+        tracing::info!("S3 read surface enabled");
+    }
     let swept = tokio::task::spawn_blocking({
         let root = cfg.root.clone();
         move || {

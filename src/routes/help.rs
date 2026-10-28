@@ -26,7 +26,8 @@ pub async fn help() -> Json<Value> {
             {"method": "POST", "path": "/api/webhooks", "body": {"url": "http(s) callback", "events": "optional subset of event types (default all)"}, "description": "Register a webhook. Delivery: POST JSON {event,path,size?,from?,ts}, 3 retries (1s/5s/15s), then dropped."},
             {"method": "GET", "path": "/api/webhooks", "description": "List webhook registrations."},
             {"method": "DELETE", "path": "/api/webhooks/{id}", "description": "Remove a webhook registration."},
-            {"method": "GET", "path": "/api/metrics", "description": "Prometheus text exposition: HTTP requests/latency by route, upload/download bytes, uploads in flight, events by kind, SSE subscribers/resets, webhook outcomes, root disk space."}
+            {"method": "GET", "path": "/api/metrics", "description": "Prometheus text exposition: HTTP requests/latency by route, upload/download bytes, uploads in flight, events by kind, SSE subscribers/resets, webhook outcomes, root disk space, S3-surface counters."},
+            {"method": "GET|HEAD", "path": "/{bucket}/{key}", "auth": "aws-sigv4", "headers": {"Range": "bytes=start-end", "If-None-Match": "ETag"}, "description": "S3-compatible object read (path-style). 206 + Content-Range for any Range; 416 + 'Content-Range: bytes */SIZE' when unsatisfiable; strong ETag; errors are S3 XML. Read-only: uploads go through /api. Enabled only when OSTORE_S3_ACCESS_KEY/SECRET are set."}
         ]
     }))
 }

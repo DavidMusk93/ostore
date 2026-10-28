@@ -20,6 +20,10 @@ Environment variables:
 | `OSTORE_TOKEN` | (required) | Bearer token for all `/api` requests. |
 | `OSTORE_HOST` | `127.0.0.1` | Bind address. |
 | `OSTORE_PORT` | `8781` | Bind port. |
+| `OSTORE_S3_ACCESS_KEY` | (unset) | Access key ID for the [S3 read surface](#s3-read-surface). Setting it (with the secret) enables the surface. |
+| `OSTORE_S3_SECRET_KEY` | (unset) | Secret access key. Must be set together with the access key. |
+| `OSTORE_S3_REGION` | any | When set, only SigV4 scopes naming this region are accepted. |
+| `OSTORE_S3_BUCKET` | any | When set, only this bucket name is served; otherwise the first path segment is accepted and ignored. |
 
 Run from source:
 
@@ -38,6 +42,11 @@ OSTORE_ROOT=/srv/ostore
 OSTORE_TOKEN=change-me
 OSTORE_HOST=127.0.0.1
 OSTORE_PORT=8781
+# Optional: S3 read surface (lets a cache such as cachey read through ostore).
+# OSTORE_S3_ACCESS_KEY=cachey
+# OSTORE_S3_SECRET_KEY=change-me-too
+# OSTORE_S3_REGION=us-east-1
+# OSTORE_S3_BUCKET=media
 EOF
 sudo systemctl enable --now ostore
 ```
@@ -85,6 +94,11 @@ are rejected with `400 BAD_PATH`.
 | GET | `/api/webhooks` | List webhook registrations. |
 | DELETE | `/api/webhooks/{id}` | Remove a registration. |
 | GET | `/api/metrics` | Prometheus metrics (see [Metrics](#metrics)). |
+| GET/HEAD | `/{bucket}/{key}` | S3-compatible object read, SigV4-signed (see [S3 read surface](#s3-read-surface)). |
+
+The S3 surface is the only part of the server outside `/api` that is not the
+liveness probe; it authenticates with its own credentials, not `OSTORE_TOKEN`.
+An unknown `/api/...` path still answers with the JSON error shape.
 
 ### Examples
 
@@ -278,6 +292,81 @@ text format. Scrape config: `authorization: {credentials: <token>}`.
 | `ostore_root_disk_total_bytes` / `ostore_root_disk_available_bytes` | gauge | Space under `OSTORE_ROOT` |
 | `ostore_tmp_files_swept_total` | counter | Crash leftovers removed at startup |
 | `ostore_thumbnails_total{result=hit\|generated\|failed}` | counter | Thumbnail cache outcomes |
+| `ostore_s3_requests_total{method}` | counter | S3-surface `GET`/`HEAD` counts |
+| `ostore_s3_denied_total` | counter | S3-surface requests rejected by signature verification |
+| `ostore_s3_bytes_total` | counter | Bytes streamed by the S3 surface |
+
+## S3 read surface
+
+Setting `OSTORE_S3_ACCESS_KEY` and `OSTORE_S3_SECRET_KEY` exposes a read-only
+S3 subset at the server root, so an S3 client can point at ostore. It exists
+mainly so a read-through cache — [cachey](https://github.com/s2-streamstore/cachey)
+in particular — can sit in front of ostore without a translation shim.
+
+```bash
+export OSTORE_S3_ACCESS_KEY=ostore
+export OSTORE_S3_SECRET_KEY=$(openssl rand -hex 24)
+export OSTORE_S3_REGION=us-east-1   # optional
+export OSTORE_S3_BUCKET=media       # optional; pins the only accepted bucket
+```
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/{bucket}/{key}` | Object bytes. `Range` supported. |
+| HEAD | `/{bucket}/{key}` | Same headers, no body. |
+
+Behavior worth knowing:
+
+- **Path-style only.** The first segment is the bucket; everything after it is
+  the key (slashes preserved). Virtual-host addressing is not implemented.
+  When `OSTORE_S3_BUCKET` is unset any bucket name is accepted and ignored,
+  because ostore binds exactly one root.
+- **SigV4 header auth only.** Presigned query URLs (`X-Amz-Signature`) are
+  rejected with `InvalidRequest`; so is any algorithm other than
+  `AWS4-HMAC-SHA256`. Clock skew beyond 15 minutes yields
+  `RequestTimeTooSkewed`. Verification itself is in `src/s3/sigv4.rs` and is
+  checked against the [AWS signing test vectors](https://github.com/awslabs/aws-c-auth/tree/main/tests/aws-signing-test-suite).
+- **A `Range` always gets `206`**, even when it spans the whole object, and
+  always carries `Content-Range`. RFC 9110 permits a `200` for a full-span
+  range, but S3 does not, and S3 clients validate `Content-Range` on ranged
+  reads.
+- **Unsatisfiable ranges** return `416` with `Content-Range: bytes */<size>`
+  and an `InvalidRange` XML body. SDKs and caches recover the object size from
+  that header, so it is always sent.
+- **Strong `ETag`** of size + mtime (the JSON API's is weak), plus
+  `Last-Modified`. `If-None-Match` answers `304`. Any overwrite changes the
+  ETag, which is what makes a *revalidating* client see new bytes.
+- **Errors are S3 XML**, not the JSON shape used under `/api`:
+  `NoSuchKey`, `NoSuchBucket`, `InvalidRange`, `AccessDenied`,
+  `SignatureDoesNotMatch`, `InvalidAccessKeyId`, `RequestTimeTooSkewed`.
+  `HEAD` answers carry no body, so a client only sees the status code — as
+  with real S3.
+- **Read-only.** `PutObject`, `DeleteObject`, `ListObjects` and multipart are
+  not implemented; writes go through `/api/files/{path}` and `/api/upload`.
+
+### Caching in front of ostore
+
+ostore's JSON API allows overwriting, moving and deleting objects, while
+cachey is built for immutable blobs and keys its entries by `(kind, object,
+range)` with no version. Consequences when the two are combined:
+
+- Overwrites, moves and deletes are **not** visible through cachey until the
+  entry is evicted from memory and disk. `scripts/cachey_check.sh` asserts
+  this behavior, so a change is noticed.
+- Only front ostore with cachey for write-once data (recordings, backups,
+  exported artifacts), or accept stale reads within the cache's retention.
+- cachey needs `AWS_ENDPOINT_URL` pointing at ostore. Path-style addressing is
+  the default for a custom endpoint, so `C0-Config: fps=true` is only needed if
+  the environment forces virtual-host addressing. See `deploy/cachey.md` for a
+  working pair of configs.
+
+Example with a raw HTTP client (signing is easier via an SDK):
+
+```bash
+aws --endpoint-url http://127.0.0.1:8781 s3api head-object --bucket media --key videos/clip.mp4
+aws --endpoint-url http://127.0.0.1:8781 s3api get-object --bucket media --key videos/clip.mp4 \
+  --range bytes=0-1048575 part.bin
+```
 
 ## Durability
 
@@ -300,7 +389,11 @@ weak `ETag` (size + mtime) and answer `If-None-Match` with `304`.
   reserved `.ostore` meta dir are rejected; every resolved path is verified
   to stay under `OSTORE_ROOT`. The `.ostore` meta dir and in-flight
   `.ostore-tmp-*` upload files are hidden from listings and unreachable
-  through the API.
+  through the API. The S3 surface reuses the same resolver, so a key can no
+  more escape the root than an `/api` path can.
+- **S3 credentials are separate from `OSTORE_TOKEN`** and grant read access to
+  every object. Use them only for the cache tier, keep them out of client
+  devices, and rotate them independently.
 - The daemon binds `127.0.0.1` by default — expose it only through a
   TLS-terminating reverse proxy.
 
