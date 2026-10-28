@@ -27,7 +27,10 @@ pub async fn help() -> Json<Value> {
             {"method": "GET", "path": "/api/webhooks", "description": "List webhook registrations."},
             {"method": "DELETE", "path": "/api/webhooks/{id}", "description": "Remove a webhook registration."},
             {"method": "GET", "path": "/api/metrics", "description": "Prometheus text exposition: HTTP requests/latency by route, upload/download bytes, uploads in flight, events by kind, SSE subscribers/resets, webhook outcomes, root disk space, S3-surface counters."},
-            {"method": "GET|HEAD", "path": "/{bucket}/{key}", "auth": "aws-sigv4", "headers": {"Range": "bytes=start-end", "If-None-Match": "ETag"}, "description": "S3-compatible object read (path-style). 206 + Content-Range for any Range; 416 + 'Content-Range: bytes */SIZE' when unsatisfiable; strong ETag; errors are S3 XML. Read-only: uploads go through /api. Enabled only when OSTORE_S3_ACCESS_KEY/SECRET are set."}
+            {"method": "GET|HEAD", "path": "/{bucket}/{key}", "auth": "aws-sigv4", "description": "S3 GetObject/HeadObject (path-style). Range -> 206 + Content-Range; 416 + bytes */SIZE; strong ETag; S3 XML errors."},
+            {"method": "PUT", "path": "/{bucket}/{key}", "auth": "aws-sigv4", "headers": {"x-amz-content-sha256": "body sha256 hex or UNSIGNED-PAYLOAD"}, "description": "S3 PutObject; atomic write; publishes object.created/updated."},
+            {"method": "DELETE", "path": "/{bucket}/{key}", "auth": "aws-sigv4", "description": "S3 DeleteObject (idempotent); publishes object.deleted."},
+            {"method": "GET", "path": "/{bucket}?list-type=2", "auth": "aws-sigv4", "params": {"prefix": "", "delimiter": "/", "max-keys": "1-1000", "continuation-token": ""}, "description": "S3 ListObjectsV2 XML. HEAD /{bucket} = HeadBucket. No multipart/ACL/versioning. Enabled when OSTORE_S3_ACCESS_KEY/SECRET are set."}
         ]
     }))
 }

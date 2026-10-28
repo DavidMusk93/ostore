@@ -45,7 +45,7 @@ static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 /// (`<path>.ostore-tmp-<pid>-<seq>`, so concurrent uploads to one path never
 /// share a temp file), fsync'd before the rename so a committed object
 /// survives a crash. Returns `(size, sha256_hex)`.
-async fn stream_to_disk<S, E>(st: &AppState, abs: &std::path::Path, mut stream: S) -> Result<(u64, String), ApiError>
+pub(crate) async fn stream_to_disk<S, E>(st: &AppState, abs: &std::path::Path, mut stream: S) -> Result<(u64, String), ApiError>
 where
     S: futures::Stream<Item = Result<Bytes, E>> + Unpin,
     E: std::fmt::Display,

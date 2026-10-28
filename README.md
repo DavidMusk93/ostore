@@ -296,12 +296,12 @@ text format. Scrape config: `authorization: {credentials: <token>}`.
 | `ostore_s3_denied_total` | counter | S3-surface requests rejected by signature verification |
 | `ostore_s3_bytes_total` | counter | Bytes streamed by the S3 surface |
 
-## S3 read surface
+## S3 API subset
 
-Setting `OSTORE_S3_ACCESS_KEY` and `OSTORE_S3_SECRET_KEY` exposes a read-only
-S3 subset at the server root, so an S3 client can point at ostore. It exists
-mainly so a read-through cache — [cachey](https://github.com/s2-streamstore/cachey)
-in particular — can sit in front of ostore without a translation shim.
+Setting `OSTORE_S3_ACCESS_KEY` and `OSTORE_S3_SECRET_KEY` exposes an
+S3-shaped API at the server root so `aws s3 sync`, rclone, and [cachey](https://github.com/s2-streamstore/cachey)
+can talk to ostore without a shim. This is **not** full S3 (no multipart,
+ACL, versioning, CopyObject, presigned URLs). See [ClipVault 冷备](deploy/clipvault-backup.md).
 
 ```bash
 export OSTORE_S3_ACCESS_KEY=ostore
@@ -312,8 +312,12 @@ export OSTORE_S3_BUCKET=media       # optional; pins the only accepted bucket
 
 | Method | Path | Notes |
 |---|---|---|
-| GET | `/{bucket}/{key}` | Object bytes. `Range` supported. |
-| HEAD | `/{bucket}/{key}` | Same headers, no body. |
+| GET | `/{bucket}/{key}` | GetObject. `Range` supported. |
+| HEAD | `/{bucket}/{key}` | HeadObject. |
+| PUT | `/{bucket}/{key}` | PutObject (`x-amz-content-sha256` required). |
+| DELETE | `/{bucket}/{key}` | DeleteObject (idempotent). |
+| GET | `/{bucket}?list-type=2` | ListObjectsV2 (XML). |
+| HEAD | `/{bucket}` | HeadBucket. |
 
 Behavior worth knowing:
 
@@ -341,8 +345,9 @@ Behavior worth knowing:
   `SignatureDoesNotMatch`, `InvalidAccessKeyId`, `RequestTimeTooSkewed`.
   `HEAD` answers carry no body, so a client only sees the status code — as
   with real S3.
-- **Read-only.** `PutObject`, `DeleteObject`, `ListObjects` and multipart are
-  not implemented; writes go through `/api/files/{path}` and `/api/upload`.
+- **Writes** via S3 publish the same SSE/webhook events as `/api`. The JSON API
+  remains the browser/agent path (`/api/upload` for multipart). Multipart S3
+  uploads are not implemented.
 
 ### Caching in front of ostore
 

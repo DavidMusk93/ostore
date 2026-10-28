@@ -150,6 +150,24 @@ def main():
     check("ETag changes after overwrite", head2["ETag"] != head["ETag"], head2["ETag"])
     check("size changes after overwrite", head2["ContentLength"] == len(DATA) + 8)
 
+    resp = s3.list_objects_v2(Bucket=BUCKET, Prefix="smoke/", MaxKeys=10)
+    check("ListObjectsV2 returns Contents", isinstance(resp.get("Contents"), (list, type(None))))
+
+    test_key = "smoke/s3-api-check.txt"
+    body = b"ostore s3 put/delete " + str(len(DATA)).encode()
+    s3.put_object(Bucket=BUCKET, Key=test_key, Body=body)
+    got = s3.get_object(Bucket=BUCKET, Key=test_key)["Body"].read()
+    check("PutObject roundtrip", got == body, f"{len(got)} bytes")
+    s3.delete_object(Bucket=BUCKET, Key=test_key)
+    try:
+        s3.head_object(Bucket=BUCKET, Key=test_key)
+        check("DeleteObject removed the key", False, "still exists")
+    except ClientError as e:
+        check("DeleteObject removed the key", e.response["ResponseMetadata"]["HTTPStatusCode"] == 404)
+
+    hb = s3.head_bucket(Bucket=BUCKET)
+    check("HeadBucket ok", hb["ResponseMetadata"]["HTTPStatusCode"] == 200)
+
     print()
     if failures:
         print(f"FAILED: {len(failures)} check(s): {', '.join(failures)}")

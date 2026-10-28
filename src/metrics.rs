@@ -66,6 +66,9 @@ pub struct Metrics {
     pub thumbs_failed: AtomicU64,
     pub s3_gets: AtomicU64,
     pub s3_heads: AtomicU64,
+    pub s3_puts: AtomicU64,
+    pub s3_deletes: AtomicU64,
+    pub s3_lists: AtomicU64,
     pub s3_denied: AtomicU64,
     pub s3_bytes: AtomicU64,
 }
@@ -101,6 +104,9 @@ impl Metrics {
             thumbs_failed: AtomicU64::new(0),
             s3_gets: AtomicU64::new(0),
             s3_heads: AtomicU64::new(0),
+            s3_puts: AtomicU64::new(0),
+            s3_deletes: AtomicU64::new(0),
+            s3_lists: AtomicU64::new(0),
             s3_denied: AtomicU64::new(0),
             s3_bytes: AtomicU64::new(0),
         }
@@ -173,6 +179,9 @@ impl Metrics {
         let _ = writeln!(o, "# TYPE ostore_s3_requests_total counter");
         let _ = writeln!(o, "ostore_s3_requests_total{{method=\"GET\"}} {}", self.s3_gets.load(Ordering::Relaxed));
         let _ = writeln!(o, "ostore_s3_requests_total{{method=\"HEAD\"}} {}", self.s3_heads.load(Ordering::Relaxed));
+        let _ = writeln!(o, "ostore_s3_requests_total{{method=\"PUT\"}} {}", self.s3_puts.load(Ordering::Relaxed));
+        let _ = writeln!(o, "ostore_s3_requests_total{{method=\"DELETE\"}} {}", self.s3_deletes.load(Ordering::Relaxed));
+        let _ = writeln!(o, "ostore_s3_requests_total{{method=\"LIST\"}} {}", self.s3_lists.load(Ordering::Relaxed));
         counter(o, "ostore_s3_denied_total", "S3-surface requests rejected by signature verification.", self.s3_denied.load(Ordering::Relaxed));
         counter(o, "ostore_s3_bytes_total", "Bytes streamed by the S3 surface.", self.s3_bytes.load(Ordering::Relaxed));
 

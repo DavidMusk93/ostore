@@ -1,6 +1,8 @@
 //! AWS Signature Version 4 verification (header-based auth).
 //!
-//! Only what an S3 `GetObject` / `HeadObject` needs: no bodies, no chunked
+//! Header-based SigV4 for S3-shaped reads and writes. No presigned query auth,
+//! no chunked `STREAMING-AWS4-HMAC-SHA256-PAYLOAD`. PUT accepts a declared
+//! `x-amz-content-sha256` of the body hex digest or `UNSIGNED-PAYLOAD`.
 //! signing, no presigned query auth. The canonical-request / string-to-sign /
 //! signing-key pipeline is exposed verbatim so the test suite can check it
 //! against the AWS signing test vectors.
@@ -15,6 +17,9 @@ use super::S3Auth;
 
 /// SHA-256 of the empty string; the payload hash of a bodyless request.
 pub const EMPTY_SHA256: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
+/// Declared in `x-amz-content-sha256` when the body is not hashed (HTTPS only).
+pub const UNSIGNED_PAYLOAD: &str = "UNSIGNED-PAYLOAD";
 
 /// Clock skew tolerated between the client's `x-amz-date` and ours.
 const MAX_SKEW_SECS: i64 = 900;

@@ -44,7 +44,7 @@ pub struct Entry {
 
 /// Names never exposed through listings: the meta dir itself (exactly
 /// `.ostore` at any depth) and in-flight atomic-upload temp files.
-fn hidden(name: &str) -> bool {
+pub(crate) fn hidden(name: &str) -> bool {
     name == paths::META_DIR || name.contains(".ostore-tmp-")
 }
 

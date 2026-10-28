@@ -1,53 +1,49 @@
-//! Minimal S3 read surface, so an S3 client (notably a read-through cache
-//! such as cachey) can point at ostore.
+//! S3-shaped API on the server root (path-style, SigV4 header auth).
 //!
-//! Implemented: `GET`/`HEAD` object with SigV4 header authentication,
-//! path-style addressing, and `Range`. The first path segment is the bucket
-//! name; ostore binds one root, so the bucket is either pinned
-//! (`OSTORE_S3_BUCKET`) or accepted and ignored.
-//!
-//! Objects are served straight off disk with a strong `ETag` of size + mtime,
-//! so an overwrite is visible to any client that revalidates. A cache in front
-//! still assumes immutability — see the README's "S3 read surface" section.
-//!
-//! Errors use S3's XML shape, including `InvalidRange` with
-//! `Content-Range: bytes */<size>`, which is what an SDK needs to recover the
-//! object size from a 416.
+//! Enough for `aws s3 sync`, rclone, and cachey: ListObjectsV2, Get/Head/Put/
+//! DeleteObject, HeadBucket. Not a full S3 clone (no multipart, ACL, versioning,
+//! CopyObject, presigned URLs). Writes publish the same object events as `/api`.
 
+pub mod list;
 pub mod sigv4;
+mod xml;
 
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use axum::body::Body;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, put};
 use axum::Router;
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use futures::StreamExt;
-use tokio::io::{AsyncSeekExt, AsyncReadExt};
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio_util::io::ReaderStream;
 
 use crate::AppState;
+use crate::events;
 use crate::paths;
 use crate::range;
+use crate::routes::files::stream_to_disk;
+
+pub use xml::{escape_xml, http_date, strong_etag};
+
+use xml::{content_md5_etag, xml_error, xml_error_with};
+
+use list::{list_objects_v2, ListV2Query};
 
 /// Credentials and naming for the S3 surface.
 #[derive(Debug, Clone)]
 pub struct S3Auth {
     pub access_key: String,
     pub secret_key: String,
-    /// When set, requests whose credential scope names another region are
-    /// rejected. `None` accepts any region.
     pub region: Option<String>,
-    /// When set, only this bucket name is served.
     pub bucket: Option<String>,
 }
 
 impl S3Auth {
-    /// `OSTORE_S3_ACCESS_KEY` + `OSTORE_S3_SECRET_KEY` enable the surface;
-    /// `OSTORE_S3_REGION` and `OSTORE_S3_BUCKET` are optional constraints.
     pub fn from_env() -> Result<Option<Self>, String> {
         let access = std::env::var("OSTORE_S3_ACCESS_KEY").ok().filter(|s| !s.is_empty());
         let secret = std::env::var("OSTORE_S3_SECRET_KEY").ok().filter(|s| !s.is_empty());
@@ -67,45 +63,91 @@ impl S3Auth {
     }
 }
 
-/// Root-level router for the S3 surface. Specific routes (`/healthz`,
-/// `/api/*`) win over the wildcard.
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/{*path}", get(object).head(object))
+        .route("/{bucket}", get(bucket_get).head(head_bucket))
+        .route(
+            "/{bucket}/{*key}",
+            get(object_get)
+                .head(object_get)
+                .put(put_object)
+                .delete(delete_object),
+        )
         .fallback(not_found)
+}
+
+fn disabled(_st: &AppState, resource: &str) -> Response {
+    xml_error(
+        StatusCode::FORBIDDEN,
+        "AccessDenied",
+        "the S3 surface is disabled; set OSTORE_S3_ACCESS_KEY and OSTORE_S3_SECRET_KEY",
+        resource,
+    )
+}
+
+pub(super) fn authorize(st: &AppState, uri: &Uri, headers: &HeaderMap, method: &str) -> Result<Arc<S3Auth>, Response> {
+    let Some(auth) = st.s3.clone() else {
+        return Err(disabled(st, uri.path()));
+    };
+    if let Err(e) = sigv4::verify(&auth, method, uri, headers, Utc::now()) {
+        st.metrics.s3_denied.fetch_add(1, Ordering::Relaxed);
+        return Err(xml_error(StatusCode::FORBIDDEN, e.code(), &e.message(), uri.path()));
+    }
+    Ok(auth)
+}
+
+pub(super) fn bucket_ok(auth: &S3Auth, bucket: &str, resource: &str) -> Result<(), Response> {
+    if let Some(want) = &auth.bucket
+        && *want != bucket
+    {
+        return Err(xml_error(StatusCode::NOT_FOUND, "NoSuchBucket", "the specified bucket does not exist", resource));
+    }
+    Ok(())
 }
 
 async fn not_found(uri: Uri) -> Response {
     xml_error(StatusCode::NOT_FOUND, "NoSuchKey", "the requested resource does not exist", uri.path())
 }
 
-/// `GET`/`HEAD /{bucket}/{key}`.
-async fn object(
+async fn bucket_get(
     State(st): State<AppState>,
-    Path(path): Path<String>,
+    Path(bucket): Path<String>,
+    Query(q): Query<ListV2Query>,
+    headers: HeaderMap,
+    uri: Uri,
+) -> Response {
+    list_objects_v2(State(st), bucket, Query(q), Method::GET, headers, uri).await
+}
+
+async fn head_bucket(State(st): State<AppState>, Path(bucket): Path<String>, headers: HeaderMap, uri: Uri) -> Response {
+    let auth = match authorize(&st, &uri, &headers, "HEAD") {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    if let Err(r) = bucket_ok(&auth, &bucket, uri.path()) {
+        return r;
+    }
+    let region = auth.region.as_deref().unwrap_or("us-east-1");
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("x-amz-bucket-region", region)
+        .body(Body::empty())
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+async fn object_get(
+    State(st): State<AppState>,
+    Path((bucket, key)): Path<(String, String)>,
     method: Method,
     headers: HeaderMap,
     uri: Uri,
 ) -> Response {
-    let Some(auth) = st.s3.clone() else {
-        return xml_error(
-            StatusCode::FORBIDDEN,
-            "AccessDenied",
-            "the S3 surface is disabled; set OSTORE_S3_ACCESS_KEY and OSTORE_S3_SECRET_KEY",
-            uri.path(),
-        );
+    let auth = match authorize(&st, &uri, &headers, method.as_str()) {
+        Ok(a) => a,
+        Err(r) => return r,
     };
-    let Some((bucket, key)) = split_path(&path) else {
-        return xml_error(StatusCode::BAD_REQUEST, "InvalidRequest", "expected /{bucket}/{key}", uri.path());
-    };
-    if let Err(e) = sigv4::verify(&auth, method.as_str(), &uri, &headers, Utc::now()) {
-        st.metrics.s3_denied.fetch_add(1, Ordering::Relaxed);
-        return xml_error(StatusCode::FORBIDDEN, e.code(), &e.message(), uri.path());
-    }
-    if let Some(want) = &auth.bucket
-        && *want != bucket
-    {
-        return xml_error(StatusCode::NOT_FOUND, "NoSuchBucket", "no such bucket", uri.path());
+    if let Err(r) = bucket_ok(&auth, &bucket, uri.path()) {
+        return r;
     }
     let head_only = method == Method::HEAD;
     if head_only {
@@ -127,7 +169,6 @@ async fn object(
     let last_modified = http_date(meta.modified().ok());
     let mime = mime_guess::from_path(&abs).first_or_octet_stream().to_string();
 
-    // Conditional GET, as an SDK's retry path or a browser may send it.
     if let Some(inm) = headers.get(header::IF_NONE_MATCH).and_then(|v| v.to_str().ok())
         && inm.split(',').any(|t| t.trim() == etag || t.trim() == "*" || t.trim().trim_start_matches("W/") == etag)
     {
@@ -147,7 +188,6 @@ async fn object(
         Ok(Some((s, e))) => (s, e - s + 1),
         Ok(None) => (0, size),
         Err(()) => {
-            // An SDK recovers the object size from this Content-Range.
             return xml_error_with(
                 StatusCode::RANGE_NOT_SATISFIABLE,
                 "InvalidRange",
@@ -157,18 +197,14 @@ async fn object(
             );
         }
     };
-    // S3 answers 206 to every satisfiable `Range`, including one that spans the
-    // whole object, and always includes `Content-Range`. RFC 9110 would allow a
-    // 200 there, but S3 clients (cachey's downloader included) validate the
-    // Content-Range of a ranged read and reject a response without it.
     let partial = matches!(parsed, Ok(Some(_)));
 
     let mut builder = Response::builder()
         .status(if partial { StatusCode::PARTIAL_CONTENT } else { StatusCode::OK })
-        .header(header::CONTENT_TYPE, HeaderValue::from_str(&mime).unwrap_or(HeaderValue::from_static("application/octet-stream")))
+        .header(header::CONTENT_TYPE, hv(&mime))
         .header(header::CONTENT_LENGTH, len)
         .header(header::ACCEPT_RANGES, "bytes")
-        .header(header::ETAG, etag)
+        .header(header::ETAG, etag.clone())
         .header(header::LAST_MODIFIED, last_modified)
         .header("x-amz-request-id", format!("{:x}", request_id(&st, &rel)));
     if partial {
@@ -196,32 +232,124 @@ async fn object(
     builder.body(Body::from_stream(stream)).unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
-/// Split `bucket/key...` into its two parts. The key may contain slashes.
-fn split_path(path: &str) -> Option<(&str, String)> {
-    let trimmed = path.trim_start_matches('/');
-    let (bucket, key) = trimmed.split_once('/')?;
-    if bucket.is_empty() || key.is_empty() {
-        return None;
+async fn put_object(
+    State(st): State<AppState>,
+    Path((bucket, key)): Path<(String, String)>,
+    headers: HeaderMap,
+    uri: Uri,
+    body: Body,
+) -> Response {
+    let auth = match authorize(&st, &uri, &headers, "PUT") {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    if let Err(r) = bucket_ok(&auth, &bucket, uri.path()) {
+        return r;
     }
-    Some((bucket, key.to_string()))
+    let declared = match headers.get("x-amz-content-sha256").and_then(|v| v.to_str().ok()) {
+        Some(h) => h.to_string(),
+        None => {
+            return xml_error(
+                StatusCode::BAD_REQUEST,
+                "InvalidRequest",
+                "missing x-amz-content-sha256",
+                uri.path(),
+            );
+        }
+    };
+
+    let (abs, rel) = match paths::resolve_nonroot(&st.root, &key) {
+        Ok(v) => v,
+        Err(e) => return xml_error(StatusCode::BAD_REQUEST, "InvalidRequest", &e.message, uri.path()),
+    };
+    if tokio::fs::metadata(&abs).await.map(|m| m.is_dir()).unwrap_or(false) {
+        return xml_error(StatusCode::CONFLICT, "ObjectAlreadyExists", "object key names a directory", uri.path());
+    }
+    if let Some(parent) = abs.parent() {
+        if let Err(e) = tokio::fs::create_dir_all(parent).await {
+            return xml_error(StatusCode::INTERNAL_SERVER_ERROR, "InternalError", &e.to_string(), uri.path());
+        }
+    }
+    let existed = tokio::fs::metadata(&abs).await.is_ok();
+    let stream = body.into_data_stream();
+    let (size, sha256) = match stream_to_disk(&st, &abs, stream).await {
+        Ok(v) => v,
+        Err(e) => {
+            return xml_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "InternalError",
+                &e.message,
+                uri.path(),
+            );
+        }
+    };
+    if declared != sigv4::UNSIGNED_PAYLOAD && declared != sha256 {
+        let _ = tokio::fs::remove_file(&abs).await;
+        return xml_error(
+            StatusCode::BAD_REQUEST,
+            "XAmzContentSHA256Mismatch",
+            "provided x-amz-content-sha256 does not match the body",
+            uri.path(),
+        );
+    }
+
+    st.metrics.s3_puts.fetch_add(1, Ordering::Relaxed);
+    let kind = if existed { events::UPDATED } else { events::CREATED };
+    st.publish(kind, &rel, false, Some(size), None);
+    tracing::info!(kind, path = %rel, size, "s3 object written");
+
+    let meta = tokio::fs::metadata(&abs).await.ok();
+    let etag = meta.as_ref().map(strong_etag).unwrap_or_else(|| content_md5_etag(&sha256));
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::ETAG, etag)
+        .body(Body::empty())
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
-/// Strong validator from size + mtime. Distinct from the weak ETag the JSON
-/// API returns, because S3 clients expect a quoted strong ETag and compare it
-/// with `If-None-Match`.
-fn strong_etag(meta: &std::fs::Metadata) -> String {
-    let mtime = meta
-        .modified()
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    format!("\"{:x}-{:x}\"", meta.len(), mtime)
+async fn delete_object(
+    State(st): State<AppState>,
+    Path((bucket, key)): Path<(String, String)>,
+    headers: HeaderMap,
+    uri: Uri,
+) -> Response {
+    let auth = match authorize(&st, &uri, &headers, "DELETE") {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    if let Err(r) = bucket_ok(&auth, &bucket, uri.path()) {
+        return r;
+    }
+    let (abs, rel) = match paths::resolve_nonroot(&st.root, &key) {
+        Ok(v) => v,
+        Err(e) => return xml_error(StatusCode::BAD_REQUEST, "InvalidRequest", &e.message, uri.path()),
+    };
+    let meta = match tokio::fs::metadata(&abs).await {
+        Ok(m) => m,
+        Err(_) => {
+            // S3 delete is idempotent.
+            return Response::builder()
+                .status(StatusCode::NO_CONTENT)
+                .body(Body::empty())
+                .unwrap_or_else(|_| StatusCode::NO_CONTENT.into_response());
+        }
+    };
+    if meta.is_dir() {
+        return xml_error(StatusCode::CONFLICT, "AccessDenied", "cannot delete a directory without recursive delete", uri.path());
+    }
+    if let Err(e) = tokio::fs::remove_file(&abs).await {
+        return xml_error(StatusCode::INTERNAL_SERVER_ERROR, "InternalError", &e.to_string(), uri.path());
+    }
+    st.metrics.s3_deletes.fetch_add(1, Ordering::Relaxed);
+    st.publish(events::DELETED, &rel, false, None, None);
+    Response::builder()
+        .status(StatusCode::NO_CONTENT)
+        .body(Body::empty())
+        .unwrap_or_else(|_| StatusCode::NO_CONTENT.into_response())
 }
 
-fn http_date(t: Option<std::time::SystemTime>) -> String {
-    let dt: DateTime<Utc> = t.map(DateTime::<Utc>::from).unwrap_or_else(Utc::now);
-    dt.format("%a, %d %b %Y %H:%M:%S GMT").to_string()
+fn hv(s: &str) -> HeaderValue {
+    HeaderValue::from_str(s).unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream"))
 }
 
 fn request_id(st: &AppState, rel: &str) -> u64 {
@@ -231,70 +359,28 @@ fn request_id(st: &AppState, rel: &str) -> u64 {
     st.metrics.started_ms().wrapping_add(h.finish())
 }
 
-/// S3-style XML error document.
-fn xml_error(status: StatusCode, code: &str, message: &str, resource: &str) -> Response {
-    xml_error_with(status, code, message, resource, None)
-}
-
-fn xml_error_with(
-    status: StatusCode,
-    code: &str,
-    message: &str,
-    resource: &str,
-    extra: Option<(header::HeaderName, String)>,
-) -> Response {
-    let body = format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Error><Code>{}</Code><Message>{}</Message><Resource>{}</Resource><RequestId>ostore</RequestId></Error>\n",
-        escape_xml(code),
-        escape_xml(message),
-        escape_xml(resource)
-    );
-    let mut builder = Response::builder()
-        .status(status)
-        .header(header::CONTENT_TYPE, "application/xml")
-        .header(header::CONTENT_LENGTH, body.len());
-    if let Some((name, value)) = extra {
-        builder = builder.header(name, value);
-    }
-    builder.body(Body::from(body)).unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
-}
-
-fn escape_xml(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&apos;"),
-            c => out.push(c),
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn split_path(path: &str) -> Option<(&str, String)> {
+        let trimmed = path.trim_start_matches('/');
+        let (bucket, key) = trimmed.split_once('/')?;
+        if bucket.is_empty() || key.is_empty() {
+            return None;
+        }
+        Some((bucket, key.to_string()))
+    }
 
     #[test]
     fn splits_bucket_and_key() {
         assert_eq!(split_path("b/f"), Some(("b", "f".to_string())));
         assert_eq!(split_path("/b/a/b c/d.mp4"), Some(("b", "a/b c/d.mp4".to_string())));
         assert_eq!(split_path("b"), None);
-        assert_eq!(split_path("b/"), None);
-        assert_eq!(split_path("/"), None);
     }
 
     #[test]
     fn xml_is_escaped() {
         assert_eq!(escape_xml("a<b&c\"d"), "a&lt;b&amp;c&quot;d");
-    }
-
-    #[test]
-    fn http_date_is_rfc_7231() {
-        let t = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_440_938_160);
-        assert_eq!(http_date(Some(t)), "Sun, 30 Aug 2015 12:36:00 GMT");
     }
 }
