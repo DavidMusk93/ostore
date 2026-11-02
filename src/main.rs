@@ -21,8 +21,22 @@ async fn main() {
             std::process::exit(2);
         }
     };
+    let cluster_cfg = match ostore::cluster::ClusterConfig::from_env() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("ostore: cluster config error: {e}");
+            std::process::exit(2);
+        }
+    };
+    let cluster_mgr = cluster_cfg.map(|c| std::sync::Arc::new(ostore::cluster::ClusterManager::new(c, cfg.root.clone())));
+
     let state = match ostore::s3::S3Auth::from_env() {
-        Ok(s3) => match AppState::with_s3(cfg.root.clone(), cfg.token.clone(), s3) {
+        Ok(s3) => match AppState::with_cluster_and_s3(
+            cfg.root.clone(),
+            cfg.token.clone(),
+            cluster_mgr.clone(),
+            s3,
+        ) {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("ostore: cannot initialize root {}: {e}", cfg.root.display());
@@ -34,6 +48,9 @@ async fn main() {
             std::process::exit(2);
         }
     };
+    if state.cluster.is_some() {
+        tracing::info!("Cluster control plane enabled");
+    }
     if state.s3.is_some() {
         tracing::info!("S3 read surface enabled");
     }
@@ -51,6 +68,9 @@ async fn main() {
     .unwrap_or(0);
     state.metrics.tmp_swept.store(swept as u64, std::sync::atomic::Ordering::Relaxed);
     let shutdown = state.shutdown.clone();
+    if let Some(cluster) = &state.cluster {
+        cluster.clone().start_probe_loop(shutdown.clone());
+    }
     let app = build_router(state);
     let listener = match tokio::net::TcpListener::bind((cfg.host.as_str(), cfg.port)).await {
         Ok(l) => l,

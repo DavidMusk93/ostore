@@ -1,5 +1,6 @@
 //! Router assembly.
 
+pub mod cluster;
 pub mod events;
 pub mod files;
 pub mod help;
@@ -51,6 +52,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/webhooks", post(webhooks::create).get(webhooks::list))
         .route("/webhooks/{id}", delete(webhooks::delete))
         .route("/metrics", get(metrics::handler))
+        .route("/cluster/nodes", get(cluster::get_nodes))
+        .route("/cluster/sync", post(cluster::trigger_sync))
         // Catch-all *inside* `/api` so unmatched API paths stay JSON and stay
         // behind the token; a nested router's own `fallback` is not consulted,
         // and the request would otherwise fall out to the S3 surface.
@@ -58,8 +61,12 @@ pub fn build_router(state: AppState) -> Router {
         .route_layer(middleware::from_fn_with_state(state.clone(), auth::require_auth));
 
     Router::new()
+        .route("/", get(crate::ui::handler))
+        .route("/ostore", get(crate::ui::handler))
+        .route("/ostore/", get(crate::ui::handler))
         .route("/healthz", get(|| async { Json(json!({ "status": "ok" })) }))
-        .nest("/api", api)
+        .nest("/api", api.clone())
+        .nest("/ostore/api", api)
         // S3 read surface (`/{bucket}/{key}`): static routes above win.
         .merge(s3::router())
         .layer(middleware::from_fn_with_state(state.clone(), metrics::track))

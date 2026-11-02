@@ -664,3 +664,43 @@ async fn thumbnail_rejects_non_images() {
     let resp = f.app.clone().oneshot(req("GET", "/api/thumb/fake.jpg")).await.unwrap();
     assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
 }
+
+#[tokio::test]
+async fn ui_serves_html_at_root_and_ostore() {
+    let f = fixture();
+    let resp = f.app.clone().oneshot(Request::builder().uri("/").body(Body::empty()).unwrap()).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = body_bytes(resp).await;
+    let html = String::from_utf8_lossy(&bytes);
+    assert!(html.contains("ostore"));
+    assert!(html.contains("Distributed Object Storage"));
+
+    let resp_ostore = f.app.clone().oneshot(Request::builder().uri("/ostore").body(Body::empty()).unwrap()).await.unwrap();
+    assert_eq!(resp_ostore.status(), StatusCode::OK);
+
+    let resp_ostore_slash = f.app.clone().oneshot(Request::builder().uri("/ostore/").body(Body::empty()).unwrap()).await.unwrap();
+    assert_eq!(resp_ostore_slash.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn cluster_nodes_endpoint_standalone() {
+    let f = fixture();
+    let resp = f.app.clone().oneshot(req("GET", "/api/cluster/nodes")).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let j = body_json(resp).await;
+    let nodes = j["nodes"].as_array().unwrap();
+    assert_eq!(nodes.len(), 1);
+    assert_eq!(nodes[0]["is_local"], true);
+    assert_eq!(nodes[0]["healthy"], true);
+}
+
+#[tokio::test]
+async fn ostore_prefix_routes_api() {
+    let f = fixture();
+    put_file(&f.app, "doc.txt", b"ostore path test").await;
+    let resp = f.app.clone().oneshot(req("GET", "/ostore/api/list")).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let j = body_json(resp).await;
+    assert_eq!(j["entries"].as_array().unwrap().len(), 1);
+}
+

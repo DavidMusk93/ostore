@@ -6,6 +6,7 @@
 //! metrics.
 
 pub mod auth;
+pub mod cluster;
 pub mod config;
 pub mod error;
 pub mod events;
@@ -14,6 +15,7 @@ pub mod paths;
 pub mod range;
 pub mod routes;
 pub mod s3;
+pub mod ui;
 pub mod webhooks;
 
 use std::io;
@@ -53,6 +55,8 @@ pub struct AppState {
     pub thumb_permits: Arc<Semaphore>,
     /// Credentials for the S3 read surface; `None` disables it.
     pub s3: Option<Arc<S3Auth>>,
+    /// Multi-node storage cluster manager (None in standalone mode).
+    pub cluster: Option<Arc<crate::cluster::ClusterManager>>,
 }
 
 impl AppState {
@@ -64,6 +68,16 @@ impl AppState {
 
     /// [`AppState::new`], plus optional S3-surface credentials.
     pub fn with_s3(root: PathBuf, token: String, s3: Option<S3Auth>) -> io::Result<Self> {
+        Self::with_cluster_and_s3(root, token, None, s3)
+    }
+
+    /// [`AppState::new`], plus cluster manager and optional S3 credentials.
+    pub fn with_cluster_and_s3(
+        root: PathBuf,
+        token: String,
+        cluster: Option<Arc<crate::cluster::ClusterManager>>,
+        s3: Option<S3Auth>,
+    ) -> io::Result<Self> {
         std::fs::create_dir_all(&root)?;
         std::fs::create_dir_all(root.join(".ostore"))?;
         let metrics = Arc::new(Metrics::new());
@@ -78,6 +92,7 @@ impl AppState {
                 std::thread::available_parallelism().map(|n| n.get().saturating_sub(1).max(1)).unwrap_or(1),
             )),
             s3: s3.map(Arc::new),
+            cluster,
         })
     }
 

@@ -233,7 +233,7 @@ fn gauge_f(o: &mut String, name: &str, help: &str, v: f64) {
     let _ = writeln!(o, "# HELP {name} {help}\n# TYPE {name} gauge\n{name} {v}");
 }
 
-fn disk_space(root: &Path) -> Option<(u64, u64)> {
+pub fn disk_space(root: &Path) -> Option<(u64, u64)> {
     use std::ffi::CString;
     use std::os::unix::ffi::OsStrExt;
     let c = CString::new(root.as_os_str().as_bytes()).ok()?;

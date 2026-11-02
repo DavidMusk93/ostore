@@ -113,6 +113,9 @@ pub async fn put_file(
     let (size, sha256) = stream_to_disk(&st, &abs, stream).await?;
     let kind = if existed { events::UPDATED } else { events::CREATED };
     st.publish(kind, &rel, false, Some(size), None);
+    if let Some(cluster) = &st.cluster {
+        cluster.clone().replicate_put_bg(rel.clone(), abs.clone());
+    }
     tracing::info!(kind, path = %rel, size, "object written");
     Ok(Json(json!({ "path": rel, "size": size, "sha256": sha256 })))
 }
@@ -159,6 +162,9 @@ pub async fn upload_multipart(
         let (size, _sha256) = stream_to_disk(&st, &abs, stream).await?;
         let kind = if existed { events::UPDATED } else { events::CREATED };
         st.publish(kind, &rel, false, Some(size), None);
+        if let Some(cluster) = &st.cluster {
+            cluster.clone().replicate_put_bg(rel.clone(), abs.clone());
+        }
         tracing::info!(kind, path = %rel, size, "multipart object written");
         uploaded.push(json!({ "path": rel, "size": size }));
     }
@@ -265,6 +271,9 @@ pub async fn delete_file(
         tokio::fs::remove_file(&abs).await.map_err(|e| io_err(e, &rel))?;
     }
     st.publish(events::DELETED, &rel, meta.is_dir(), None, None);
+    if let Some(cluster) = &st.cluster {
+        cluster.clone().replicate_delete_bg(rel.clone(), truthy(&q.recursive));
+    }
     tracing::info!(path = %rel, "object deleted");
     Ok(Json(json!({ "deleted": rel })))
 }
