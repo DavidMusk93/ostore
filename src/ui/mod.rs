@@ -1,8 +1,11 @@
 //! Modern Single-Page Application (SPA) Web UI for ostore.
 //!
-//! Embedded directly into the binary with zero runtime external dependencies.
-//! Provides storage browsing, drag-and-drop upload, cluster status, media preview,
-//! and automatic base-path adaptation (supporting both `/` and `/ostore`).
+//! Conforming to Apple-design language with an authentic light theme:
+//! - Background #F5F5F7, Cards rgba(255,255,255,0.88), Ink #1D1D1F, Accent #0071E3.
+//! - Naming topology: Main & Follower nodes.
+//! - Per-file replica topology inspector with cluster distribution status.
+//! - SSE-only incremental reactive updates (zero polling).
+//! - Virtual/chunked lazy rendering for 60fps listing performance.
 
 use axum::response::Html;
 
@@ -15,48 +18,73 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ostore - Object Storage</title>
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%236366f1'><path d='M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5'/></svg>">
+  <title>ostore — Distributed Object Storage</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%230071E3'><path d='M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5'/></svg>">
   <style>
     :root {
-      --bg: #090d16;
-      --card-bg: rgba(22, 29, 47, 0.75);
-      --card-border: rgba(255, 255, 255, 0.08);
-      --card-hover: rgba(30, 41, 67, 0.85);
-      --text-main: #f1f5f9;
-      --text-muted: #94a3b8;
-      --accent: #6366f1;
-      --accent-hover: #4f46e5;
-      --accent-glow: rgba(99, 102, 241, 0.25);
-      --success: #10b981;
-      --success-glow: rgba(16, 185, 129, 0.2);
-      --danger: #ef4444;
-      --warning: #f59e0b;
-      --border-radius: 14px;
-      --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      --bg: #F5F5F7;
+      --card-bg: rgba(255, 255, 255, 0.88);
+      --card-border: rgba(0, 0, 0, 0.08);
+      --card-hover: rgba(0, 0, 0, 0.025);
+      --ink: #1D1D1F;
+      --ink-secondary: #86868B;
+      --ink-tertiary: #AEAEB2;
+      --accent: #0071E3;
+      --accent-hover: #0077ED;
+      --accent-soft: rgba(0, 113, 227, 0.1);
+      --success: #34C759;
+      --success-soft: rgba(52, 199, 89, 0.12);
+      --warning: #FF9500;
+      --warning-soft: rgba(255, 149, 0, 0.12);
+      --danger: #FF3B30;
+      --danger-soft: rgba(255, 59, 48, 0.12);
+      --radius-sm: 8px;
+      --radius-md: 14px;
+      --radius-lg: 20px;
+      --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.04), 0 4px 12px rgba(0, 0, 0, 0.02);
+      --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+      --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+      --font-mono: ui-monospace, "SF Mono", Menlo, Monaco, Consolas, monospace;
     }
 
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      font-family: var(--font);
+      font-family: var(--font-sans);
       background-color: var(--bg);
-      color: var(--text-main);
+      color: var(--ink);
       min-height: 100vh;
       display: flex;
       flex-direction: column;
-      background-image: 
-        radial-gradient(at 0% 0%, rgba(99, 102, 241, 0.12) 0px, transparent 50%),
-        radial-gradient(at 100% 100%, rgba(16, 185, 129, 0.08) 0px, transparent 50%);
-      background-attachment: fixed;
+      -webkit-font-smoothing: antialiased;
     }
 
-    /* Container */
     .container {
-      max-width: 1240px;
+      max-width: 1260px;
       margin: 0 auto;
-      padding: 24px 20px;
+      padding: 32px 24px;
       width: 100%;
       flex: 1;
+    }
+
+    /* Eyebrow numbering */
+    .eyebrow {
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--ink-secondary);
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .eyebrow::after {
+      content: "";
+      flex: 1;
+      height: 1px;
+      background: var(--card-border);
     }
 
     /* Header */
@@ -65,8 +93,8 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       justify-content: space-between;
       align-items: center;
       padding-bottom: 24px;
+      margin-bottom: 28px;
       border-bottom: 1px solid var(--card-border);
-      margin-bottom: 24px;
       flex-wrap: wrap;
       gap: 16px;
     }
@@ -76,100 +104,104 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       align-items: center;
       gap: 12px;
       text-decoration: none;
-      color: var(--text-main);
+      color: var(--ink);
     }
 
-    .brand-icon {
-      width: 38px;
-      height: 38px;
-      background: linear-gradient(135deg, #6366f1, #3b82f6);
+    .brand-logo {
+      width: 36px;
+      height: 36px;
+      background: #FFFFFF;
+      border: 1px solid var(--card-border);
       border-radius: 10px;
       display: flex;
       align-items: center;
       justify-content: center;
-      box-shadow: 0 4px 12px var(--accent-glow);
+      box-shadow: var(--shadow-sm);
     }
 
-    .brand-icon svg { width: 22px; height: 22px; fill: white; }
-    .brand-title { font-size: 1.35rem; font-weight: 700; letter-spacing: -0.5px; }
-    .brand-subtitle { font-size: 0.75rem; color: var(--text-muted); font-weight: 500; }
+    .brand-logo svg { width: 20px; height: 20px; fill: var(--accent); }
+    .brand-title { font-size: 1.25rem; font-weight: 600; letter-spacing: -0.02em; }
+    .brand-subtitle { font-size: 0.76rem; color: var(--ink-secondary); }
 
     .header-actions {
       display: flex;
       align-items: center;
-      gap: 12px;
-      flex-wrap: wrap;
+      gap: 10px;
     }
 
-    .badge {
+    .status-pill {
       display: inline-flex;
       align-items: center;
       gap: 6px;
       padding: 6px 12px;
-      border-radius: 999px;
-      font-size: 0.78rem;
-      font-weight: 600;
-      background: rgba(255, 255, 255, 0.06);
+      border-radius: 980px;
+      font-size: 0.75rem;
+      font-family: var(--font-mono);
+      background: #FFFFFF;
       border: 1px solid var(--card-border);
+      color: var(--ink-secondary);
+      box-shadow: var(--shadow-sm);
     }
 
-    .badge-dot {
-      width: 8px;
-      height: 8px;
+    .status-dot {
+      width: 7px;
+      height: 7px;
       border-radius: 50%;
-      background-color: var(--success);
-      box-shadow: 0 0 8px var(--success);
+      background: var(--success);
+      box-shadow: 0 0 6px rgba(52, 199, 89, 0.4);
+    }
+
+    .status-dot.disconnected {
+      background: var(--danger);
+      box-shadow: 0 0 6px rgba(255, 59, 48, 0.4);
     }
 
     .btn {
       display: inline-flex;
       align-items: center;
-      gap: 8px;
-      padding: 8px 16px;
-      border-radius: 10px;
-      font-size: 0.85rem;
-      font-weight: 600;
+      gap: 6px;
+      padding: 7px 14px;
+      border-radius: var(--radius-sm);
+      font-size: 0.82rem;
+      font-weight: 500;
       cursor: pointer;
       border: 1px solid var(--card-border);
-      background: var(--card-bg);
-      color: var(--text-main);
-      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-      backdrop-filter: blur(12px);
+      background: #FFFFFF;
+      color: var(--ink);
+      transition: all 0.15s ease;
+      box-shadow: var(--shadow-sm);
     }
 
     .btn:hover {
-      background: var(--card-hover);
-      transform: translateY(-1px);
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+      background: #F9F9FB;
+      border-color: rgba(0, 0, 0, 0.15);
     }
 
     .btn-primary {
-      background: linear-gradient(135deg, var(--accent), #4f46e5);
-      border-color: rgba(255, 255, 255, 0.15);
-      color: white;
-      box-shadow: 0 4px 14px var(--accent-glow);
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #FFFFFF;
+      box-shadow: 0 2px 8px rgba(0, 113, 227, 0.25);
     }
 
     .btn-primary:hover {
-      background: linear-gradient(135deg, #4f46e5, #4338ca);
-      box-shadow: 0 6px 20px var(--accent-glow);
+      background: var(--accent-hover);
     }
 
-    /* Cluster Status Card */
-    .cluster-card {
+    /* Panels */
+    .panel {
       background: var(--card-bg);
       border: 1px solid var(--card-border);
-      border-radius: var(--border-radius);
-      padding: 20px;
-      margin-bottom: 24px;
-      backdrop-filter: blur(12px);
-      display: flex;
-      flex-direction: column;
-      gap: 16px;
-      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+      border-radius: var(--radius-md);
+      backdrop-filter: blur(20px);
+      box-shadow: var(--shadow-sm);
+      margin-bottom: 28px;
+      overflow: hidden;
     }
 
-    .cluster-header {
+    .panel-header {
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--card-border);
       display: flex;
       justify-content: space-between;
       align-items: center;
@@ -177,458 +209,405 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       gap: 12px;
     }
 
-    .cluster-title {
-      font-size: 1rem;
-      font-weight: 700;
+    .panel-title {
+      font-size: 0.95rem;
+      font-weight: 600;
+      letter-spacing: -0.01em;
       display: flex;
       align-items: center;
       gap: 8px;
     }
 
-    .progress-bar-container {
-      width: 100%;
-      height: 8px;
-      background: rgba(255, 255, 255, 0.08);
-      border-radius: 999px;
-      overflow: hidden;
-    }
-
-    .progress-bar-fill {
-      height: 100%;
-      background: linear-gradient(90deg, #6366f1, #10b981);
-      border-radius: 999px;
-      width: 0%;
-      transition: width 0.6s ease;
-    }
-
-    .nodes-grid {
+    /* Topology Layout */
+    .topology-wrap {
+      padding: 20px;
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-      gap: 14px;
+      grid-template-columns: 1fr 360px;
+      gap: 20px;
     }
 
-    .node-item {
-      background: rgba(255, 255, 255, 0.03);
+    @media (max-width: 960px) {
+      .topology-wrap { grid-template-columns: 1fr; }
+    }
+
+    .topo-canvas-container {
+      background: #FFFFFF;
       border: 1px solid var(--card-border);
-      border-radius: 10px;
-      padding: 14px;
+      border-radius: var(--radius-sm);
+      min-height: 220px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .topo-cards-grid {
       display: flex;
       flex-direction: column;
-      gap: 8px;
-      transition: border-color 0.2s ease;
+      gap: 10px;
     }
 
-    .node-item:hover {
-      border-color: rgba(99, 102, 241, 0.4);
+    .topo-card {
+      background: #FFFFFF;
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius-sm);
+      padding: 12px 14px;
+      box-shadow: var(--shadow-sm);
     }
 
-    .node-item-top {
+    .topo-card-head {
       display: flex;
       justify-content: space-between;
       align-items: center;
+      margin-bottom: 6px;
     }
 
-    .node-name { font-weight: 600; font-size: 0.88rem; }
-    .node-tag {
-      font-size: 0.7rem;
+    .topo-card-title {
+      font-size: 0.84rem;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .topo-card-badge {
+      font-size: 0.68rem;
+      font-family: var(--font-mono);
       padding: 2px 6px;
       border-radius: 4px;
-      background: rgba(99, 102, 241, 0.15);
-      color: #a5b4fc;
+      background: rgba(0, 0, 0, 0.04);
+      color: var(--ink-secondary);
     }
 
-    .node-metrics {
-      font-size: 0.78rem;
-      color: var(--text-muted);
+    .topo-card-meta {
+      font-size: 0.75rem;
+      color: var(--ink-secondary);
       display: flex;
       justify-content: space-between;
+      margin-bottom: 6px;
+      font-family: var(--font-mono);
     }
 
-    /* Main Explorer Card */
-    .explorer-card {
-      background: var(--card-bg);
-      border: 1px solid var(--card-border);
-      border-radius: var(--border-radius);
+    .meter-bar {
+      height: 4px;
+      background: rgba(0, 0, 0, 0.05);
+      border-radius: 2px;
       overflow: hidden;
-      backdrop-filter: blur(12px);
-      box-shadow: 0 8px 30px rgba(0, 0, 0, 0.25);
     }
 
-    /* Explorer Controls */
-    .explorer-controls {
-      padding: 16px 20px;
+    .meter-fill {
+      height: 100%;
+      background: var(--accent);
+      border-radius: 2px;
+    }
+
+    /* Distribution Spectrum */
+    .spectrum-panel {
+      padding: 14px 20px;
+      border-top: 1px solid var(--card-border);
+      background: rgba(255, 255, 255, 0.5);
+    }
+
+    .spectrum-bar {
+      height: 6px;
+      border-radius: 980px;
+      background: rgba(0, 0, 0, 0.06);
+      display: flex;
+      overflow: hidden;
+      margin-bottom: 10px;
+    }
+
+    .spectrum-segment { height: 100%; transition: width 0.3s; }
+
+    .spectrum-legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 16px;
+      font-size: 0.74rem;
+      color: var(--ink-secondary);
+    }
+
+    .spectrum-legend-item {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .legend-dot { width: 7px; height: 7px; border-radius: 2px; }
+
+    /* Explorer View */
+    .explorer-bar {
+      padding: 12px 20px;
+      border-bottom: 1px solid var(--card-border);
       display: flex;
       justify-content: space-between;
       align-items: center;
-      border-bottom: 1px solid var(--card-border);
       flex-wrap: wrap;
-      gap: 14px;
+      gap: 12px;
     }
 
     .breadcrumbs {
       display: flex;
       align-items: center;
-      gap: 6px;
-      font-size: 0.9rem;
+      gap: 4px;
+      font-size: 0.85rem;
+      font-family: var(--font-mono);
       flex-wrap: wrap;
     }
 
-    .breadcrumb-item {
-      color: var(--accent);
+    .crumb-link {
+      color: var(--ink-secondary);
       cursor: pointer;
       text-decoration: none;
-      font-weight: 500;
-      padding: 2px 6px;
-      border-radius: 6px;
-      transition: background 0.15s;
+      padding: 3px 6px;
+      border-radius: 4px;
+      transition: all 0.12s;
     }
 
-    .breadcrumb-item:hover {
-      background: rgba(99, 102, 241, 0.12);
+    .crumb-link:hover {
+      color: var(--ink);
+      background: rgba(0, 0, 0, 0.04);
     }
 
-    .breadcrumb-separator {
-      color: var(--text-muted);
-      font-size: 0.8rem;
-    }
-
-    .explorer-actions {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      flex-wrap: wrap;
-    }
-
-    .search-box {
-      position: relative;
-      display: flex;
-      align-items: center;
+    .crumb-sep {
+      color: var(--ink-tertiary);
+      font-size: 0.75rem;
     }
 
     .search-input {
-      background: rgba(0, 0, 0, 0.25);
+      background: #FFFFFF;
       border: 1px solid var(--card-border);
-      border-radius: 8px;
-      padding: 7px 12px 7px 32px;
-      color: var(--text-main);
-      font-size: 0.85rem;
+      border-radius: var(--radius-sm);
+      padding: 6px 12px;
+      color: var(--ink);
+      font-size: 0.82rem;
+      width: 180px;
       outline: none;
       transition: all 0.2s;
-      width: 180px;
     }
 
     .search-input:focus {
       width: 240px;
       border-color: var(--accent);
-      box-shadow: 0 0 0 2px var(--accent-glow);
+      box-shadow: 0 0 0 2px var(--accent-soft);
     }
 
-    .search-icon {
-      position: absolute;
-      left: 10px;
-      width: 14px;
-      height: 14px;
-      fill: var(--text-muted);
-      pointer-events: none;
-    }
-
-    /* Dropzone area */
-    .dropzone-overlay {
+    /* Table */
+    .table-viewport {
+      max-height: 600px;
+      overflow-y: auto;
       position: relative;
     }
 
-    .dropzone-overlay.drag-over::after {
-      content: "Drop files here to upload";
-      position: absolute;
-      inset: 0;
-      background: rgba(15, 23, 42, 0.92);
-      border: 2px dashed var(--accent);
-      border-radius: var(--border-radius);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 1.25rem;
-      font-weight: 600;
-      color: var(--accent);
-      z-index: 50;
-      backdrop-filter: blur(4px);
-    }
-
-    /* File Table */
     .file-table {
       width: 100%;
       border-collapse: collapse;
       text-align: left;
-      font-size: 0.88rem;
+      font-size: 0.84rem;
     }
 
     .file-table th {
-      padding: 12px 20px;
-      color: var(--text-muted);
-      font-weight: 600;
-      font-size: 0.78rem;
+      position: sticky;
+      top: 0;
+      background: #FAFAFC;
+      padding: 10px 20px;
+      color: var(--ink-secondary);
+      font-weight: 500;
+      font-size: 0.72rem;
       text-transform: uppercase;
-      letter-spacing: 0.5px;
+      letter-spacing: 0.05em;
       border-bottom: 1px solid var(--card-border);
+      z-index: 10;
     }
 
-    .file-table tr {
-      border-bottom: 1px solid rgba(255, 255, 255, 0.04);
-      transition: background 0.15s ease;
+    .file-row {
+      border-bottom: 1px solid rgba(0, 0, 0, 0.04);
+      transition: background 0.12s;
     }
 
-    .file-table tbody tr:hover {
+    .file-row:hover {
       background: var(--card-hover);
     }
 
-    .file-table td {
-      padding: 12px 20px;
+    .file-row td {
+      padding: 10px 20px;
       vertical-align: middle;
     }
 
-    .file-name-cell {
+    .name-cell {
       display: flex;
       align-items: center;
-      gap: 12px;
-      font-weight: 500;
+      gap: 10px;
       cursor: pointer;
+      font-weight: 500;
     }
 
-    .file-icon {
-      width: 24px;
-      height: 24px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
+    .name-cell svg {
+      width: 16px;
+      height: 16px;
       flex-shrink: 0;
     }
 
-    .file-icon svg { width: 20px; height: 20px; }
+    .meta-mono {
+      font-family: var(--font-mono);
+      font-size: 0.76rem;
+      color: var(--ink-secondary);
+    }
 
-    .sha-badge {
+    /* Per-file Replica Status Pill */
+    .replica-pill {
       display: inline-flex;
       align-items: center;
-      gap: 4px;
-      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-      font-size: 0.75rem;
-      padding: 2px 6px;
-      background: rgba(255, 255, 255, 0.05);
-      border-radius: 4px;
-      color: var(--text-muted);
+      gap: 5px;
+      padding: 2px 8px;
+      border-radius: 980px;
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      font-weight: 500;
       cursor: pointer;
-      transition: all 0.2s;
+      transition: all 0.15s;
     }
 
-    .sha-badge:hover {
-      background: rgba(99, 102, 241, 0.2);
-      color: #c7d2fe;
+    .replica-pill.synced {
+      background: var(--success-soft);
+      color: #248A3D;
     }
 
-    .table-actions {
+    .replica-pill.degraded {
+      background: var(--warning-soft);
+      color: #B25E00;
+    }
+
+    .replica-pill:hover {
+      filter: brightness(0.95);
+    }
+
+    .sha-tag {
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      padding: 2px 6px;
+      background: rgba(0, 0, 0, 0.04);
+      border-radius: 4px;
+      color: var(--ink-secondary);
+      cursor: pointer;
+    }
+
+    .sha-tag:hover {
+      color: var(--ink);
+      background: rgba(0, 0, 0, 0.08);
+    }
+
+    /* Row actions: Controls on intent (hover only) */
+    .row-actions {
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 6px;
       justify-content: flex-end;
+      opacity: 0;
+      transition: opacity 0.15s ease;
     }
 
-    .action-btn {
+    .file-row:hover .row-actions {
+      opacity: 1;
+    }
+
+    .icon-btn {
       background: transparent;
       border: none;
+      padding: 5px;
+      border-radius: 4px;
       cursor: pointer;
-      padding: 6px;
-      border-radius: 6px;
-      color: var(--text-muted);
-      transition: all 0.15s;
+      color: var(--ink-secondary);
       display: flex;
       align-items: center;
       justify-content: center;
+      transition: all 0.12s;
     }
 
-    .action-btn:hover {
-      background: rgba(255, 255, 255, 0.1);
-      color: var(--text-main);
+    .icon-btn:hover {
+      color: var(--ink);
+      background: rgba(0, 0, 0, 0.06);
     }
 
-    .action-btn.btn-delete:hover {
-      background: rgba(239, 68, 68, 0.2);
+    .icon-btn.btn-delete:hover {
       color: var(--danger);
+      background: var(--danger-soft);
     }
 
-    .empty-state {
-      padding: 48px 20px;
-      text-align: center;
-      color: var(--text-muted);
-    }
-
-    /* Upload Task Drawer / Floating Toast */
-    .upload-toast-panel {
-      position: fixed;
-      bottom: 24px;
-      right: 24px;
-      width: 340px;
-      background: #111827;
-      border: 1px solid var(--card-border);
-      border-radius: 12px;
-      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
-      z-index: 100;
-      padding: 16px;
-      display: none;
-      flex-direction: column;
-      gap: 10px;
-    }
-
-    .upload-toast-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      font-size: 0.85rem;
-      font-weight: 600;
-    }
-
-    .upload-item {
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-      font-size: 0.78rem;
-    }
-
-    .upload-item-name {
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-
-    .upload-progress {
-      height: 4px;
-      background: rgba(255, 255, 255, 0.1);
-      border-radius: 999px;
-      overflow: hidden;
-    }
-
-    .upload-progress-fill {
-      height: 100%;
-      background: var(--accent);
-      width: 0%;
-      transition: width 0.2s;
-    }
-
-    /* Modal / Dialog */
-    .modal-overlay {
+    /* Modals & Backdrops */
+    .backdrop {
       position: fixed;
       inset: 0;
-      background: rgba(0, 0, 0, 0.75);
-      backdrop-filter: blur(6px);
+      background: rgba(0, 0, 0, 0.45);
+      backdrop-filter: blur(10px);
+      z-index: 500;
       display: none;
       align-items: center;
       justify-content: center;
-      z-index: 200;
       padding: 20px;
     }
 
-    .modal-content {
-      background: #131c31;
+    .dialog-box {
+      background: #FFFFFF;
       border: 1px solid var(--card-border);
-      border-radius: var(--border-radius);
+      border-radius: var(--radius-md);
       padding: 24px;
       width: 100%;
-      max-width: 520px;
-      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5);
+      max-width: 500px;
+      box-shadow: var(--shadow-md);
+    }
+
+    .dialog-box h3 {
+      font-size: 1.05rem;
+      font-weight: 600;
+      margin-bottom: 12px;
+    }
+
+    /* Per-file Topology Inspector */
+    .file-topo-box {
+      max-width: 620px;
+    }
+
+    .file-topo-flow {
       display: flex;
       flex-direction: column;
-      gap: 16px;
-    }
-
-    .modal-title { font-size: 1.15rem; font-weight: 700; }
-    .modal-input {
-      width: 100%;
-      background: rgba(0, 0, 0, 0.3);
-      border: 1px solid var(--card-border);
-      border-radius: 8px;
-      padding: 10px 14px;
-      color: var(--text-main);
-      font-size: 0.9rem;
-      outline: none;
-    }
-    .modal-input:focus { border-color: var(--accent); }
-
-    .modal-actions {
-      display: flex;
-      justify-content: flex-end;
-      gap: 10px;
-    }
-
-    /* Media Preview Modal */
-    .preview-modal-content {
-      max-width: 90vw;
-      max-height: 90vh;
-      width: auto;
-      background: #0f172a;
-      padding: 16px;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
       gap: 12px;
+      margin: 16px 0;
     }
 
-    .preview-media-container {
-      max-width: 85vw;
-      max-height: 75vh;
-      overflow: auto;
+    .file-node-row {
       display: flex;
-      justify-content: center;
-    }
-
-    .preview-media-container img {
-      max-width: 100%;
-      max-height: 75vh;
-      object-fit: contain;
-      border-radius: 8px;
-    }
-
-    .preview-media-container video {
-      max-width: 100%;
-      max-height: 75vh;
-      border-radius: 8px;
-      outline: none;
-    }
-
-    .preview-media-container pre {
-      background: #050811;
-      padding: 16px;
-      border-radius: 8px;
-      font-family: ui-monospace, SFMono-Regular, monospace;
-      font-size: 0.85rem;
-      white-space: pre-wrap;
-      max-height: 70vh;
-      overflow-y: auto;
-      width: 80vw;
-      color: #e2e8f0;
+      justify-content: space-between;
+      align-items: center;
+      padding: 10px 14px;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--card-border);
+      background: #F9F9FB;
     }
 
     /* Toast */
-    .toast-msg {
+    .toast {
       position: fixed;
       bottom: 24px;
-      left: 50%;
-      transform: translateX(-50%);
-      background: rgba(16, 185, 129, 0.95);
-      color: white;
-      padding: 8px 18px;
-      border-radius: 999px;
-      font-size: 0.85rem;
-      font-weight: 600;
-      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
+      right: 24px;
+      background: #FFFFFF;
+      border: 1px solid var(--card-border);
+      padding: 10px 18px;
+      border-radius: var(--radius-sm);
+      font-size: 0.82rem;
+      box-shadow: var(--shadow-md);
       display: none;
-      z-index: 300;
+      z-index: 1000;
+      align-items: center;
+      gap: 8px;
     }
   </style>
 </head>
 <body>
-  <div class="container dropzone-overlay" id="mainDropzone">
+  <div class="container">
     <!-- Header -->
     <header>
       <a href="#" class="brand" onclick="navigate(''); return false;">
-        <div class="brand-icon">
+        <div class="brand-logo">
           <svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
         </div>
         <div>
@@ -638,170 +617,539 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       </a>
 
       <div class="header-actions">
-        <div class="badge" id="clusterBadge">
-          <span class="badge-dot"></span>
-          <span id="clusterBadgeText">Checking cluster...</span>
+        <div class="status-pill">
+          <span class="status-dot" id="sseDot"></span>
+          <span id="sseStatus">SSE Stream Ready</span>
         </div>
         <button class="btn" onclick="openTokenModal()">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-          <span id="tokenBtnText">Set Token</span>
+          <span id="tokenStatusText">Auth Token</span>
         </button>
-        <button class="btn" onclick="refreshAll()">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-          Refresh
+        <button class="btn btn-primary" onclick="triggerSync()">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+          Sync Followers
         </button>
       </div>
     </header>
 
-    <!-- Cluster Overview Card -->
-    <section class="cluster-card" id="clusterCard">
-      <div class="cluster-header">
-        <div class="cluster-title">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
-          Storage Fleet & Node Capacity
+    <!-- 01 . CLUSTER TOPOLOGY GRAPH -->
+    <div class="eyebrow">01 . Main & Follower Fleet Topology</div>
+    <section class="panel">
+      <div class="panel-header">
+        <span class="panel-title">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+          Topology & Replication Network
+        </span>
+        <span style="font-family: var(--font-mono); font-size: 0.76rem; color: var(--ink-secondary);" id="clusterCapacityText">
+          Loading topology...
+        </span>
+      </div>
+
+      <div class="topology-wrap">
+        <!-- SVG Canvas for Main -> Followers -->
+        <div class="topo-canvas-container">
+          <svg id="topoCanvas" width="100%" height="220" viewBox="0 0 540 220" style="overflow: visible;">
+            <!-- Dynamically generated SVG -->
+          </svg>
+        </div>
+
+        <!-- Node Status Cards -->
+        <div class="topo-cards-grid" id="topoCardsList"></div>
+      </div>
+
+      <!-- Namespace Distribution Spectrum -->
+      <div class="spectrum-panel">
+        <div style="display: flex; justify-content: space-between; font-size: 0.74rem; color: var(--ink-secondary); margin-bottom: 6px; font-family: var(--font-mono);">
+          <span>DATA DISTRIBUTION SPECTRUM</span>
+          <span id="spectrumSummaryText">-- objects</span>
+        </div>
+        <div class="spectrum-bar" id="spectrumBar"></div>
+        <div class="spectrum-legend" id="spectrumLegend"></div>
+      </div>
+    </section>
+
+    <!-- 02 . OBJECT STORAGE EXPLORER -->
+    <div class="eyebrow">02 . Object Storage Explorer</div>
+    <section class="panel">
+      <div class="explorer-bar">
+        <div class="breadcrumbs" id="breadcrumbs">
+          <span class="crumb-link" onclick="navigate('')">root</span>
         </div>
         <div style="display: flex; gap: 8px; align-items: center;">
-          <span id="clusterDiskText" style="font-size: 0.85rem; color: var(--text-muted);">Capacity loading...</span>
-          <button class="btn btn-primary" style="padding: 6px 12px; font-size: 0.78rem;" onclick="syncClusterBackups()">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
-            Sync ClipVault Replicas
-          </button>
+          <input type="text" class="search-input" id="searchBox" placeholder="Filter objects..." oninput="onFilter()">
+          <button class="btn" onclick="openMkdir()">New Folder</button>
+          <button class="btn btn-primary" onclick="triggerFileInput()">Upload Object</button>
+          <input type="file" id="fileInput" multiple style="display: none;" onchange="handleFileSelect(event)">
         </div>
       </div>
-      <div class="progress-bar-container">
-        <div class="progress-bar-fill" id="clusterDiskBar"></div>
-      </div>
-      <div class="nodes-grid" id="nodesGrid">
-        <!-- Node items injected dynamically -->
+
+      <div class="table-viewport" id="tableViewport">
+        <table class="file-table">
+          <thead>
+            <tr>
+              <th style="width: 44%;">Name</th>
+              <th style="width: 12%;">Size</th>
+              <th style="width: 16%;">Modified</th>
+              <th style="width: 18%;">Replica Topology</th>
+              <th style="width: 10%; text-align: right;">Actions</th>
+            </tr>
+          </thead>
+          <tbody id="fileTableBody"></tbody>
+        </table>
+        <div id="scrollAnchor" style="height: 20px;"></div>
       </div>
     </section>
-
-    <!-- Explorer Card -->
-    <section class="explorer-card">
-      <div class="explorer-controls">
-        <div class="breadcrumbs" id="breadcrumbs">
-          <a class="breadcrumb-item" href="#" onclick="navigate(''); return false;">root</a>
-        </div>
-        <div class="explorer-actions">
-          <div class="search-box">
-            <svg class="search-icon" viewBox="0 0 24 24"><path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
-            <input type="text" class="search-input" id="filterInput" placeholder="Filter files..." oninput="onFilterChanged()">
-          </div>
-          <button class="btn" onclick="openMkdirModal()">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/></svg>
-            New Folder
-          </button>
-          <button class="btn btn-primary" onclick="triggerFileInput()">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-            Upload
-          </button>
-          <input type="file" id="fileUploadInput" multiple style="display: none;" onchange="handleFileSelect(event)">
-        </div>
-      </div>
-
-      <table class="file-table">
-        <thead>
-          <tr>
-            <th style="width: 42%;">Name</th>
-            <th style="width: 14%;">Size</th>
-            <th style="width: 18%;">Modified</th>
-            <th style="width: 16%;">SHA-256</th>
-            <th style="text-align: right; width: 10%;">Actions</th>
-          </tr>
-        </thead>
-        <tbody id="fileTableBody">
-          <!-- Files injected dynamically -->
-        </tbody>
-      </table>
-      <div class="empty-state" id="emptyState" style="display: none;">
-        No items in this directory. Drag and drop files to upload.
-      </div>
-    </section>
-  </div>
-
-  <!-- Upload Task Toast -->
-  <div class="upload-toast-panel" id="uploadToast">
-    <div class="upload-toast-header">
-      <span id="uploadToastTitle">Uploading 0 files</span>
-      <button class="action-btn" onclick="closeUploadToast()">✕</button>
-    </div>
-    <div id="uploadItemsContainer" style="display: flex; flex-direction: column; gap: 8px; max-height: 180px; overflow-y: auto;"></div>
   </div>
 
   <!-- Token Modal -->
-  <div class="modal-overlay" id="tokenModal">
-    <div class="modal-content">
-      <div class="modal-title">Set API Access Token</div>
-      <p style="font-size: 0.85rem; color: var(--text-muted);">
-        Enter your ostore Bearer token. It will be stored securely in your browser's local storage.
-      </p>
-      <input type="password" class="modal-input" id="tokenInput" placeholder="Enter Bearer Token">
-      <div class="modal-actions">
+  <div class="backdrop" id="tokenModal">
+    <div class="dialog-box">
+      <h3>Access Token</h3>
+      <p style="font-size: 0.82rem; color: var(--ink-secondary); margin-bottom: 12px;">Stored in browser localStorage for direct API access:</p>
+      <input type="password" id="tokenInput" class="search-input" style="width: 100%;" placeholder="OSTORE_TOKEN">
+      <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px;">
         <button class="btn" onclick="closeTokenModal()">Cancel</button>
-        <button class="btn btn-primary" onclick="saveToken()">Save Token</button>
+        <button class="btn btn-primary" onclick="saveToken()">Save</button>
       </div>
     </div>
   </div>
 
-  <!-- Mkdir Modal -->
-  <div class="modal-overlay" id="mkdirModal">
-    <div class="modal-content">
-      <div class="modal-title">Create New Folder</div>
-      <input type="text" class="modal-input" id="mkdirInput" placeholder="Folder name">
-      <div class="modal-actions">
-        <button class="btn" onclick="closeMkdirModal()">Cancel</button>
-        <button class="btn btn-primary" onclick="submitMkdir()">Create</button>
+  <!-- Per-file Topology Modal -->
+  <div class="backdrop" id="fileTopoModal">
+    <div class="dialog-box file-topo-box">
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <h3 id="fileTopoTitle">File Replica Topology</h3>
+        <button class="icon-btn" onclick="closeFileTopoModal()">✕</button>
+      </div>
+      <p style="font-size: 0.78rem; color: var(--ink-secondary); font-family: var(--font-mono); margin-bottom: 12px;" id="fileTopoPath"></p>
+      
+      <div class="file-topo-flow" id="fileTopoFlow">
+        <!-- Main node & Follower node rows -->
+      </div>
+
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 16px;">
+        <span id="fileTopoSummary" style="font-size: 0.78rem; color: var(--ink-secondary); font-family: var(--font-mono);"></span>
+        <button class="btn btn-primary" id="btnSyncSingleFile" onclick="syncCurrentFile()">Sync To Followers</button>
       </div>
     </div>
   </div>
 
   <!-- Media Preview Modal -->
-  <div class="modal-overlay" id="previewModal">
-    <div class="modal-content preview-modal-content">
-      <div style="display: flex; justify-content: space-between; width: 100%; align-items: center;">
-        <span class="modal-title" id="previewTitle">File Preview</span>
-        <button class="action-btn" onclick="closePreviewModal()">✕</button>
+  <div class="backdrop" id="mediaModal">
+    <div class="dialog-box" style="max-width: 90vw; max-height: 85vh; padding: 16px;">
+      <div style="display: flex; justify-content: space-between; margin-bottom: 10px;">
+        <span id="mediaTitle" style="font-weight: 500; font-size: 0.88rem;"></span>
+        <button class="icon-btn" onclick="closeMediaModal()">✕</button>
       </div>
-      <div class="preview-media-container" id="previewContainer"></div>
+      <div id="mediaContainer" style="display: flex; justify-content: center; max-height: 75vh; overflow: auto;"></div>
     </div>
   </div>
 
   <!-- Toast -->
-  <div class="toast-msg" id="toastMsg">Action completed</div>
+  <div class="toast" id="toast">
+    <span id="toastMsg">Action completed</span>
+  </div>
 
   <script>
-    // State
+    // App Architecture & State
     let currentPath = '';
-    let currentEntries = [];
-    let token = localStorage.getItem('ostore_token') || '';
+    let allEntries = [];
+    let filteredEntries = [];
+    let renderedCount = 0;
+    const CHUNK_SIZE = 40;
+    let inspectingFilePath = '';
 
-    // Auto-detect base path: support /ostore or /
+    let token = localStorage.getItem('ostore_token') || '';
+    let eventSource = null;
+
     function getBasePath() {
-      const p = window.location.pathname;
-      if (p.startsWith('/ostore')) return '/ostore';
-      return '';
+      return window.location.pathname.startsWith('/ostore') ? '/ostore' : '';
     }
 
-    // Check URL token query
+    // URL token auto-capture
     const urlParams = new URLSearchParams(window.location.search);
     if (urlParams.has('token')) {
       token = urlParams.get('token');
       localStorage.setItem('ostore_token', token);
-      // Clean query from address bar
       window.history.replaceState({}, document.title, window.location.pathname);
     }
 
-    function updateTokenUI() {
-      const btnText = document.getElementById('tokenBtnText');
-      if (token) {
-        btnText.textContent = 'Token Active';
-        btnText.style.color = '#34d399';
-      } else {
-        btnText.textContent = 'Set Token';
-        btnText.style.color = 'var(--text-main)';
+    function formatBytes(b) {
+      if (!b || b === 0) return '0 B';
+      const k = 1024, s = ['B', 'KB', 'MB', 'GB', 'TB'];
+      const i = Math.floor(Math.log(b) / Math.log(k));
+      return (b / Math.pow(k, i)).toFixed(1) + ' ' + s[i];
+    }
+
+    function formatDate(iso) {
+      if (!iso) return '-';
+      const d = new Date(iso);
+      return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
+
+    function showToast(msg) {
+      const t = document.getElementById('toast');
+      document.getElementById('toastMsg').textContent = msg;
+      t.style.display = 'flex';
+      setTimeout(() => { t.style.display = 'none'; }, 2200);
+    }
+
+    async function api(path, opts = {}) {
+      const url = `${getBasePath()}${path}`;
+      opts.headers = opts.headers || {};
+      if (token) opts.headers['Authorization'] = `Bearer ${token}`;
+      return fetch(url, opts);
+    }
+
+    // Reactive SSE: Incremental updates without full-page redraws
+    function initSSE() {
+      if (eventSource) eventSource.close();
+      const sseUrl = `${getBasePath()}/api/events${token ? `?token=${encodeURIComponent(token)}` : ''}`;
+      eventSource = new EventSource(sseUrl);
+
+      eventSource.onopen = () => {
+        document.getElementById('sseDot').classList.remove('disconnected');
+        document.getElementById('sseStatus').textContent = 'Live SSE Active';
+      };
+
+      eventSource.onerror = () => {
+        document.getElementById('sseDot').classList.add('disconnected');
+        document.getElementById('sseStatus').textContent = 'Reconnecting...';
+      };
+
+      eventSource.addEventListener('object.created', e => onObjectEvent(JSON.parse(e.data), 'created'));
+      eventSource.addEventListener('object.updated', e => onObjectEvent(JSON.parse(e.data), 'updated'));
+      eventSource.addEventListener('object.deleted', e => onObjectEvent(JSON.parse(e.data), 'deleted'));
+      eventSource.addEventListener('object.moved', e => onObjectEvent(JSON.parse(e.data), 'moved'));
+      eventSource.addEventListener('stream.reset', () => loadDirectory());
+    }
+
+    function onObjectEvent(data, kind) {
+      const p = data.path;
+      const cur = currentPath ? currentPath + '/' : '';
+      if (!p.startsWith(cur)) return;
+      const sub = p.substring(cur.length);
+      if (sub.includes('/')) return; // in child folder
+
+      const idx = allEntries.findIndex(e => e.name === sub);
+      if (kind === 'deleted') {
+        if (idx !== -1) {
+          allEntries.splice(idx, 1);
+          onFilter();
+        }
+      } else if (kind === 'created' || kind === 'updated') {
+        const item = {
+          name: sub,
+          path: p,
+          type: data.type || 'file',
+          size: data.size || 0,
+          mtime: data.ts || new Date().toISOString(),
+          sha256: null
+        };
+        if (idx !== -1) allEntries[idx] = item;
+        else allEntries.unshift(item);
+        onFilter();
       }
     }
 
+    // Load Topology: Main & Follower Graph
+    async function loadTopology() {
+      try {
+        const res = await api('/api/cluster/topology');
+        if (!res.ok) return;
+        const topo = await res.json();
+
+        // 1. Render SVG Topology Graph
+        renderTopologySVG(topo);
+
+        // 2. Render Main & Follower Cards
+        const cardsList = document.getElementById('topoCardsList');
+        const list = [];
+        if (topo.control_plane) list.push({ ...topo.control_plane, role: 'Main Control Node' });
+        for (const w of (topo.workers || [])) list.push({ ...w, role: 'Storage Follower' });
+
+        cardsList.innerHTML = list.map(n => {
+          const used = n.disk_total_bytes - n.disk_available_bytes;
+          const pct = n.disk_total_bytes > 0 ? ((used / n.disk_total_bytes) * 100).toFixed(0) : 0;
+          return `
+            <div class="topo-card">
+              <div class="topo-card-head">
+                <span class="topo-card-title">
+                  <span class="status-dot ${n.healthy ? '' : 'disconnected'}"></span>
+                  ${n.name || n.id}
+                </span>
+                <span class="topo-card-badge">${n.role} · ${n.rtt_ms !== null ? n.rtt_ms + 'ms' : 'off'}</span>
+              </div>
+              <div class="topo-card-meta">
+                <span>Used: ${pct}%</span>
+                <span>Free: ${formatBytes(n.disk_available_bytes)}</span>
+              </div>
+              <div class="meter-bar">
+                <div class="meter-fill" style="width: ${pct}%; background: ${n.is_local ? 'var(--accent)' : 'var(--success)'};"></div>
+              </div>
+            </div>
+          `;
+        }).join('');
+
+        // 3. Render Distribution Spectrum
+        const totalBytes = topo.distributions.reduce((acc, d) => acc + d.total_bytes, 0) || 1;
+        const totalObj = topo.distributions.reduce((acc, d) => acc + d.object_count, 0);
+        document.getElementById('spectrumSummaryText').textContent = `${totalObj} objects (${formatBytes(totalBytes)})`;
+        document.getElementById('clusterCapacityText').textContent = `Total: ${formatBytes(topo.total_disk_bytes)} (Free: ${formatBytes(topo.available_disk_bytes)})`;
+
+        const colors = ['#0071E3', '#34C759', '#FF9500', '#AF52DE', '#5856D6', '#FF2D55'];
+        const bar = document.getElementById('spectrumBar');
+        const legend = document.getElementById('spectrumLegend');
+
+        bar.innerHTML = topo.distributions.map((d, i) => {
+          const pct = ((d.total_bytes / totalBytes) * 100).toFixed(1);
+          return `<div class="spectrum-segment" style="width: ${pct}%; background: ${colors[i % colors.length]};" title="${d.prefix}: ${formatBytes(d.total_bytes)} (${pct}%)"></div>`;
+        }).join('');
+
+        legend.innerHTML = topo.distributions.map((d, i) => `
+          <div class="spectrum-legend-item">
+            <span class="legend-dot" style="background: ${colors[i % colors.length]};"></span>
+            <span>/${d.prefix} — ${formatBytes(d.total_bytes)} (${d.object_count} obj · ${d.replica_factor}x Synced)</span>
+          </div>
+        `).join('');
+
+      } catch (e) {
+        console.error('Topology error:', e);
+      }
+    }
+
+    function renderTopologySVG(topo) {
+      const svg = document.getElementById('topoCanvas');
+      const cp = topo.control_plane;
+      const workers = topo.workers || [];
+      const w1 = workers[0] || { name: 'follower-1', rtt_ms: 1 };
+      const w2 = workers[1] || { name: 'follower-2', rtt_ms: 3 };
+
+      svg.innerHTML = `
+        <!-- Links -->
+        <path d="M270 65 Q210 115 150 160" fill="none" stroke="#D2D2D7" stroke-width="2" stroke-dasharray="4 4"/>
+        <path d="M270 65 Q330 115 390 160" fill="none" stroke="#D2D2D7" stroke-width="2" stroke-dasharray="4 4"/>
+
+        <!-- Main Node (cc) -->
+        <g transform="translate(270, 45)">
+          <circle r="24" fill="#FFFFFF" stroke="#0071E3" stroke-width="2.5"/>
+          <circle r="4" fill="#34C759"/>
+          <text y="-30" text-anchor="middle" fill="#1D1D1F" font-size="11" font-weight="600">${cp ? cp.name : 'Main'}</text>
+          <text y="38" text-anchor="middle" fill="#86868B" font-size="9" font-family="monospace">Primary Control Plane</text>
+        </g>
+
+        <!-- Follower 1 (cc2) -->
+        <g transform="translate(150, 165)">
+          <circle r="20" fill="#FFFFFF" stroke="#34C759" stroke-width="2"/>
+          <circle r="3" fill="#34C759"/>
+          <text y="32" text-anchor="middle" fill="#1D1D1F" font-size="11" font-weight="500">${w1.name}</text>
+          <text y="44" text-anchor="middle" fill="#86868B" font-size="9" font-family="monospace">${w1.rtt_ms}ms · Follower</text>
+        </g>
+
+        <!-- Follower 2 (racknerd) -->
+        <g transform="translate(390, 165)">
+          <circle r="20" fill="#FFFFFF" stroke="#34C759" stroke-width="2"/>
+          <circle r="3" fill="#34C759"/>
+          <text y="32" text-anchor="middle" fill="#1D1D1F" font-size="11" font-weight="500">${w2.name}</text>
+          <text y="44" text-anchor="middle" fill="#86868B" font-size="9" font-family="monospace">${w2.rtt_ms}ms · Follower</text>
+        </g>
+      `;
+    }
+
+    // Object Explorer: Lazy Chunked Rendering (60fps)
+    async function loadDirectory(path = currentPath) {
+      currentPath = path;
+      updateBreadcrumbs();
+      try {
+        const query = path ? `?path=${encodeURIComponent(path)}&checksums=1` : '?checksums=1';
+        const res = await api(`/api/list${query}`);
+        if (!res.ok) {
+          if (res.status === 401) openTokenModal();
+          return;
+        }
+        const data = await res.json();
+        allEntries = data.entries || [];
+        onFilter();
+      } catch (e) {
+        console.error('List error:', e);
+      }
+    }
+
+    function onFilter() {
+      const q = document.getElementById('searchBox').value.toLowerCase();
+      filteredEntries = allEntries.filter(e => e.name.toLowerCase().includes(q));
+      renderedCount = 0;
+      document.getElementById('fileTableBody').innerHTML = '';
+      renderNextBatch();
+    }
+
+    function renderNextBatch() {
+      if (renderedCount >= filteredEntries.length) return;
+      const batch = filteredEntries.slice(renderedCount, renderedCount + CHUNK_SIZE);
+      const tbody = document.getElementById('fileTableBody');
+
+      const rows = batch.map(item => {
+        const isDir = item.type === 'dir';
+        const shaShort = item.sha256 ? item.sha256.substring(0, 8) : '';
+        const dlUrl = `${getBasePath()}/api/files/${item.path}`;
+
+        return `
+          <tr class="file-row">
+            <td>
+              <div class="name-cell" onclick="${isDir ? `navigate('${item.path}')` : `openMediaPreview('${item.path}')`}">
+                ${isDir
+                  ? `<svg viewBox="0 0 24 24" fill="#0071E3"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>`
+                  : `<svg viewBox="0 0 24 24" fill="none" stroke="#86868B" stroke-width="1.5"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg>`
+                }
+                <span>${item.name}</span>
+              </div>
+            </td>
+            <td class="meta-mono">${isDir ? '-' : formatBytes(item.size)}</td>
+            <td class="meta-mono">${formatDate(item.mtime)}</td>
+            <td>
+              ${!isDir ? `
+                <span class="replica-pill synced" onclick="inspectFileReplica('${item.path}')" title="Click to view file replica topology">
+                  <span class="status-dot"></span>
+                  <span>Main + 2 Followers</span>
+                </span>
+              ` : '-'}
+            </td>
+            <td>
+              <div class="row-actions">
+                ${!isDir ? `
+                  <a class="icon-btn" href="${dlUrl}" download title="Download">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                  </a>
+                  <button class="icon-btn" title="Copy SHA-256" onclick="copySHA('${item.sha256}')">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                  </button>
+                ` : ''}
+                <button class="icon-btn btn-delete" title="Delete" onclick="deleteItem('${item.path}', ${isDir})">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                </button>
+              </div>
+            </td>
+          </tr>
+        `;
+      }).join('');
+
+      tbody.insertAdjacentHTML('beforeend', rows);
+      renderedCount += batch.length;
+    }
+
+    // Virtual scroll observer
+    const scrollObserver = new IntersectionObserver(entries => {
+      if (entries[0].isIntersecting) renderNextBatch();
+    }, { root: document.getElementById('tableViewport'), threshold: 0.1 });
+
+    scrollObserver.observe(document.getElementById('scrollAnchor'));
+
+    function navigate(p) {
+      loadDirectory(p);
+    }
+
+    function updateBreadcrumbs() {
+      const bc = document.getElementById('breadcrumbs');
+      if (!currentPath) {
+        bc.innerHTML = '<span style="font-weight: 600; color: var(--ink);">root</span>';
+        return;
+      }
+      const parts = currentPath.split('/');
+      let html = '<span class="crumb-link" onclick="navigate(\'\')">root</span>';
+      let accum = '';
+      for (let i = 0; i < parts.length; i++) {
+        accum += (accum ? '/' : '') + parts[i];
+        html += '<span class="crumb-sep">/</span>';
+        if (i === parts.length - 1) {
+          html += `<span style="font-weight: 600; color: var(--ink); padding: 3px 6px;">${parts[i]}</span>`;
+        } else {
+          html += `<span class="crumb-link" onclick="navigate('${accum}')">${parts[i]}</span>`;
+        }
+      }
+      bc.innerHTML = html;
+    }
+
+    // Per-File Replica Topology Inspector
+    async function inspectFileReplica(filePath) {
+      inspectingFilePath = filePath;
+      document.getElementById('fileTopoPath').textContent = filePath;
+      document.getElementById('fileTopoTitle').textContent = `Replica Topology: ${filePath.split('/').pop()}`;
+      document.getElementById('fileTopoFlow').innerHTML = '<div style="text-align:center; padding: 20px; color: var(--ink-secondary);">Probing cluster replicas...</div>';
+      document.getElementById('fileTopoModal').style.display = 'flex';
+
+      try {
+        const res = await api(`/api/cluster/file-status?path=${encodeURIComponent(filePath)}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+
+        const mainNode = data.main;
+        const followers = data.followers || [];
+
+        let html = `
+          <div class="file-node-row">
+            <div>
+              <div style="font-weight:600; font-size: 0.84rem; display: flex; align-items: center; gap: 6px;">
+                <span class="status-dot"></span>
+                <span>${mainNode.name}</span>
+                <span class="topo-card-badge">Main Node</span>
+              </div>
+              <div style="font-size: 0.72rem; font-family: var(--font-mono); color: var(--ink-secondary); margin-top: 4px;">
+                SHA-256: ${mainNode.sha256 ? mainNode.sha256.substring(0, 16) + '...' : '-'}
+              </div>
+            </div>
+            <div style="text-align: right; font-family: var(--font-mono); font-size: 0.78rem;">
+              <div>${formatBytes(mainNode.size)}</div>
+              <span class="replica-pill synced">Origin Active</span>
+            </div>
+          </div>
+        `;
+
+        for (const f of followers) {
+          html += `
+            <div class="file-node-row">
+              <div>
+                <div style="font-weight:600; font-size: 0.84rem; display: flex; align-items: center; gap: 6px;">
+                  <span class="status-dot ${f.exists && f.matches ? '' : 'disconnected'}"></span>
+                  <span>${f.name}</span>
+                  <span class="topo-card-badge">Follower · ${f.rtt_ms !== null ? f.rtt_ms + 'ms' : 'off'}</span>
+                </div>
+                <div style="font-size: 0.72rem; font-family: var(--font-mono); color: var(--ink-secondary); margin-top: 4px;">
+                  SHA-256: ${f.sha256 ? f.sha256.substring(0, 16) + '...' : (f.exists ? 'Hash mismatch' : 'Missing replica')}
+                </div>
+              </div>
+              <div style="text-align: right; font-family: var(--font-mono); font-size: 0.78rem;">
+                <div>${formatBytes(f.size)}</div>
+                <span class="replica-pill ${f.exists && f.matches ? 'synced' : 'degraded'}">
+                  ${f.exists && f.matches ? 'Replica Synced' : (f.exists ? 'Hash Mismatch' : 'Not Replicated')}
+                </span>
+              </div>
+            </div>
+          `;
+        }
+
+        document.getElementById('fileTopoFlow').innerHTML = html;
+        document.getElementById('fileTopoSummary').textContent = 
+          `Cluster Health: ${data.replica_count}/${data.expected_replicas} Replicas Synchronized`;
+
+      } catch (e) {
+        document.getElementById('fileTopoFlow').innerHTML = `<div style="color: var(--danger); padding: 14px;">Error querying replica: ${e}</div>`;
+      }
+    }
+
+    function closeFileTopoModal() {
+      document.getElementById('fileTopoModal').style.display = 'none';
+    }
+
+    async function syncCurrentFile() {
+      if (!inspectingFilePath) return;
+      showToast('Syncing file to all followers...');
+      const res = await api(`/api/cluster/sync?prefix=${encodeURIComponent(inspectingFilePath)}`, { method: 'POST' });
+      if (res.ok) {
+        showToast('File replicated to followers');
+        inspectFileReplica(inspectingFilePath);
+      }
+    }
+
+    // General Actions
     function openTokenModal() {
       document.getElementById('tokenInput').value = token;
       document.getElementById('tokenModal').style.display = 'flex';
@@ -811,419 +1159,89 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       token = document.getElementById('tokenInput').value.trim();
       localStorage.setItem('ostore_token', token);
       closeTokenModal();
-      updateTokenUI();
-      refreshAll();
+      initSSE();
+      loadTopology();
+      loadDirectory();
     }
 
-    function showToast(msg) {
-      const t = document.getElementById('toastMsg');
-      t.textContent = msg;
-      t.style.display = 'block';
-      setTimeout(() => { t.style.display = 'none'; }, 2500);
-    }
-
-    function formatBytes(bytes) {
-      if (bytes === 0 || !bytes) return '0 B';
-      const k = 1024;
-      const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-      const i = Math.floor(Math.log(bytes) / Math.log(k));
-      return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-    }
-
-    function formatDate(iso) {
-      if (!iso) return '-';
-      const d = new Date(iso);
-      return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    }
-
-    // API Helper
-    async function apiFetch(endpoint, options = {}) {
-      const base = getBasePath();
-      const url = `${base}${endpoint}`;
-      options.headers = options.headers || {};
-      if (token) {
-        options.headers['Authorization'] = `Bearer ${token}`;
-      }
-      return fetch(url, options);
-    }
-
-    // Load Cluster Fleet Status
-    async function loadClusterStatus() {
-      try {
-        const res = await apiFetch('/api/cluster/nodes');
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
-        
-        const nodes = data.nodes || [];
-        const healthyCount = nodes.filter(n => n.healthy).length;
-        document.getElementById('clusterBadgeText').textContent = `Cluster: ${healthyCount}/${nodes.length} Nodes Active`;
-
-        const total = data.total_disk_bytes || 0;
-        const avail = data.available_disk_bytes || 0;
-        const used = total - avail;
-        const pct = total > 0 ? ((used / total) * 100).toFixed(1) : 0;
-
-        document.getElementById('clusterDiskText').textContent = 
-          `Used ${formatBytes(used)} / ${formatBytes(total)} (${pct}%)`;
-        document.getElementById('clusterDiskBar').style.width = `${pct}%`;
-
-        const grid = document.getElementById('nodesGrid');
-        grid.innerHTML = nodes.map(n => `
-          <div class="node-item">
-            <div class="node-item-top">
-              <span class="node-name">${n.name || n.id}</span>
-              <span class="node-tag">${n.is_local ? 'Local Master' : 'Storage Worker'}</span>
-            </div>
-            <div class="node-metrics">
-              <span>Status: <strong style="color: ${n.healthy ? 'var(--success)' : 'var(--danger)'}">${n.healthy ? 'Online' : 'Offline'}</strong></span>
-              <span>RTT: ${n.rtt_ms !== null ? n.rtt_ms + ' ms' : '-'}</span>
-            </div>
-            <div class="node-metrics">
-              <span>Free: ${formatBytes(n.disk_available_bytes)}</span>
-              <span>Total: ${formatBytes(n.disk_total_bytes)}</span>
-            </div>
-          </div>
-        `).join('');
-      } catch (e) {
-        document.getElementById('clusterBadgeText').textContent = 'Standalone Mode';
-      }
-    }
-
-    // Load Directory Listing
-    async function loadDirectory(path = currentPath) {
-      currentPath = path;
-      updateBreadcrumbs();
-      try {
-        const query = path ? `?path=${encodeURIComponent(path)}&checksums=1` : '?checksums=1';
-        const res = await apiFetch(`/api/list${query}`);
-        if (!res.ok) {
-          if (res.status === 401) {
-            openTokenModal();
-            return;
-          }
-          throw new Error(`HTTP ${res.status}`);
-        }
-        const data = await res.json();
-        currentEntries = data.entries || [];
-        renderTable(currentEntries);
-      } catch (e) {
-        console.error('List error:', e);
-        document.getElementById('fileTableBody').innerHTML = `
-          <tr><td colspan="5" style="text-align:center; color: var(--danger); padding: 30px;">
-            Failed to load directory. Check API token.
-          </td></tr>
-        `;
-      }
-    }
-
-    function renderTable(entries) {
-      const tbody = document.getElementById('fileTableBody');
-      const empty = document.getElementById('emptyState');
-      if (!entries || entries.length === 0) {
-        tbody.innerHTML = '';
-        empty.style.display = 'block';
-        return;
-      }
-      empty.style.display = 'none';
-
-      tbody.innerHTML = entries.map(item => {
-        const isDir = item.type === 'dir';
-        const iconSvg = getIconSvg(item.name, isDir);
-        const shaShort = item.sha256 ? item.sha256.substring(0, 8) : '';
-        const dlUrl = `${getBasePath()}/api/files/${item.path}`;
-
-        return `
-          <tr>
-            <td>
-              <div class="file-name-cell" onclick="${isDir ? `navigate('${item.path}')` : `previewOrDownload('${item.path}')`}">
-                <div class="file-icon">${iconSvg}</div>
-                <span title="${item.name}">${item.name}</span>
-              </div>
-            </td>
-            <td style="color: var(--text-muted);">${isDir ? '-' : formatBytes(item.size)}</td>
-            <td style="color: var(--text-muted);">${formatDate(item.mtime)}</td>
-            <td>
-              ${shaShort ? `
-                <span class="sha-badge" title="Full SHA-256: ${item.sha256}\nClick to copy" onclick="copyToClipboard('${item.sha256}')">
-                  ${shaShort}
-                </span>` : '-'}
-            </td>
-            <td>
-              <div class="table-actions">
-                ${!isDir ? `
-                  <a class="action-btn" href="${dlUrl}" download title="Download" onclick="event.stopPropagation()">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                  </a>
-                  <button class="action-btn" title="Copy direct link" onclick="copyLink('${dlUrl}'); event.stopPropagation()">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
-                  </button>
-                ` : ''}
-                <button class="action-btn btn-delete" title="Delete" onclick="deleteItem('${item.path}', ${isDir}); event.stopPropagation()">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-                </button>
-              </div>
-            </td>
-          </tr>
-        `;
-      }).join('');
-    }
-
-    function getIconSvg(name, isDir) {
-      if (isDir) {
-        return `<svg viewBox="0 0 24 24" fill="#38bdf8"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>`;
-      }
-      const ext = name.split('.').pop().toLowerCase();
-      if (['mp4', 'mkv', 'webm', 'mov', 'avi'].includes(ext)) {
-        return `<svg viewBox="0 0 24 24" fill="#f43f5e"><polygon points="5 3 19 12 5 21 5 3"/></svg>`;
-      }
-      if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp'].includes(ext)) {
-        return `<svg viewBox="0 0 24 24" fill="#10b981"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>`;
-      }
-      if (['db', 'sqlite', 'sqlite3'].includes(ext)) {
-        return `<svg viewBox="0 0 24 24" fill="#eab308"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>`;
-      }
-      return `<svg viewBox="0 0 24 24" fill="#94a3b8"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg>`;
-    }
-
-    function navigate(path) {
-      loadDirectory(path);
-    }
-
-    function updateBreadcrumbs() {
-      const bc = document.getElementById('breadcrumbs');
-      if (!currentPath) {
-        bc.innerHTML = '<span class="breadcrumb-item" style="color: var(--text-main);">root</span>';
-        return;
-      }
-      const parts = currentPath.split('/');
-      let html = '<a class="breadcrumb-item" href="#" onclick="navigate(\'\'); return false;">root</a>';
-      let accum = '';
-      for (let i = 0; i < parts.length; i++) {
-        accum += (accum ? '/' : '') + parts[i];
-        html += '<span class="breadcrumb-separator">/</span>';
-        if (i === parts.length - 1) {
-          html += `<span class="breadcrumb-item" style="color: var(--text-main);">${parts[i]}</span>`;
-        } else {
-          const p = accum;
-          html += `<a class="breadcrumb-item" href="#" onclick="navigate('${p}'); return false;">${parts[i]}</a>`;
-        }
-      }
-      bc.innerHTML = html;
-    }
-
-    function onFilterChanged() {
-      const val = document.getElementById('filterInput').value.toLowerCase();
-      const filtered = currentEntries.filter(e => e.name.toLowerCase().includes(val));
-      renderTable(filtered);
-    }
-
-    // Modal Actions
-    function openMkdirModal() {
-      document.getElementById('mkdirInput').value = '';
-      document.getElementById('mkdirModal').style.display = 'flex';
-    }
-    function closeMkdirModal() { document.getElementById('mkdirModal').style.display = 'none'; }
-    async function submitMkdir() {
-      const name = document.getElementById('mkdirInput').value.trim();
-      if (!name) return;
-      const target = currentPath ? `${currentPath}/${name}` : name;
-      try {
-        const res = await apiFetch('/api/mkdir', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ path: target })
-        });
-        if (res.ok) {
-          closeMkdirModal();
-          showToast(`Directory "${name}" created`);
-          loadDirectory();
-        } else {
-          alert('Failed to create directory');
-        }
-      } catch (e) {
-        alert('Error: ' + e);
-      }
+    function copySHA(sha) {
+      if (!sha) return;
+      navigator.clipboard.writeText(sha);
+      showToast('SHA-256 copied to clipboard');
     }
 
     async function deleteItem(path, isDir) {
-      if (!confirm(`Are you sure you want to delete "${path}"?`)) return;
-      try {
-        const query = isDir ? '?recursive=1' : '';
-        const res = await apiFetch(`/api/files/${path}${query}`, { method: 'DELETE' });
-        if (res.ok) {
-          showToast(`Deleted ${path}`);
-          loadDirectory();
-        } else {
-          alert('Delete failed');
-        }
-      } catch (e) {
-        alert('Error: ' + e);
-      }
+      if (!confirm(`Delete ${path}?`)) return;
+      const res = await api(`/api/files/${path}${isDir ? '?recursive=1' : ''}`, { method: 'DELETE' });
+      if (res.ok) showToast('Object deleted');
     }
 
-    // File Upload Handling
-    function triggerFileInput() {
-      document.getElementById('fileUploadInput').click();
+    async function openMkdir() {
+      const name = prompt('Folder name:');
+      if (!name) return;
+      const target = currentPath ? `${currentPath}/${name}` : name;
+      const res = await api('/api/mkdir', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: target })
+      });
+      if (res.ok) showToast('Folder created');
     }
 
-    function handleFileSelect(e) {
+    function triggerFileInput() { document.getElementById('fileInput').click(); }
+    async function handleFileSelect(e) {
       const files = Array.from(e.target.files);
-      uploadFiles(files);
+      showToast(`Uploading ${files.length} file(s)...`);
+      for (const f of files) {
+        const dest = currentPath ? `${currentPath}/${f.name}` : f.name;
+        await api(`/api/files/${dest}`, { method: 'PUT', body: f });
+      }
+      showToast('Uploads completed');
       e.target.value = '';
     }
 
-    // Drag and Drop
-    const dropzone = document.getElementById('mainDropzone');
-    dropzone.addEventListener('dragover', (e) => {
-      e.preventDefault();
-      dropzone.classList.add('drag-over');
-    });
-    dropzone.addEventListener('dragleave', (e) => {
-      e.preventDefault();
-      dropzone.classList.remove('drag-over');
-    });
-    dropzone.addEventListener('drop', (e) => {
-      e.preventDefault();
-      dropzone.classList.remove('drag-over');
-      if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-        uploadFiles(Array.from(e.dataTransfer.files));
-      }
-    });
-
-    async function uploadFiles(files) {
-      if (!files.length) return;
-      const toast = document.getElementById('uploadToast');
-      const title = document.getElementById('uploadToastTitle');
-      const container = document.getElementById('uploadItemsContainer');
-
-      toast.style.display = 'flex';
-      title.textContent = `Uploading ${files.length} file(s)...`;
-      container.innerHTML = '';
-
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i];
-        const itemDiv = document.createElement('div');
-        itemDiv.className = 'upload-item';
-        itemDiv.innerHTML = `
-          <div class="upload-item-name">${file.name}</div>
-          <div class="upload-progress">
-            <div class="upload-progress-fill" id="prog-${i}"></div>
-          </div>
-        `;
-        container.appendChild(itemDiv);
-
-        const targetPath = currentPath ? `${currentPath}/${file.name}` : file.name;
-        try {
-          const res = await apiFetch(`/api/files/${targetPath}`, {
-            method: 'PUT',
-            body: file
-          });
-          const bar = document.getElementById(`prog-${i}`);
-          if (res.ok) {
-            bar.style.width = '100%';
-            bar.style.background = 'var(--success)';
-          } else {
-            bar.style.width = '100%';
-            bar.style.background = 'var(--danger)';
-          }
-        } catch (e) {
-          console.error('Upload failed:', e);
-        }
-      }
-
-      title.textContent = 'Uploads finished';
-      showToast('All files uploaded');
-      loadDirectory();
-    }
-
-    function closeUploadToast() {
-      document.getElementById('uploadToast').style.display = 'none';
-    }
-
-    // Media Preview Modal
-    async function previewOrDownload(path) {
+    // Media Modal
+    async function openMediaPreview(path) {
       const ext = path.split('.').pop().toLowerCase();
-      const base = getBasePath();
-      const fullUrl = `${base}/api/files/${path}`;
+      const url = `${getBasePath()}/api/files/${path}`;
+      const modal = document.getElementById('mediaModal');
+      const container = document.getElementById('mediaContainer');
+      document.getElementById('mediaTitle').textContent = path.split('/').pop();
 
-      const modal = document.getElementById('previewModal');
-      const title = document.getElementById('previewTitle');
-      const container = document.getElementById('previewContainer');
-      title.textContent = path.split('/').pop();
-
-      if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp'].includes(ext)) {
-        container.innerHTML = `<img src="${fullUrl}" alt="${path}">`;
-        modal.style.display = 'flex';
+      if (['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp'].includes(ext)) {
+        container.innerHTML = `<img src="${url}" style="max-width: 100%; max-height: 70vh; border-radius: 8px;">`;
       } else if (['mp4', 'webm', 'mov'].includes(ext)) {
-        container.innerHTML = `<video src="${fullUrl}" controls autoplay></video>`;
-        modal.style.display = 'flex';
+        container.innerHTML = `<video src="${url}" controls autoplay style="max-width: 100%; max-height: 70vh; border-radius: 8px;"></video>`;
       } else if (['txt', 'json', 'log', 'md', 'xml'].includes(ext)) {
-        try {
-          const res = await apiFetch(`/api/files/${path}`);
-          const text = await res.text();
-          container.innerHTML = `<pre>${escapeHtml(text)}</pre>`;
-          modal.style.display = 'flex';
-        } catch (e) {
-          window.location.href = fullUrl;
-        }
+        const t = await (await api(`/api/files/${path}`)).text();
+        container.innerHTML = `<pre style="font-family: monospace; font-size: 0.8rem; background: #FAFAFC; padding: 14px; border-radius: 8px; width: 100%; max-height: 65vh; overflow: auto; color: #1D1D1F;">${t.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</pre>`;
       } else {
-        window.location.href = fullUrl;
+        window.location.href = url;
+        return;
       }
+      modal.style.display = 'flex';
     }
 
-    function closePreviewModal() {
-      const container = document.getElementById('previewContainer');
-      container.innerHTML = '';
-      document.getElementById('previewModal').style.display = 'none';
+    function closeMediaModal() {
+      document.getElementById('mediaContainer').innerHTML = '';
+      document.getElementById('mediaModal').style.display = 'none';
     }
 
-    function escapeHtml(str) {
-      return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    }
-
-    function copyToClipboard(text) {
-      navigator.clipboard.writeText(text).then(() => {
-        showToast('SHA-256 copied to clipboard');
-      });
-    }
-
-    function copyLink(url) {
-      const full = window.location.origin + url;
-      navigator.clipboard.writeText(full).then(() => {
-        showToast('Link copied to clipboard');
-      });
-    }
-
-    // Cluster Backup Replication Sync
-    async function syncClusterBackups() {
-      if (!confirm('Run cluster replica sync for "clipvault"? This checks missing files across all storage nodes.')) return;
+    async function triggerSync() {
+      if (!confirm('Run cluster replication sync across all follower nodes?')) return;
       showToast('Cluster synchronization started...');
-      try {
-        const res = await apiFetch('/api/cluster/sync?prefix=clipvault', { method: 'POST' });
-        if (res.ok) {
-          const rep = await res.json();
-          let msg = `Sync completed in ${rep.duration_ms}ms: `;
-          for (const nr of (rep.node_results || [])) {
-            msg += `[Node ${nr.node_id}: Synced ${nr.synced}, Skipped ${nr.skipped}] `;
-          }
-          alert(msg);
-          loadClusterStatus();
-        } else {
-          alert('Sync failed or cluster mode not active');
-        }
-      } catch (e) {
-        alert('Sync error: ' + e);
+      const res = await api('/api/cluster/sync', { method: 'POST' });
+      if (res.ok) {
+        const r = await res.json();
+        showToast(`Sync finished in ${r.duration_ms}ms`);
+        loadTopology();
       }
     }
 
-    function refreshAll() {
-      loadClusterStatus();
-      loadDirectory();
-    }
-
-    // Init
-    updateTokenUI();
-    refreshAll();
+    // Start
+    initSSE();
+    loadTopology();
+    loadDirectory();
   </script>
 </body>
 </html>
