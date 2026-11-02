@@ -3,7 +3,9 @@
 //! Conforming to Apple-design language with an authentic light theme:
 //! - Background #F5F5F7, Cards rgba(255,255,255,0.88), Ink #1D1D1F, Accent #0071E3.
 //! - Naming topology: Main & Follower nodes.
-//! - Per-file replica topology inspector with cluster distribution status.
+//! - Per-file replica topology inspector with accurate honest states and metrics.
+//! - Zero charset ambiguity: explicit UTF-8 TextDecoder.
+//! - Fast tiered probe with detailed latency diagnostics.
 //! - SSE-only incremental reactive updates (zero polling).
 //! - Virtual/chunked lazy rendering for 60fps listing performance.
 
@@ -453,23 +455,35 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       color: var(--ink-secondary);
     }
 
-    /* Per-file Replica Status Pill */
+    /* Per-file Replica Status Pill: HONEST STATES */
     .replica-pill {
       display: inline-flex;
       align-items: center;
       gap: 5px;
-      padding: 2px 8px;
+      padding: 3px 9px;
       border-radius: 980px;
       font-family: var(--font-mono);
       font-size: 0.72rem;
       font-weight: 500;
       cursor: pointer;
       transition: all 0.15s;
+      border: 1px solid transparent;
+    }
+
+    .replica-pill.probe-needed {
+      background: rgba(0, 0, 0, 0.04);
+      color: var(--ink-secondary);
+      border-color: rgba(0, 0, 0, 0.06);
     }
 
     .replica-pill.synced {
       background: var(--success-soft);
       color: #248A3D;
+    }
+
+    .replica-pill.main-only {
+      background: var(--warning-soft);
+      color: #B25E00;
     }
 
     .replica-pill.degraded {
@@ -478,7 +492,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
     }
 
     .replica-pill:hover {
-      filter: brightness(0.95);
+      filter: brightness(0.96);
     }
 
     .sha-tag {
@@ -537,7 +551,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
     .backdrop {
       position: fixed;
       inset: 0;
-      background: rgba(0, 0, 0, 0.45);
+      background: rgba(0, 0, 0, 0.4);
       backdrop-filter: blur(10px);
       z-index: 500;
       display: none;
@@ -570,7 +584,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
     .file-topo-flow {
       display: flex;
       flex-direction: column;
-      gap: 12px;
+      gap: 10px;
       margin: 16px 0;
     }
 
@@ -582,6 +596,18 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       border-radius: var(--radius-sm);
       border: 1px solid var(--card-border);
       background: #F9F9FB;
+    }
+
+    .metrics-tag {
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      color: var(--ink-secondary);
+      background: rgba(0, 0, 0, 0.04);
+      padding: 4px 8px;
+      border-radius: 4px;
+      margin-top: 8px;
+      display: flex;
+      justify-content: space-between;
     }
 
     /* Toast */
@@ -689,7 +715,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
               <th style="width: 44%;">Name</th>
               <th style="width: 12%;">Size</th>
               <th style="width: 16%;">Modified</th>
-              <th style="width: 18%;">Replica Topology</th>
+              <th style="width: 18%;">Replica Status</th>
               <th style="width: 10%; text-align: right;">Actions</th>
             </tr>
           </thead>
@@ -722,13 +748,19 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       </div>
       <p style="font-size: 0.78rem; color: var(--ink-secondary); font-family: var(--font-mono); margin-bottom: 12px;" id="fileTopoPath"></p>
       
-      <div class="file-topo-flow" id="fileTopoFlow">
-        <!-- Main node & Follower node rows -->
+      <div class="file-topo-flow" id="fileTopoFlow"></div>
+
+      <div class="metrics-tag" id="fileTopoMetrics">
+        <span>Probe Latency: --</span>
+        <span id="fileTopoMethod">Fast Metadata Check</span>
       </div>
 
       <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 16px;">
         <span id="fileTopoSummary" style="font-size: 0.78rem; color: var(--ink-secondary); font-family: var(--font-mono);"></span>
-        <button class="btn btn-primary" id="btnSyncSingleFile" onclick="syncCurrentFile()">Sync To Followers</button>
+        <div style="display: flex; gap: 8px;">
+          <button class="btn" id="btnDeepCheck" onclick="inspectFileReplica(inspectingFilePath, true)">Deep Hash Verify</button>
+          <button class="btn btn-primary" id="btnSyncSingleFile" onclick="syncCurrentFile()">Sync To Followers</button>
+        </div>
       </div>
     </div>
   </div>
@@ -757,6 +789,8 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
     let renderedCount = 0;
     const CHUNK_SIZE = 40;
     let inspectingFilePath = '';
+    // Cache for per-file replica state to avoid repeated probes: path -> { status, count, text }
+    const replicaCache = new Map();
 
     let token = localStorage.getItem('ostore_token') || '';
     let eventSource = null;
@@ -765,7 +799,6 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       return window.location.pathname.startsWith('/ostore') ? '/ostore' : '';
     }
 
-    // URL token auto-capture
     const urlParams = new URLSearchParams(window.location.search);
     if (urlParams.has('token')) {
       token = urlParams.get('token');
@@ -825,10 +858,11 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
 
     function onObjectEvent(data, kind) {
       const p = data.path;
+      replicaCache.delete(p);
       const cur = currentPath ? currentPath + '/' : '';
       if (!p.startsWith(cur)) return;
       const sub = p.substring(cur.length);
-      if (sub.includes('/')) return; // in child folder
+      if (sub.includes('/')) return;
 
       const idx = allEntries.findIndex(e => e.name === sub);
       if (kind === 'deleted') {
@@ -921,23 +955,23 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       const svg = document.getElementById('topoCanvas');
       const cp = topo.control_plane;
       const workers = topo.workers || [];
-      const w1 = workers[0] || { name: 'follower-1', rtt_ms: 1 };
-      const w2 = workers[1] || { name: 'follower-2', rtt_ms: 3 };
+      const w1 = workers[0] || { name: 'cc2-follower', rtt_ms: 1 };
+      const w2 = workers[1] || { name: 'racknerd-follower', rtt_ms: 3 };
 
       svg.innerHTML = `
-        <!-- Links -->
+        <!-- Dynamic Links -->
         <path d="M270 65 Q210 115 150 160" fill="none" stroke="#D2D2D7" stroke-width="2" stroke-dasharray="4 4"/>
         <path d="M270 65 Q330 115 390 160" fill="none" stroke="#D2D2D7" stroke-width="2" stroke-dasharray="4 4"/>
 
-        <!-- Main Node (cc) -->
+        <!-- Main Node -->
         <g transform="translate(270, 45)">
           <circle r="24" fill="#FFFFFF" stroke="#0071E3" stroke-width="2.5"/>
           <circle r="4" fill="#34C759"/>
           <text y="-30" text-anchor="middle" fill="#1D1D1F" font-size="11" font-weight="600">${cp ? cp.name : 'Main'}</text>
-          <text y="38" text-anchor="middle" fill="#86868B" font-size="9" font-family="monospace">Primary Control Plane</text>
+          <text y="38" text-anchor="middle" fill="#86868B" font-size="9" font-family="monospace">Primary Entry (:8781)</text>
         </g>
 
-        <!-- Follower 1 (cc2) -->
+        <!-- Follower 1 -->
         <g transform="translate(150, 165)">
           <circle r="20" fill="#FFFFFF" stroke="#34C759" stroke-width="2"/>
           <circle r="3" fill="#34C759"/>
@@ -945,7 +979,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
           <text y="44" text-anchor="middle" fill="#86868B" font-size="9" font-family="monospace">${w1.rtt_ms}ms · Follower</text>
         </g>
 
-        <!-- Follower 2 (racknerd) -->
+        <!-- Follower 2 -->
         <g transform="translate(390, 165)">
           <circle r="20" fill="#FFFFFF" stroke="#34C759" stroke-width="2"/>
           <circle r="3" fill="#34C759"/>
@@ -989,11 +1023,20 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
 
       const rows = batch.map(item => {
         const isDir = item.type === 'dir';
-        const shaShort = item.sha256 ? item.sha256.substring(0, 8) : '';
         const dlUrl = `${getBasePath()}/api/files/${item.path}`;
 
+        // Honest replica status: check cache or display truthful default
+        let pillClass = 'probe-needed';
+        let pillText = '● Main · Probe Followers';
+
+        if (!isDir && replicaCache.has(item.path)) {
+          const cached = replicaCache.get(item.path);
+          pillClass = cached.pillClass;
+          pillText = cached.pillText;
+        }
+
         return `
-          <tr class="file-row">
+          <tr class="file-row" id="row-${escapeId(item.path)}">
             <td>
               <div class="name-cell" onclick="${isDir ? `navigate('${item.path}')` : `openMediaPreview('${item.path}')`}">
                 ${isDir
@@ -1007,9 +1050,8 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
             <td class="meta-mono">${formatDate(item.mtime)}</td>
             <td>
               ${!isDir ? `
-                <span class="replica-pill synced" onclick="inspectFileReplica('${item.path}')" title="Click to view file replica topology">
-                  <span class="status-dot"></span>
-                  <span>Main + 2 Followers</span>
+                <span class="replica-pill ${pillClass}" id="pill-${escapeId(item.path)}" onclick="inspectFileReplica('${item.path}')" title="Click to probe exact cluster replica topology">
+                  <span>${pillText}</span>
                 </span>
               ` : '-'}
             </td>
@@ -1036,7 +1078,10 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       renderedCount += batch.length;
     }
 
-    // Virtual scroll observer
+    function escapeId(str) {
+      return btoa(unescape(encodeURIComponent(str))).replace(/[/+=]/g, '_');
+    }
+
     const scrollObserver = new IntersectionObserver(entries => {
       if (entries[0].isIntersecting) renderNextBatch();
     }, { root: document.getElementById('tableViewport'), threshold: 0.1 });
@@ -1068,58 +1113,64 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       bc.innerHTML = html;
     }
 
-    // Per-File Replica Topology Inspector
-    async function inspectFileReplica(filePath) {
+    // Per-File Replica Topology Inspector (Honest & High-Performance)
+    async function inspectFileReplica(filePath, deepVerify = false) {
       inspectingFilePath = filePath;
       document.getElementById('fileTopoPath').textContent = filePath;
       document.getElementById('fileTopoTitle').textContent = `Replica Topology: ${filePath.split('/').pop()}`;
-      document.getElementById('fileTopoFlow').innerHTML = '<div style="text-align:center; padding: 20px; color: var(--ink-secondary);">Probing cluster replicas...</div>';
+      document.getElementById('fileTopoFlow').innerHTML = '<div style="text-align:center; padding: 20px; color: var(--ink-secondary);">Probing cluster nodes...</div>';
+      document.getElementById('fileTopoMetrics').innerHTML = '<span>Probing...</span><span>--</span>';
       document.getElementById('fileTopoModal').style.display = 'flex';
 
       try {
-        const res = await api(`/api/cluster/file-status?path=${encodeURIComponent(filePath)}`);
+        const query = deepVerify ? `?path=${encodeURIComponent(filePath)}&verify_hash=1` : `?path=${encodeURIComponent(filePath)}`;
+        const res = await api(`/api/cluster/file-status${query}`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
 
         const mainNode = data.main;
         const followers = data.followers || [];
+        const metrics = data.metrics || {};
 
         let html = `
           <div class="file-node-row">
             <div>
               <div style="font-weight:600; font-size: 0.84rem; display: flex; align-items: center; gap: 6px;">
-                <span class="status-dot"></span>
+                <span class="status-dot ${mainNode.exists ? '' : 'disconnected'}"></span>
                 <span>${mainNode.name}</span>
-                <span class="topo-card-badge">Main Node</span>
+                <span class="topo-card-badge">Main Node (Control Plane)</span>
               </div>
               <div style="font-size: 0.72rem; font-family: var(--font-mono); color: var(--ink-secondary); margin-top: 4px;">
-                SHA-256: ${mainNode.sha256 ? mainNode.sha256.substring(0, 16) + '...' : '-'}
+                ${mainNode.sha256 ? `SHA-256: ${mainNode.sha256.substring(0, 16)}...` : 'Status: Present on Main'}
               </div>
             </div>
             <div style="text-align: right; font-family: var(--font-mono); font-size: 0.78rem;">
               <div>${formatBytes(mainNode.size)}</div>
-              <span class="replica-pill synced">Origin Active</span>
+              <span class="replica-pill ${mainNode.exists ? 'synced' : 'main-only'}">${mainNode.exists ? 'Origin Present' : 'Missing'}</span>
             </div>
           </div>
         `;
 
         for (const f of followers) {
+          const isMatched = f.exists && f.matches;
           html += `
             <div class="file-node-row">
               <div>
                 <div style="font-weight:600; font-size: 0.84rem; display: flex; align-items: center; gap: 6px;">
-                  <span class="status-dot ${f.exists && f.matches ? '' : 'disconnected'}"></span>
+                  <span class="status-dot ${isMatched ? '' : 'disconnected'}"></span>
                   <span>${f.name}</span>
-                  <span class="topo-card-badge">Follower · ${f.rtt_ms !== null ? f.rtt_ms + 'ms' : 'off'}</span>
+                  <span class="topo-card-badge">Follower Node · ${f.rtt_ms !== null ? f.rtt_ms + 'ms' : 'off'}</span>
                 </div>
                 <div style="font-size: 0.72rem; font-family: var(--font-mono); color: var(--ink-secondary); margin-top: 4px;">
-                  SHA-256: ${f.sha256 ? f.sha256.substring(0, 16) + '...' : (f.exists ? 'Hash mismatch' : 'Missing replica')}
+                  ${f.exists 
+                    ? (f.sha256 ? `SHA-256: ${f.sha256.substring(0, 16)}...` : 'Matched Size & ETag') 
+                    : '<strong style="color:var(--danger)">Missing on this node</strong>'}
                 </div>
               </div>
               <div style="text-align: right; font-family: var(--font-mono); font-size: 0.78rem;">
-                <div>${formatBytes(f.size)}</div>
-                <span class="replica-pill ${f.exists && f.matches ? 'synced' : 'degraded'}">
-                  ${f.exists && f.matches ? 'Replica Synced' : (f.exists ? 'Hash Mismatch' : 'Not Replicated')}
+                <div>${f.exists ? formatBytes(f.size) : '0 B'}</div>
+                <span class="replica-pill ${isMatched ? 'synced' : (f.exists ? 'degraded' : 'main-only')}">
+                  ${isMatched ? 'Replica Synced' : (f.exists ? 'Size Mismatch' : 'Not Replicated')}
                 </span>
               </div>
             </div>
@@ -1127,8 +1178,38 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
         }
 
         document.getElementById('fileTopoFlow').innerHTML = html;
+
+        // Diagnostics metrics
+        let timingBreakdown = `Total: ${metrics.total_ms}ms (Main: ${metrics.main_lookup_ms}ms`;
+        for (const [k, v] of Object.entries(metrics.follower_timings || {})) {
+          timingBreakdown += `, ${k}: ${v}ms`;
+        }
+        timingBreakdown += ')';
+        document.getElementById('fileTopoMetrics').innerHTML = `
+          <span>Probe Latency: <strong>${timingBreakdown}</strong></span>
+          <span>Mode: <strong>${metrics.verify_hash ? 'Deep Hash' : 'Fast Tiered Probe'}</strong></span>
+        `;
+
+        // Update honest state pill in table row
+        let pillClass = 'main-only';
+        let pillText = `● Main Only (${data.replica_count}/${data.expected_replicas})`;
+        if (data.fully_synced) {
+          pillClass = 'synced';
+          pillText = `● Synced (${data.replica_count}/${data.expected_replicas})`;
+        } else if (data.replica_count > 1) {
+          pillClass = 'degraded';
+          pillText = `▲ Degraded (${data.replica_count}/${data.expected_replicas})`;
+        }
+
+        replicaCache.set(filePath, { pillClass, pillText });
+        const rowPill = document.getElementById(`pill-${escapeId(filePath)}`);
+        if (rowPill) {
+          rowPill.className = `replica-pill ${pillClass}`;
+          rowPill.innerHTML = `<span>${pillText}</span>`;
+        }
+
         document.getElementById('fileTopoSummary').textContent = 
-          `Cluster Health: ${data.replica_count}/${data.expected_replicas} Replicas Synchronized`;
+          `Status: ${data.replica_count}/${data.expected_replicas} Replicas Present`;
 
       } catch (e) {
         document.getElementById('fileTopoFlow').innerHTML = `<div style="color: var(--danger); padding: 14px;">Error querying replica: ${e}</div>`;
@@ -1141,15 +1222,53 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
 
     async function syncCurrentFile() {
       if (!inspectingFilePath) return;
-      showToast('Syncing file to all followers...');
-      const res = await api(`/api/cluster/sync?prefix=${encodeURIComponent(inspectingFilePath)}`, { method: 'POST' });
+      showToast('Replicating to all missing followers...');
+      const res = await api(`/api/cluster/sync-file?path=${encodeURIComponent(inspectingFilePath)}`, { method: 'POST' });
       if (res.ok) {
-        showToast('File replicated to followers');
-        inspectFileReplica(inspectingFilePath);
+        showToast('File replicated successfully');
+        inspectFileReplica(inspectingFilePath, false);
       }
     }
 
-    // General Actions
+    // Media Preview: Guaranteed UTF-8 encoding (No Chinese Mojibake)
+    async function openMediaPreview(path) {
+      const ext = path.split('.').pop().toLowerCase();
+      const url = `${getBasePath()}/api/files/${path}`;
+      const modal = document.getElementById('mediaModal');
+      const container = document.getElementById('mediaContainer');
+      document.getElementById('mediaTitle').textContent = path.split('/').pop();
+
+      if (['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp'].includes(ext)) {
+        container.innerHTML = `<img src="${url}" style="max-width: 100%; max-height: 70vh; border-radius: 8px;">`;
+      } else if (['mp4', 'webm', 'mov'].includes(ext)) {
+        container.innerHTML = `<video src="${url}" controls autoplay style="max-width: 100%; max-height: 70vh; border-radius: 8px;"></video>`;
+      } else if (['txt', 'json', 'log', 'md', 'xml', 'csv', 'sql'].includes(ext)) {
+        try {
+          const resp = await api(`/api/files/${path}`);
+          const buf = await resp.arrayBuffer();
+          // Explicit UTF-8 decoding avoids Latin-1 character mangling
+          const text = new TextDecoder('utf-8').decode(buf);
+          container.innerHTML = `<pre style="font-family: monospace; font-size: 0.8rem; background: #FAFAFC; padding: 14px; border-radius: 8px; width: 100%; max-height: 65vh; overflow: auto; color: #1D1D1F; white-space: pre-wrap;">${escapeHtml(text)}</pre>`;
+        } catch (e) {
+          container.innerHTML = `<div style="color: var(--danger)">Error reading file: ${e}</div>`;
+        }
+      } else {
+        window.location.href = url;
+        return;
+      }
+      modal.style.display = 'flex';
+    }
+
+    function escapeHtml(s) {
+      return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    function closeMediaModal() {
+      document.getElementById('mediaContainer').innerHTML = '';
+      document.getElementById('mediaModal').style.display = 'none';
+    }
+
+    // Actions
     function openTokenModal() {
       document.getElementById('tokenInput').value = token;
       document.getElementById('tokenModal').style.display = 'flex';
@@ -1198,33 +1317,6 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       }
       showToast('Uploads completed');
       e.target.value = '';
-    }
-
-    // Media Modal
-    async function openMediaPreview(path) {
-      const ext = path.split('.').pop().toLowerCase();
-      const url = `${getBasePath()}/api/files/${path}`;
-      const modal = document.getElementById('mediaModal');
-      const container = document.getElementById('mediaContainer');
-      document.getElementById('mediaTitle').textContent = path.split('/').pop();
-
-      if (['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp'].includes(ext)) {
-        container.innerHTML = `<img src="${url}" style="max-width: 100%; max-height: 70vh; border-radius: 8px;">`;
-      } else if (['mp4', 'webm', 'mov'].includes(ext)) {
-        container.innerHTML = `<video src="${url}" controls autoplay style="max-width: 100%; max-height: 70vh; border-radius: 8px;"></video>`;
-      } else if (['txt', 'json', 'log', 'md', 'xml'].includes(ext)) {
-        const t = await (await api(`/api/files/${path}`)).text();
-        container.innerHTML = `<pre style="font-family: monospace; font-size: 0.8rem; background: #FAFAFC; padding: 14px; border-radius: 8px; width: 100%; max-height: 65vh; overflow: auto; color: #1D1D1F;">${t.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</pre>`;
-      } else {
-        window.location.href = url;
-        return;
-      }
-      modal.style.display = 'flex';
-    }
-
-    function closeMediaModal() {
-      document.getElementById('mediaContainer').innerHTML = '';
-      document.getElementById('mediaModal').style.display = 'none';
     }
 
     async function triggerSync() {
