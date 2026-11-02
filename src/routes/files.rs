@@ -181,6 +181,7 @@ pub async fn get_file(
     Path(path): Path<String>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
+    let start_instant = std::time::Instant::now();
     let (abs, rel) = paths::resolve_nonroot(&st.root, &path)?;
     let meta = tokio::fs::metadata(&abs).await.map_err(|e| io_err(e, &rel))?;
     if meta.is_dir() {
@@ -247,13 +248,17 @@ pub async fn get_file(
         mime_str
     };
 
+    let server_time_ms = start_instant.elapsed().as_secs_f64() * 1000.0;
+    let timing_hdr = format!("total;dur={server_time_ms:.2}");
+
     let mut builder = Response::builder()
         .status(status)
         .header(header::CONTENT_TYPE, hv(content_type))
         .header(header::CONTENT_LENGTH, len.to_string())
         .header(header::ACCEPT_RANGES, "bytes")
         .header(header::ETAG, hv(etag))
-        .header(header::CACHE_CONTROL, "private, no-cache");
+        .header(header::CACHE_CONTROL, "private, no-cache")
+        .header("Server-Timing", timing_hdr);
     if status == StatusCode::PARTIAL_CONTENT {
         builder = builder.header(header::CONTENT_RANGE, hv(format!("bytes {}-{}/{}", start, start + len - 1, size)));
     }
