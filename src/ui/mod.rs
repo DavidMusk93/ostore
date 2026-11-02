@@ -2,14 +2,13 @@
 //!
 //! Crafted to strictly adhere to Owner UI Taste & Operational Excellence:
 //! - Apple-design restraint: Light theme (#F5F5F7, #1D1D1F, #0071E3).
-//! - Dedicated Mobile Viewport & Touch Optimization (anti-distortion button CSS).
-//! - Clean, popup-free login transition: zero unwanted OTP/token modals post-login.
+//! - Unified Design Language: All top-level controls (status pill, sync btn, folder badge, search input)
+//!   share the exact same 32px height and 980px pill radius for flawless visual alignment.
+//! - Anti-Jitter Mobile Engine: table-layout:fixed, strictly targeted DOM patching (zero full-table wipes),
+//!   hardware-accelerated GPU transitions (only opacity/transform, zero transition:all).
 //! - Directory Dual-Metrics: Displays both Total Aggregated Size and Total Item Count.
 //! - Complete Folder Capabilities: Download directory as tar, rename/move, inspect, sync, upload folder tree.
-//! - Server-side incremental Lazy Load (limit/offset stream pagination) - zero open lag.
-//! - Multi-node visual replica badges per row (`● cc` `● cc2` `● rn` / `○ cc2` `○ rn`).
-//! - Intelligent multi-encoding text decoding (UTF-8, GB18030/GBK, UTF-16, binary detection).
-//! - Complete Metrics performance diagnostics (Server-Timing header + client round-trip).
+//! - Clean, popup-free login transition: zero unwanted OTP/token modals post-login.
 
 use axum::response::Html;
 
@@ -45,9 +44,11 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       --radius-sm: 8px;
       --radius-md: 14px;
       --radius-lg: 20px;
-      --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.04), 0 4px 12px rgba(0, 0, 0, 0.02);
-      --shadow-md: 0 4px 20px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
-      --shadow-lg: 0 12px 36px rgba(0, 0, 0, 0.08), 0 2px 4px rgba(0, 0, 0, 0.04);
+      --radius-pill: 980px;
+      --control-h: 32px;
+      --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
+      --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.05);
+      --shadow-lg: 0 12px 36px rgba(0, 0, 0, 0.08);
       --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
       --font-mono: ui-monospace, "SF Mono", Menlo, Monaco, Consolas, monospace;
     }
@@ -64,7 +65,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       -webkit-text-size-adjust: 100%;
     }
 
-    /* Universal Anti-Distortion Button Reset */
+    /* Universal Button Reset */
     button, .btn, .login-btn {
       -webkit-appearance: none;
       -moz-appearance: none;
@@ -73,6 +74,99 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       user-select: none;
       -webkit-user-select: none;
       font-family: inherit;
+    }
+
+    /* Unified Control Language: All top-bar controls share 32px height & 980px pill radius */
+    .status-pill, .btn, .folder-stat-badge, .search-input {
+      height: var(--control-h);
+      border-radius: var(--radius-pill);
+      border: 1px solid var(--card-border);
+      box-sizing: border-box;
+      display: inline-flex;
+      align-items: center;
+      vertical-align: middle;
+      font-size: 0.78rem;
+    }
+
+    .status-pill {
+      gap: 6px;
+      padding: 0 12px;
+      font-family: var(--font-mono);
+      background: #FFFFFF;
+      color: var(--ink-secondary);
+      box-shadow: var(--shadow-sm);
+    }
+
+    .status-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--success);
+      box-shadow: 0 0 6px rgba(52, 199, 89, 0.4);
+      flex-shrink: 0;
+    }
+
+    .status-dot.disconnected {
+      background: var(--danger);
+      box-shadow: 0 0 6px rgba(255, 59, 48, 0.4);
+    }
+
+    .btn {
+      justify-content: center;
+      gap: 6px;
+      padding: 0 14px;
+      font-weight: 500;
+      cursor: pointer;
+      background: #FFFFFF;
+      color: var(--ink);
+      transition: background-color 0.15s ease, border-color 0.15s ease;
+      box-shadow: var(--shadow-sm);
+      white-space: nowrap;
+    }
+
+    .btn:hover {
+      background: #F9F9FB;
+      border-color: rgba(0, 0, 0, 0.16);
+    }
+
+    .btn:active {
+      transform: scale(0.98);
+    }
+
+    .btn-primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #FFFFFF;
+      box-shadow: 0 2px 8px rgba(0, 113, 227, 0.22);
+    }
+
+    .btn-primary:hover {
+      background: var(--accent-hover);
+      border-color: var(--accent-hover);
+    }
+
+    .search-input {
+      background: #FFFFFF;
+      padding: 0 14px;
+      color: var(--ink);
+      font-size: 16px; /* 16px prevents iOS focus zoom */
+      width: 170px;
+      outline: none;
+      transition: border-color 0.15s ease, width 0.2s ease;
+    }
+
+    @media (min-width: 640px) {
+      .search-input { font-size: 0.8rem; }
+      .search-input:focus { width: 220px; border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+    }
+
+    .folder-stat-badge {
+      font-family: var(--font-mono);
+      padding: 0 12px;
+      background: #FFFFFF;
+      color: var(--ink-secondary);
+      box-shadow: var(--shadow-sm);
+      white-space: nowrap;
     }
 
     /* Login Screen Layout */
@@ -118,7 +212,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
     .login-card h2 { font-size: 1.3rem; font-weight: 600; letter-spacing: -0.02em; margin-bottom: 8px; }
     .login-card p { font-size: 0.82rem; color: var(--ink-secondary); line-height: 1.45; margin-bottom: 22px; }
 
-    /* 6-Digit OTP Box (Adaptive Flex, zero overflow) */
+    /* 6-Digit OTP Box (Adaptive Flex, zero distortion) */
     .otp-input-group {
       display: flex;
       gap: 6px;
@@ -131,9 +225,9 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
     .otp-digit {
       flex: 1 1 0;
       min-width: 0;
-      height: 52px;
+      height: 50px;
       font-family: var(--font-mono);
-      font-size: 1.35rem;
+      font-size: 1.3rem;
       font-weight: 600;
       text-align: center;
       background: #F9F9FB;
@@ -141,7 +235,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       border-radius: var(--radius-sm);
       color: var(--ink);
       outline: none;
-      transition: all 0.15s;
+      transition: border-color 0.15s ease;
       -webkit-appearance: none;
     }
 
@@ -153,17 +247,15 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
 
     .login-btn {
       width: 100%;
-      height: 46px;
-      line-height: 46px;
-      padding: 0 16px;
-      font-size: 0.92rem;
-      font-weight: 500;
-      border-radius: var(--radius-sm);
+      height: 44px;
+      border-radius: var(--radius-pill);
       cursor: pointer;
       background: var(--accent);
       border: 1px solid var(--accent);
       color: #FFFFFF;
-      transition: all 0.15s;
+      font-size: 0.9rem;
+      font-weight: 500;
+      transition: background-color 0.15s ease;
       box-shadow: 0 2px 8px rgba(0, 113, 227, 0.25);
       display: flex;
       align-items: center;
@@ -173,7 +265,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
     .login-btn:hover { background: var(--accent-hover); }
 
     .login-footer-links {
-      margin-top: 20px;
+      margin-top: 18px;
       display: flex;
       flex-direction: column;
       gap: 8px;
@@ -198,9 +290,9 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
     }
 
     @media (max-width: 640px) {
-      .container { padding: 16px 12px; }
-      .login-card { padding: 28px 18px; }
-      .otp-digit { height: 46px; font-size: 1.2rem; }
+      .container { padding: 14px 10px; }
+      .login-card { padding: 26px 16px; }
+      .otp-digit { height: 46px; font-size: 1.15rem; }
     }
 
     .eyebrow {
@@ -265,69 +357,6 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       flex-wrap: wrap;
     }
 
-    .status-pill {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      padding: 6px 12px;
-      border-radius: 980px;
-      font-size: 0.75rem;
-      font-family: var(--font-mono);
-      background: #FFFFFF;
-      border: 1px solid var(--card-border);
-      color: var(--ink-secondary);
-      box-shadow: var(--shadow-sm);
-      height: 34px;
-      box-sizing: border-box;
-    }
-
-    .status-dot {
-      width: 7px;
-      height: 7px;
-      border-radius: 50%;
-      background: var(--success);
-      box-shadow: 0 0 6px rgba(52, 199, 89, 0.4);
-    }
-
-    .status-dot.disconnected {
-      background: var(--danger);
-      box-shadow: 0 0 6px rgba(255, 59, 48, 0.4);
-    }
-
-    .btn {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      gap: 6px;
-      height: 34px;
-      padding: 0 14px;
-      border-radius: var(--radius-sm);
-      font-size: 0.82rem;
-      font-weight: 500;
-      cursor: pointer;
-      border: 1px solid var(--card-border);
-      background: #FFFFFF;
-      color: var(--ink);
-      transition: all 0.15s ease;
-      box-shadow: var(--shadow-sm);
-      white-space: nowrap;
-      box-sizing: border-box;
-    }
-
-    .btn:hover {
-      background: #F9F9FB;
-      border-color: rgba(0, 0, 0, 0.15);
-    }
-
-    .btn-primary {
-      background: var(--accent);
-      border-color: var(--accent);
-      color: #FFFFFF;
-      box-shadow: 0 2px 8px rgba(0, 113, 227, 0.25);
-    }
-
-    .btn-primary:hover { background: var(--accent-hover); }
-
     .panel {
       background: var(--card-bg);
       border: 1px solid var(--card-border);
@@ -336,6 +365,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       box-shadow: var(--shadow-sm);
       margin-bottom: 24px;
       overflow: hidden;
+      contain: layout paint;
     }
 
     .panel-header {
@@ -411,8 +441,8 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
     .topo-card-badge {
       font-size: 0.68rem;
       font-family: var(--font-mono);
-      padding: 2px 6px;
-      border-radius: 4px;
+      padding: 2px 8px;
+      border-radius: var(--radius-pill);
       background: rgba(0, 0, 0, 0.04);
       color: var(--ink-secondary);
     }
@@ -447,14 +477,14 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
 
     .spectrum-bar {
       height: 6px;
-      border-radius: 980px;
+      border-radius: var(--radius-pill);
       background: rgba(0, 0, 0, 0.06);
       display: flex;
       overflow: hidden;
       margin-bottom: 10px;
     }
 
-    .spectrum-segment { height: 100%; transition: width 0.3s; }
+    .spectrum-segment { height: 100%; }
 
     .spectrum-legend {
       display: flex;
@@ -504,53 +534,26 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       text-decoration: none;
       padding: 3px 6px;
       border-radius: 4px;
-      transition: all 0.12s;
+      transition: color 0.12s ease;
     }
 
-    .crumb-link:hover { color: var(--ink); background: rgba(0, 0, 0, 0.04); }
+    .crumb-link:hover { color: var(--ink); }
     .crumb-sep { color: var(--ink-tertiary); font-size: 0.75rem; }
 
-    .folder-stat-badge {
-      font-family: var(--font-mono);
-      font-size: 0.72rem;
-      padding: 3px 8px;
-      background: #FFFFFF;
-      border: 1px solid var(--card-border);
-      border-radius: 6px;
-      color: var(--ink-secondary);
-      white-space: nowrap;
-    }
-
-    .search-input {
-      background: #FFFFFF;
-      border: 1px solid var(--card-border);
-      border-radius: var(--radius-sm);
-      height: 34px;
-      padding: 0 12px;
-      color: var(--ink);
-      font-size: 16px; /* 16px prevents iOS zoom-on-focus */
-      width: 170px;
-      outline: none;
-      transition: all 0.2s;
-      box-sizing: border-box;
-    }
-
-    @media (min-width: 640px) {
-      .search-input { font-size: 0.82rem; }
-      .search-input:focus { width: 220px; }
-    }
-
+    /* Fixed Table Layout: Completely Eliminates Column Width Jitter & Reflows */
     .table-viewport {
       max-height: 580px;
       overflow-y: auto;
       overflow-x: auto;
       position: relative;
       -webkit-overflow-scrolling: touch;
+      contain: paint;
     }
 
     .file-table {
       width: 100%;
-      min-width: 640px;
+      min-width: 660px;
+      table-layout: fixed;
       border-collapse: collapse;
       text-align: left;
       font-size: 0.84rem;
@@ -572,14 +575,17 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
 
     .file-row {
       border-bottom: 1px solid rgba(0, 0, 0, 0.04);
-      transition: background 0.12s;
+      height: 48px;
     }
 
     .file-row:hover { background: var(--card-hover); }
 
     .file-row td {
-      padding: 10px 16px;
+      padding: 8px 16px;
       vertical-align: middle;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
 
     .name-cell {
@@ -588,6 +594,13 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       gap: 10px;
       cursor: pointer;
       font-weight: 500;
+      overflow: hidden;
+    }
+
+    .name-cell span {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
 
     .name-cell svg { width: 16px; height: 16px; flex-shrink: 0; }
@@ -596,33 +609,27 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
     .dir-size-cell {
       display: flex;
       flex-direction: column;
-      gap: 2px;
+      gap: 1px;
       cursor: pointer;
     }
 
-    .dir-size-val { font-weight: 600; color: var(--ink); }
-    .dir-items-val { font-size: 0.7rem; color: var(--ink-secondary); }
+    .dir-size-val { font-weight: 600; color: var(--ink); font-size: 0.82rem; }
+    .dir-items-val { font-size: 0.69rem; color: var(--ink-secondary); }
 
     .node-badges-cluster {
       display: inline-flex;
       align-items: center;
       gap: 6px;
-      padding: 3px 8px;
-      border-radius: 980px;
+      height: 24px;
+      padding: 0 8px;
+      border-radius: var(--radius-pill);
       background: #FFFFFF;
       border: 1px solid var(--card-border);
-      box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+      box-shadow: var(--shadow-sm);
       cursor: pointer;
       font-family: var(--font-mono);
       font-size: 0.72rem;
-      transition: all 0.15s;
       white-space: nowrap;
-    }
-
-    .node-badges-cluster:hover {
-      background: #F9F9FB;
-      border-color: rgba(0,0,0,0.15);
-      transform: translateY(-0.5px);
     }
 
     .node-dot-item {
@@ -673,14 +680,15 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
     .icon-btn {
       background: transparent;
       border: none;
-      padding: 6px;
-      border-radius: 4px;
+      width: 28px;
+      height: 28px;
+      border-radius: var(--radius-pill);
       cursor: pointer;
       color: var(--ink-secondary);
       display: flex;
       align-items: center;
       justify-content: center;
-      transition: all 0.12s;
+      transition: background-color 0.12s ease;
     }
 
     .icon-btn:hover { color: var(--ink); background: rgba(0, 0, 0, 0.06); }
@@ -783,8 +791,8 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       right: 24px;
       background: #FFFFFF;
       border: 1px solid var(--card-border);
-      padding: 10px 18px;
-      border-radius: var(--radius-sm);
+      padding: 8px 16px;
+      border-radius: var(--radius-pill);
       font-size: 0.82rem;
       box-shadow: var(--shadow-md);
       display: none;
@@ -1028,7 +1036,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       <div class="media-header">
         <div>
           <span id="mediaTitle" style="font-weight: 600; font-size: 0.9rem;"></span>
-          <span id="mediaEncodingTag" style="font-family: var(--font-mono); font-size: 0.7rem; padding: 2px 6px; border-radius: 4px; background: rgba(0,0,0,0.05); margin-left: 8px;"></span>
+          <span id="mediaEncodingTag" style="font-family: var(--font-mono); font-size: 0.7rem; padding: 2px 8px; border-radius: var(--radius-pill); background: rgba(0,0,0,0.05); margin-left: 8px;"></span>
         </div>
         <button class="icon-btn" onclick="closeMediaModal()">✕</button>
       </div>
@@ -1067,7 +1075,6 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       return window.location.pathname.startsWith('/ostore') ? '/ostore' : '';
     }
 
-    // URL token auto-capture
     const urlParams = new URLSearchParams(window.location.search);
     if (urlParams.has('token')) {
       sessionToken = urlParams.get('token');
@@ -1163,9 +1170,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
           const data = await res.json();
           sessionToken = data.token;
           localStorage.setItem('ostore_sess', sessionToken);
-          // Force close any setup/token modal on login
-          closeTotpSetupModal();
-          closeTokenModal();
+          closeAllModals();
           showToast('Authenticator verified');
           showConsole();
         } else {
@@ -1216,7 +1221,6 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
     }
 
     function showLogin() {
-      // Close all modals cleanly
       closeAllModals();
       document.getElementById('loginView').style.display = 'flex';
       document.getElementById('mainConsole').style.display = 'none';
@@ -1225,7 +1229,6 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
     }
 
     function showConsole() {
-      // Close all modals cleanly: NEVER leave setup or token modal open post-login
       closeAllModals();
       document.getElementById('loginView').style.display = 'none';
       document.getElementById('mainConsole').style.display = 'block';
@@ -1242,7 +1245,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       document.getElementById('mediaModal').style.display = 'none';
     }
 
-    // Reactive SSE: Incremental updates without full-page redraws
+    // Reactive SSE: Targeted DOM updates (Zero whole-table wipes -> Zero jitter)
     function initSSE() {
       if (eventSource) eventSource.close();
       const sseUrl = `${getBasePath()}/api/events${sessionToken ? `?token=${encodeURIComponent(sessionToken)}` : ''}`;
@@ -1273,13 +1276,16 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       const sub = p.substring(cur.length);
       if (sub.includes('/')) return;
 
-      const idx = currentEntries.findIndex(e => e.name === sub);
+      const rowId = `row-${escapeId(p)}`;
+      const existingRow = document.getElementById(rowId);
+
       if (kind === 'deleted') {
-        if (idx !== -1) {
-          currentEntries.splice(idx, 1);
-          renderTable(currentEntries, false);
+        if (existingRow) {
+          existingRow.remove();
+          const idx = currentEntries.findIndex(e => e.name === sub);
+          if (idx !== -1) currentEntries.splice(idx, 1);
         }
-      } else if (kind === 'created' || kind === 'updated') {
+      } else if (kind === 'created') {
         const item = {
           name: sub,
           path: p,
@@ -1289,9 +1295,20 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
           mtime: data.ts || new Date().toISOString(),
           sha256: null
         };
-        if (idx !== -1) currentEntries[idx] = item;
-        else currentEntries.unshift(item);
-        renderTable(currentEntries, false);
+        currentEntries.unshift(item);
+        if (!existingRow) {
+          const tbody = document.getElementById('fileTableBody');
+          tbody.insertAdjacentHTML('afterbegin', renderRowHtml(item));
+        }
+      } else if (kind === 'updated') {
+        const item = currentEntries.find(e => e.name === sub);
+        if (item) {
+          item.size = data.size || item.size;
+          item.mtime = data.ts || item.mtime;
+          if (existingRow) {
+            existingRow.outerHTML = renderRowHtml(item);
+          }
+        }
       }
     }
 
@@ -1372,7 +1389,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
         <path d="M270 65 Q210 115 150 160" fill="none" stroke="#D2D2D7" stroke-width="2" stroke-dasharray="4 4"/>
         <path d="M270 65 Q330 115 390 160" fill="none" stroke="#D2D2D7" stroke-width="2" stroke-dasharray="4 4"/>
 
-        <!-- Main Node (cc) -->
+        <!-- Main Node -->
         <g transform="translate(270, 45)">
           <circle r="24" fill="#FFFFFF" stroke="#0071E3" stroke-width="2.5"/>
           <circle r="4" fill="#34C759"/>
@@ -1471,101 +1488,105 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
         return;
       }
 
-      const rows = (append ? filtered.slice(filtered.length - PAGE_LIMIT) : filtered).map(item => {
-        const isDir = item.type === 'dir';
-        const dlUrl = isDir ? `${getBasePath()}/api/archive?path=${item.path}` : `${getBasePath()}/api/files/${item.path}`;
+      const rowsHtml = (append ? filtered.slice(filtered.length - PAGE_LIMIT) : filtered)
+        .map(item => renderRowHtml(item))
+        .join('');
 
-        let nodeMapHtml = '-';
-        if (!isDir) {
-          const cached = replicaMapCache.get(item.path);
-          const hasCc2 = cached ? cached.cc2 : null;
-          const hasRn = cached ? cached.rn : null;
+      tbody.insertAdjacentHTML('beforeend', rowsHtml);
+    }
 
-          const cc2DotClass = hasCc2 === true ? 'present' : 'missing';
-          const rnDotClass = hasRn === true ? 'present' : 'missing';
-          const count = (1 + (hasCc2 === true ? 1 : 0) + (hasRn === true ? 1 : 0));
-          const ratioClass = count === 3 ? 'full' : 'partial';
+    function renderRowHtml(item) {
+      const isDir = item.type === 'dir';
+      const dlUrl = isDir ? `${getBasePath()}/api/archive?path=${item.path}` : `${getBasePath()}/api/files/${item.path}`;
 
-          nodeMapHtml = `
-            <div class="node-badges-cluster" id="badge-${escapeId(item.path)}" onclick="inspectFileReplica('${item.path}')" title="Click to inspect and sync replicas across nodes">
-              <span class="node-dot-item present"><span class="mini-dot main"></span>cc</span>
-              <span class="node-dot-item ${hasCc2 === true ? 'present' : ''}"><span class="mini-dot ${cc2DotClass}"></span>cc2</span>
-              <span class="node-dot-item ${hasRn === true ? 'present' : ''}"><span class="mini-dot ${rnDotClass}"></span>rn</span>
-              <span class="ratio-badge ${ratioClass}">${count}/3</span>
-            </div>
-          `;
-        }
+      let nodeMapHtml = '-';
+      if (!isDir) {
+        const cached = replicaMapCache.get(item.path);
+        const hasCc2 = cached ? cached.cc2 : null;
+        const hasRn = cached ? cached.rn : null;
 
-        let sizeDisplayHtml = '';
-        if (isDir) {
-          const itemCount = item.item_count !== undefined && item.item_count !== null ? `${item.item_count.toLocaleString()} items` : 'Directory';
-          sizeDisplayHtml = `
-            <div class="dir-size-cell" onclick="openFolderDetail('${item.path}', '${item.name}', ${item.size}, ${item.item_count || 0}, '${item.mtime}')" title="Click to inspect folder properties">
-              <span class="dir-size-val">${formatBytes(item.size)}</span>
-              <span class="dir-items-val">${itemCount}</span>
-            </div>
-          `;
-        } else {
-          sizeDisplayHtml = `<span class="meta-mono">${formatBytes(item.size)}</span>`;
-        }
+        const cc2DotClass = hasCc2 === true ? 'present' : 'missing';
+        const rnDotClass = hasRn === true ? 'present' : 'missing';
+        const count = (1 + (hasCc2 === true ? 1 : 0) + (hasRn === true ? 1 : 0));
+        const ratioClass = count === 3 ? 'full' : 'partial';
 
-        let actionsHtml = '';
-        if (isDir) {
-          actionsHtml = `
-            <div class="row-actions">
-              <a class="icon-btn" href="${dlUrl}" download title="Download folder as tar archive">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-              </a>
-              <button class="icon-btn" title="Folder properties and sync" onclick="openFolderDetail('${item.path}', '${item.name}', ${item.size}, ${item.item_count || 0}, '${item.mtime}')">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
-              </button>
-              <button class="icon-btn" title="Rename folder" onclick="renamePrompt('${item.path}')">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
-              </button>
-              <button class="icon-btn btn-delete" title="Delete folder" onclick="deleteItem('${item.path}', true)">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-              </button>
-            </div>
-          `;
-        } else {
-          actionsHtml = `
-            <div class="row-actions">
-              <a class="icon-btn" href="${dlUrl}" download title="Download">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-              </a>
-              <button class="icon-btn" title="Copy Direct URL" onclick="copyURL('${dlUrl}')">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
-              </button>
-              <button class="icon-btn" title="Copy SHA-256" onclick="copySHA('${item.sha256}')">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-              </button>
-              <button class="icon-btn btn-delete" title="Delete" onclick="deleteItem('${item.path}', false)">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-              </button>
-            </div>
-          `;
-        }
-
-        return `
-          <tr class="file-row" id="row-${escapeId(item.path)}">
-            <td>
-              <div class="name-cell" onclick="${isDir ? `navigate('${item.path}')` : `openMediaPreview('${item.path}')`}">
-                ${isDir
-                  ? `<svg viewBox="0 0 24 24" fill="#0071E3"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>`
-                  : `<svg viewBox="0 0 24 24" fill="none" stroke="#86868B" stroke-width="1.5"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg>`
-                }
-                <span>${item.name}</span>
-              </div>
-            </td>
-            <td>${sizeDisplayHtml}</td>
-            <td class="meta-mono">${formatDate(item.mtime)}</td>
-            <td>${nodeMapHtml}</td>
-            <td>${actionsHtml}</td>
-          </tr>
+        nodeMapHtml = `
+          <div class="node-badges-cluster" id="badge-${escapeId(item.path)}" onclick="inspectFileReplica('${item.path}')" title="Click to inspect and sync replicas across nodes">
+            <span class="node-dot-item present"><span class="mini-dot main"></span>cc</span>
+            <span class="node-dot-item ${hasCc2 === true ? 'present' : ''}"><span class="mini-dot ${cc2DotClass}"></span>cc2</span>
+            <span class="node-dot-item ${hasRn === true ? 'present' : ''}"><span class="mini-dot ${rnDotClass}"></span>rn</span>
+            <span class="ratio-badge ${ratioClass}">${count}/3</span>
+          </div>
         `;
-      }).join('');
+      }
 
-      tbody.insertAdjacentHTML('beforeend', rows);
+      let sizeDisplayHtml = '';
+      if (isDir) {
+        const itemCount = item.item_count !== undefined && item.item_count !== null ? `${item.item_count.toLocaleString()} items` : 'Directory';
+        sizeDisplayHtml = `
+          <div class="dir-size-cell" onclick="openFolderDetail('${item.path}', '${item.name}', ${item.size}, ${item.item_count || 0}, '${item.mtime}')" title="Click to inspect folder properties">
+            <span class="dir-size-val">${formatBytes(item.size)}</span>
+            <span class="dir-items-val">${itemCount}</span>
+          </div>
+        `;
+      } else {
+        sizeDisplayHtml = `<span class="meta-mono">${formatBytes(item.size)}</span>`;
+      }
+
+      let actionsHtml = '';
+      if (isDir) {
+        actionsHtml = `
+          <div class="row-actions">
+            <a class="icon-btn" href="${dlUrl}" download title="Download folder as tar archive">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            </a>
+            <button class="icon-btn" title="Folder properties and sync" onclick="openFolderDetail('${item.path}', '${item.name}', ${item.size}, ${item.item_count || 0}, '${item.mtime}')">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+            </button>
+            <button class="icon-btn" title="Rename folder" onclick="renamePrompt('${item.path}')">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+            </button>
+            <button class="icon-btn btn-delete" title="Delete folder" onclick="deleteItem('${item.path}', true)">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+            </button>
+          </div>
+        `;
+      } else {
+        actionsHtml = `
+          <div class="row-actions">
+            <a class="icon-btn" href="${dlUrl}" download title="Download">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            </a>
+            <button class="icon-btn" title="Copy Direct URL" onclick="copyURL('${dlUrl}')">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+            </button>
+            <button class="icon-btn" title="Copy SHA-256" onclick="copySHA('${item.sha256}')">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+            </button>
+            <button class="icon-btn btn-delete" title="Delete" onclick="deleteItem('${item.path}', false)">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+            </button>
+          </div>
+        `;
+      }
+
+      return `
+        <tr class="file-row" id="row-${escapeId(item.path)}">
+          <td>
+            <div class="name-cell" onclick="${isDir ? `navigate('${item.path}')` : `openMediaPreview('${item.path}')`}">
+              ${isDir
+                ? `<svg viewBox="0 0 24 24" fill="#0071E3"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>`
+                : `<svg viewBox="0 0 24 24" fill="none" stroke="#86868B" stroke-width="1.5"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg>`
+              }
+              <span>${item.name}</span>
+            </div>
+          </td>
+          <td>${sizeDisplayHtml}</td>
+          <td class="meta-mono">${formatDate(item.mtime)}</td>
+          <td>${nodeMapHtml}</td>
+          <td>${actionsHtml}</td>
+        </tr>
+      `;
     }
 
     function onFilter() {
@@ -1576,6 +1597,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       return btoa(unescape(encodeURIComponent(str))).replace(/[/+=]/g, '_');
     }
 
+    // Infinite Scroll Observer for Streaming Pagination
     const scrollObserver = new IntersectionObserver(entries => {
       if (entries[0].isIntersecting && hasMore && !isLoading) {
         loadDirectory(currentPath, true);
