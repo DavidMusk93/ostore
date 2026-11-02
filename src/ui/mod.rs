@@ -2,7 +2,8 @@
 //!
 //! Crafted to strictly adhere to Owner UI Taste & Operational Excellence:
 //! - Apple-design restraint: Light theme (#F5F5F7, #1D1D1F, #0071E3).
-//! - Directory total size display & live folder statistics.
+//! - Directory Dual-Metrics: Displays both Total Aggregated Size and Total Item Count.
+//! - Complete Folder Capabilities: Download directory as tar, rename/move, inspect, sync, upload folder tree.
 //! - Server-side incremental Lazy Load (limit/offset stream pagination) - zero open lag.
 //! - Multi-node visual replica badges per row (`● cc` `● cc2` `● rn` / `○ cc2` `○ rn`).
 //! - Intelligent multi-encoding text decoding (UTF-8, GB18030/GBK, UTF-16, binary detection).
@@ -471,9 +472,21 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       color: var(--ink-secondary);
     }
 
-    .dir-size-tag {
-      font-weight: 500;
+    /* Directory Size & Total Combined Cell */
+    .dir-size-cell {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .dir-size-val {
+      font-weight: 600;
       color: var(--ink);
+    }
+
+    .dir-items-val {
+      font-size: 0.7rem;
+      color: var(--ink-secondary);
     }
 
     /* Node Replica Multi-Badges */
@@ -769,11 +782,13 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
           </div>
           <span class="folder-stat-badge" id="folderStatBadge">0 items · 0 B</span>
         </div>
-        <div style="display: flex; gap: 8px; align-items: center;">
+        <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
           <input type="text" class="search-input" id="searchBox" placeholder="Filter objects..." oninput="onFilter()">
           <button class="btn" onclick="openMkdir()">New Folder</button>
-          <button class="btn btn-primary" onclick="triggerFileInput()">Upload Object</button>
+          <button class="btn" onclick="triggerFolderUploadInput()" title="Upload entire folder with structure">Upload Folder</button>
+          <button class="btn btn-primary" onclick="triggerFileInput()">Upload File</button>
           <input type="file" id="fileInput" multiple style="display: none;" onchange="handleFileSelect(event)">
+          <input type="file" id="folderInput" webkitdirectory directory multiple style="display: none;" onchange="handleFolderSelect(event)">
         </div>
       </div>
 
@@ -781,11 +796,11 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
         <table class="file-table">
           <thead>
             <tr>
-              <th style="width: 44%;">Name</th>
-              <th style="width: 14%;">Size / Total</th>
+              <th style="width: 42%;">Name</th>
+              <th style="width: 16%;">Size & Total Items</th>
               <th style="width: 16%;">Modified</th>
-              <th style="width: 16%;">Replication Map</th>
-              <th style="width: 10%; text-align: right;">Actions</th>
+              <th style="width: 14%;">Replication Map</th>
+              <th style="width: 12%; text-align: right;">Folder Actions</th>
             </tr>
           </thead>
           <tbody id="fileTableBody"></tbody>
@@ -804,6 +819,43 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px;">
         <button class="btn" onclick="closeTokenModal()">Cancel</button>
         <button class="btn btn-primary" onclick="saveToken()">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Folder Details / Inspector Modal -->
+  <div class="backdrop" id="folderDetailModal">
+    <div class="dialog-box">
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <h3 id="folderDetailTitle">Folder Details</h3>
+        <button class="icon-btn" onclick="closeFolderDetailModal()">✕</button>
+      </div>
+      <p style="font-size: 0.78rem; color: var(--ink-secondary); font-family: var(--font-mono); margin-bottom: 16px;" id="folderDetailPath"></p>
+
+      <div style="display: flex; flex-direction: column; gap: 10px; background: #F9F9FB; padding: 14px; border-radius: var(--radius-sm); border: 1px solid var(--card-border); font-family: var(--font-mono); font-size: 0.8rem;">
+        <div style="display: flex; justify-content: space-between;">
+          <span style="color: var(--ink-secondary);">Total Size:</span>
+          <strong id="folderDetailSize" style="color: var(--ink);">--</strong>
+        </div>
+        <div style="display: flex; justify-content: space-between;">
+          <span style="color: var(--ink-secondary);">Total Objects:</span>
+          <strong id="folderDetailCount" style="color: var(--ink);">--</strong>
+        </div>
+        <div style="display: flex; justify-content: space-between;">
+          <span style="color: var(--ink-secondary);">Modified:</span>
+          <span id="folderDetailMtime">--</span>
+        </div>
+      </div>
+
+      <div style="display: flex; justify-content: space-between; gap: 8px; margin-top: 20px;">
+        <a class="btn" id="folderDownloadTarBtn" href="#" download>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          Download Tar
+        </a>
+        <div style="display: flex; gap: 8px;">
+          <button class="btn" onclick="renameFolderPrompt()">Rename</button>
+          <button class="btn btn-primary" onclick="syncFolderReplicas()">Sync Replicas</button>
+        </div>
       </div>
     </div>
   </div>
@@ -858,7 +910,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
   </div>
 
   <script>
-    // App Architecture & State
+    // State Architecture
     let currentPath = '';
     let currentEntries = [];
     let currentTotalCount = 0;
@@ -869,6 +921,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
     const PAGE_LIMIT = 50;
 
     let inspectingFilePath = '';
+    let inspectingFolderPath = '';
     const replicaMapCache = new Map();
 
     let token = localStorage.getItem('ostore_token') || '';
@@ -955,6 +1008,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
           path: p,
           type: data.type || 'file',
           size: data.size || 0,
+          item_count: data.type === 'dir' ? 0 : null,
           mtime: data.ts || new Date().toISOString(),
           sha256: null
         };
@@ -1046,7 +1100,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
           <text y="38" text-anchor="middle" fill="#86868B" font-size="9" font-family="monospace">Primary Entry (:8781)</text>
         </g>
 
-        <!-- Follower 1 (cc2) -->
+        <!-- Follower 1 -->
         <g transform="translate(150, 165)">
           <circle r="20" fill="#FFFFFF" stroke="#34C759" stroke-width="2"/>
           <circle r="3" fill="#34C759"/>
@@ -1054,7 +1108,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
           <text y="44" text-anchor="middle" fill="#86868B" font-size="9" font-family="monospace">${w1.rtt_ms}ms · Follower</text>
         </g>
 
-        <!-- Follower 2 (racknerd) -->
+        <!-- Follower 2 -->
         <g transform="translate(390, 165)">
           <circle r="20" fill="#FFFFFF" stroke="#34C759" stroke-width="2"/>
           <circle r="3" fill="#34C759"/>
@@ -1074,7 +1128,6 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
         currentOffset = 0;
         currentEntries = [];
         updateBreadcrumbs();
-        // Instant visual feedback: Skeleton row
         document.getElementById('fileTableBody').innerHTML = `
           <tr><td colspan="5" style="text-align:center; padding: 24px; color: var(--ink-secondary); font-family:var(--font-mono);">
             ⚡ Reading directory metadata...
@@ -1083,7 +1136,6 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       }
 
       try {
-        // High-performance: DO NOT pass checksums=1 on directory open!
         let query = `?limit=${PAGE_LIMIT}&offset=${currentOffset}`;
         if (currentPath) query += `&path=${encodeURIComponent(currentPath)}`;
 
@@ -1138,7 +1190,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
 
       const rows = (append ? filtered.slice(filtered.length - PAGE_LIMIT) : filtered).map(item => {
         const isDir = item.type === 'dir';
-        const dlUrl = `${getBasePath()}/api/files/${item.path}`;
+        const dlUrl = isDir ? `${getBasePath()}/api/archive?path=${item.path}` : `${getBasePath()}/api/files/${item.path}`;
 
         // Node Replica Multi-Badges
         let nodeMapHtml = '-';
@@ -1162,10 +1214,57 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
           `;
         }
 
-        // Directory Total Size vs File Size
-        const sizeDisplay = isDir 
-          ? `<span class="dir-size-tag">${formatBytes(item.size)}</span>`
-          : formatBytes(item.size);
+        // Directory Size AND Total Items (Full Transparency)
+        let sizeDisplayHtml = '';
+        if (isDir) {
+          const itemCount = item.item_count !== undefined && item.item_count !== null ? `${item.item_count.toLocaleString()} items` : 'Directory';
+          sizeDisplayHtml = `
+            <div class="dir-size-cell" onclick="openFolderDetail('${item.path}', '${item.name}', ${item.size}, ${item.item_count || 0}, '${item.mtime}')" title="Click to inspect folder properties">
+              <span class="dir-size-val">${formatBytes(item.size)}</span>
+              <span class="dir-items-val">${itemCount}</span>
+            </div>
+          `;
+        } else {
+          sizeDisplayHtml = `<span class="meta-mono">${formatBytes(item.size)}</span>`;
+        }
+
+        // Action buttons: complete folder actions
+        let actionsHtml = '';
+        if (isDir) {
+          actionsHtml = `
+            <div class="row-actions">
+              <a class="icon-btn" href="${dlUrl}" download title="Download folder as tar archive">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              </a>
+              <button class="icon-btn" title="Folder properties and sync" onclick="openFolderDetail('${item.path}', '${item.name}', ${item.size}, ${item.item_count || 0}, '${item.mtime}')">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+              </button>
+              <button class="icon-btn" title="Rename folder" onclick="renamePrompt('${item.path}')">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+              </button>
+              <button class="icon-btn btn-delete" title="Delete folder" onclick="deleteItem('${item.path}', true)">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+              </button>
+            </div>
+          `;
+        } else {
+          actionsHtml = `
+            <div class="row-actions">
+              <a class="icon-btn" href="${dlUrl}" download title="Download">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              </a>
+              <button class="icon-btn" title="Copy Direct URL" onclick="copyURL('${dlUrl}')">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+              </button>
+              <button class="icon-btn" title="Copy SHA-256" onclick="copySHA('${item.sha256}')">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+              </button>
+              <button class="icon-btn btn-delete" title="Delete" onclick="deleteItem('${item.path}', false)">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+              </button>
+            </div>
+          `;
+        }
 
         return `
           <tr class="file-row" id="row-${escapeId(item.path)}">
@@ -1178,24 +1277,10 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
                 <span>${item.name}</span>
               </div>
             </td>
-            <td class="meta-mono">${sizeDisplay}</td>
+            <td>${sizeDisplayHtml}</td>
             <td class="meta-mono">${formatDate(item.mtime)}</td>
             <td>${nodeMapHtml}</td>
-            <td>
-              <div class="row-actions">
-                ${!isDir ? `
-                  <a class="icon-btn" href="${dlUrl}" download title="Download">
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                  </a>
-                  <button class="icon-btn" title="Copy Direct URL" onclick="copyURL('${dlUrl}')">
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
-                  </button>
-                ` : ''}
-                <button class="icon-btn btn-delete" title="Delete" onclick="deleteItem('${item.path}', ${isDir})">
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-                </button>
-              </div>
-            </td>
+            <td>${actionsHtml}</td>
           </tr>
         `;
       }).join('');
@@ -1211,7 +1296,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       return btoa(unescape(encodeURIComponent(str))).replace(/[/+=]/g, '_');
     }
 
-    // Server-side Infinite Scroll Observer: Lazy Loads Next 50 Items on Bottom Touch
+    // Infinite Scroll Observer for Streaming Pagination
     const scrollObserver = new IntersectionObserver(entries => {
       if (entries[0].isIntersecting && hasMore && !isLoading) {
         loadDirectory(currentPath, true);
@@ -1245,7 +1330,62 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       bc.innerHTML = html;
     }
 
-    // Per-File Replica Topology Inspector (Honest & High-Performance)
+    // Folder Inspector Modal
+    function openFolderDetail(path, name, size, count, mtime) {
+      inspectingFolderPath = path;
+      document.getElementById('folderDetailTitle').textContent = `Folder: ${name}`;
+      document.getElementById('folderDetailPath').textContent = path;
+      document.getElementById('folderDetailSize').textContent = formatBytes(size);
+      document.getElementById('folderDetailCount').textContent = `${(count || 0).toLocaleString()} objects inside`;
+      document.getElementById('folderDetailMtime').textContent = formatDate(mtime);
+      document.getElementById('folderDownloadTarBtn').href = `${getBasePath()}/api/archive?path=${encodeURIComponent(path)}`;
+      document.getElementById('folderDetailModal').style.display = 'flex';
+    }
+
+    function closeFolderDetailModal() {
+      document.getElementById('folderDetailModal').style.display = 'none';
+    }
+
+    async function renamePrompt(oldPath) {
+      const curName = oldPath.split('/').pop();
+      const newName = prompt('New name:', curName);
+      if (!newName || newName === curName) return;
+
+      const parent = oldPath.includes('/') ? oldPath.substring(0, oldPath.lastIndexOf('/')) : '';
+      const newPath = parent ? `${parent}/${newName}` : newName;
+
+      const res = await api('/api/move', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ from: oldPath, to: newPath })
+      });
+      if (res.ok) {
+        showToast('Renamed successfully');
+        loadDirectory(currentPath, false);
+      } else {
+        alert('Rename failed');
+      }
+    }
+
+    async function renameFolderPrompt() {
+      if (!inspectingFolderPath) return;
+      closeFolderDetailModal();
+      renamePrompt(inspectingFolderPath);
+    }
+
+    async function syncFolderReplicas() {
+      if (!inspectingFolderPath) return;
+      showToast(`Syncing folder "${inspectingFolderPath}" to all followers...`);
+      const res = await api(`/api/cluster/sync?prefix=${encodeURIComponent(inspectingFolderPath)}`, { method: 'POST' });
+      if (res.ok) {
+        const r = await res.json();
+        showToast(`Folder synced in ${r.duration_ms}ms`);
+        closeFolderDetailModal();
+        loadDirectory(currentPath, false);
+      }
+    }
+
+    // Per-File Replica Topology Inspector
     async function inspectFileReplica(filePath, deepVerify = false) {
       inspectingFilePath = filePath;
       document.getElementById('fileTopoPath').textContent = filePath;
@@ -1368,7 +1508,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       }
     }
 
-    // Intelligent Text Decoding: Multi-encoding (UTF-8, GB18030/GBK, UTF-16, Binary Guard)
+    // Intelligent Text Decoding: Multi-encoding
     function decodeTextSmart(uint8Array) {
       if (uint8Array.length >= 8) {
         const magic = String.fromCharCode(...uint8Array.slice(0, 8));
@@ -1528,9 +1668,12 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
     }
 
     async function deleteItem(path, isDir) {
-      if (!confirm(`Delete ${path}?`)) return;
+      if (!confirm(`Delete ${isDir ? 'folder' : 'file'} "${path}"?`)) return;
       const res = await api(`/api/files/${path}${isDir ? '?recursive=1' : ''}`, { method: 'DELETE' });
-      if (res.ok) showToast('Object deleted');
+      if (res.ok) {
+        showToast('Deleted successfully');
+        loadDirectory(currentPath, false);
+      }
     }
 
     async function openMkdir() {
@@ -1542,9 +1685,13 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: target })
       });
-      if (res.ok) showToast('Folder created');
+      if (res.ok) {
+        showToast('Folder created');
+        loadDirectory(currentPath, false);
+      }
     }
 
+    // Upload Files
     function triggerFileInput() { document.getElementById('fileInput').click(); }
     async function handleFileSelect(e) {
       const files = Array.from(e.target.files);
@@ -1555,6 +1702,23 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       }
       showToast('Uploads completed');
       e.target.value = '';
+      loadDirectory(currentPath, false);
+    }
+
+    // Upload Folder Tree (with webkitdirectory relative paths)
+    function triggerFolderUploadInput() { document.getElementById('folderInput').click(); }
+    async function handleFolderSelect(e) {
+      const files = Array.from(e.target.files);
+      if (!files.length) return;
+      showToast(`Uploading folder tree (${files.length} files)...`);
+      for (const f of files) {
+        const relPath = f.webkitRelativePath || f.name;
+        const dest = currentPath ? `${currentPath}/${relPath}` : relPath;
+        await api(`/api/files/${dest}`, { method: 'PUT', body: f });
+      }
+      showToast('Folder tree uploaded successfully');
+      e.target.value = '';
+      loadDirectory(currentPath, false);
     }
 
     async function triggerSync() {
