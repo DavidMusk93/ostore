@@ -2,6 +2,7 @@
 //!
 //! Crafted to strictly adhere to Owner UI Taste & Operational Excellence:
 //! - Apple-design restraint: Light theme (#F5F5F7, #1D1D1F, #0071E3).
+//! - Authenticator OTP Login View with 6-digit split inputs & setup QR guidance.
 //! - Directory Dual-Metrics: Displays both Total Aggregated Size and Total Item Count.
 //! - Complete Folder Capabilities: Download directory as tar, rename/move, inspect, sync, upload folder tree.
 //! - Server-side incremental Lazy Load (limit/offset stream pagination) - zero open lag.
@@ -25,7 +26,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
   <style>
     :root {
       --bg: #F5F5F7;
-      --card-bg: rgba(255, 255, 255, 0.92);
+      --card-bg: rgba(255, 255, 255, 0.94);
       --card-border: rgba(0, 0, 0, 0.08);
       --card-hover: rgba(0, 0, 0, 0.025);
       --ink: #1D1D1F;
@@ -44,7 +45,8 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       --radius-md: 14px;
       --radius-lg: 20px;
       --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.04), 0 4px 12px rgba(0, 0, 0, 0.02);
-      --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+      --shadow-md: 0 4px 20px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+      --shadow-lg: 0 12px 36px rgba(0, 0, 0, 0.08), 0 2px 4px rgba(0, 0, 0, 0.04);
       --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
       --font-mono: ui-monospace, "SF Mono", Menlo, Monaco, Consolas, monospace;
     }
@@ -60,6 +62,112 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       -webkit-font-smoothing: antialiased;
     }
 
+    /* Login Screen Layout */
+    .login-wrapper {
+      position: fixed;
+      inset: 0;
+      background: var(--bg);
+      z-index: 2000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+
+    .login-card {
+      background: #FFFFFF;
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius-lg);
+      padding: 40px 36px;
+      width: 100%;
+      max-width: 420px;
+      box-shadow: var(--shadow-lg);
+      text-align: center;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    .login-logo {
+      width: 48px;
+      height: 48px;
+      background: #FAFAFC;
+      border: 1px solid var(--card-border);
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 20px;
+      box-shadow: var(--shadow-sm);
+    }
+
+    .login-logo svg { width: 26px; height: 26px; fill: var(--accent); }
+    .login-card h2 { font-size: 1.35rem; font-weight: 600; letter-spacing: -0.02em; margin-bottom: 8px; }
+    .login-card p { font-size: 0.84rem; color: var(--ink-secondary); line-height: 1.45; margin-bottom: 24px; }
+
+    /* 6-Digit OTP Box */
+    .otp-input-group {
+      display: flex;
+      gap: 8px;
+      justify-content: center;
+      margin-bottom: 24px;
+      width: 100%;
+    }
+
+    .otp-digit {
+      width: 46px;
+      height: 52px;
+      font-family: var(--font-mono);
+      font-size: 1.4rem;
+      font-weight: 600;
+      text-align: center;
+      background: #F9F9FB;
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius-sm);
+      color: var(--ink);
+      outline: none;
+      transition: all 0.15s;
+    }
+
+    .otp-digit:focus {
+      border-color: var(--accent);
+      background: #FFFFFF;
+      box-shadow: 0 0 0 3px var(--accent-soft);
+    }
+
+    .login-btn {
+      width: 100%;
+      padding: 10px 16px;
+      font-size: 0.9rem;
+      font-weight: 500;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      background: var(--accent);
+      border: 1px solid var(--accent);
+      color: #FFFFFF;
+      transition: all 0.15s;
+      box-shadow: 0 2px 8px rgba(0, 113, 227, 0.25);
+    }
+
+    .login-btn:hover { background: var(--accent-hover); }
+
+    .login-footer-links {
+      margin-top: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      font-size: 0.78rem;
+    }
+
+    .login-link {
+      color: var(--accent);
+      text-decoration: none;
+      cursor: pointer;
+    }
+
+    .login-link:hover { text-decoration: underline; }
+
+    /* Main Console Container */
     .container {
       max-width: 1260px;
       margin: 0 auto;
@@ -68,7 +176,6 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       flex: 1;
     }
 
-    /* Eyebrow numbering */
     .eyebrow {
       font-family: var(--font-mono);
       font-size: 0.72rem;
@@ -89,7 +196,6 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       background: var(--card-border);
     }
 
-    /* Header */
     header {
       display: flex;
       justify-content: space-between;
@@ -190,7 +296,6 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       background: var(--accent-hover);
     }
 
-    /* Panels */
     .panel {
       background: var(--card-bg);
       border: 1px solid var(--card-border);
@@ -220,7 +325,6 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       gap: 8px;
     }
 
-    /* Topology Layout */
     .topology-wrap {
       padding: 20px;
       display: grid;
@@ -302,7 +406,6 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       border-radius: 2px;
     }
 
-    /* Distribution Spectrum */
     .spectrum-panel {
       padding: 14px 20px;
       border-top: 1px solid var(--card-border);
@@ -336,7 +439,6 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
 
     .legend-dot { width: 7px; height: 7px; border-radius: 2px; }
 
-    /* Explorer View */
     .explorer-bar {
       padding: 12px 20px;
       border-bottom: 1px solid var(--card-border);
@@ -410,7 +512,6 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       box-shadow: 0 0 0 2px var(--accent-soft);
     }
 
-    /* Table */
     .table-viewport {
       max-height: 600px;
       overflow-y: auto;
@@ -472,24 +573,16 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       color: var(--ink-secondary);
     }
 
-    /* Directory Size & Total Combined Cell */
     .dir-size-cell {
       display: flex;
       flex-direction: column;
       gap: 2px;
+      cursor: pointer;
     }
 
-    .dir-size-val {
-      font-weight: 600;
-      color: var(--ink);
-    }
+    .dir-size-val { font-weight: 600; color: var(--ink); }
+    .dir-items-val { font-size: 0.7rem; color: var(--ink-secondary); }
 
-    .dir-items-val {
-      font-size: 0.7rem;
-      color: var(--ink-secondary);
-    }
-
-    /* Node Replica Multi-Badges */
     .node-badges-cluster {
       display: inline-flex;
       align-items: center;
@@ -518,10 +611,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       color: var(--ink-secondary);
     }
 
-    .node-dot-item.present {
-      color: var(--ink);
-      font-weight: 600;
-    }
+    .node-dot-item.present { color: var(--ink); font-weight: 600; }
 
     .mini-dot {
       width: 6px;
@@ -541,17 +631,9 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       margin-left: 2px;
     }
 
-    .ratio-badge.full {
-      background: var(--success-soft);
-      color: #248A3D;
-    }
+    .ratio-badge.full { background: var(--success-soft); color: #248A3D; }
+    .ratio-badge.partial { background: var(--warning-soft); color: #B25E00; }
 
-    .ratio-badge.partial {
-      background: var(--warning-soft);
-      color: #B25E00;
-    }
-
-    /* Row actions: Controls on intent (hover only) */
     .row-actions {
       display: flex;
       align-items: center;
@@ -561,9 +643,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       transition: opacity 0.15s ease;
     }
 
-    .file-row:hover .row-actions {
-      opacity: 1;
-    }
+    .file-row:hover .row-actions { opacity: 1; }
 
     .icon-btn {
       background: transparent;
@@ -578,17 +658,9 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       transition: all 0.12s;
     }
 
-    .icon-btn:hover {
-      color: var(--ink);
-      background: rgba(0, 0, 0, 0.06);
-    }
+    .icon-btn:hover { color: var(--ink); background: rgba(0, 0, 0, 0.06); }
+    .icon-btn.btn-delete:hover { color: var(--danger); background: var(--danger-soft); }
 
-    .icon-btn.btn-delete:hover {
-      color: var(--danger);
-      background: var(--danger-soft);
-    }
-
-    /* Modals & Backdrops */
     .backdrop {
       position: fixed;
       inset: 0;
@@ -611,24 +683,10 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       box-shadow: var(--shadow-md);
     }
 
-    .dialog-box h3 {
-      font-size: 1.05rem;
-      font-weight: 600;
-      margin-bottom: 12px;
-    }
+    .dialog-box h3 { font-size: 1.05rem; font-weight: 600; margin-bottom: 12px; }
 
-    /* Per-file Topology Inspector */
-    .file-topo-box {
-      max-width: 640px;
-    }
-
-    .file-topo-flow {
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-      margin: 16px 0;
-    }
-
+    .file-topo-box { max-width: 640px; }
+    .file-topo-flow { display: flex; flex-direction: column; gap: 10px; margin: 16px 0; }
     .file-node-row {
       display: flex;
       justify-content: space-between;
@@ -652,7 +710,6 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       align-items: center;
     }
 
-    /* Media Preview Modal */
     .media-box {
       max-width: 90vw;
       max-height: 85vh;
@@ -695,7 +752,6 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       line-height: 1.5;
     }
 
-    /* Toast */
     .toast {
       position: fixed;
       bottom: 24px;
@@ -714,8 +770,35 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
   </style>
 </head>
 <body>
-  <div class="container">
-    <!-- Header -->
+  <!-- Authenticator OTP Login View (Apple-Design Light Theme) -->
+  <div class="login-wrapper" id="loginView" style="display: none;">
+    <div class="login-card">
+      <div class="login-logo">
+        <svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+      </div>
+      <h2>Sign in to ostore</h2>
+      <p>Enter the 6-digit verification code from your Authenticator app (Apple Passwords, Google Authenticator, etc.)</p>
+
+      <div class="otp-input-group">
+        <input type="text" class="otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]*" autofocus>
+        <input type="text" class="otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]*">
+        <input type="text" class="otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]*">
+        <input type="text" class="otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]*">
+        <input type="text" class="otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]*">
+        <input type="text" class="otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]*">
+      </div>
+
+      <button class="login-btn" id="loginBtn" onclick="submitOtpLogin()">Sign In</button>
+
+      <div class="login-footer-links">
+        <a class="login-link" onclick="openTotpSetupModal()">Set up Authenticator (QR & Secret)</a>
+        <a class="login-link" style="color:var(--ink-secondary);" onclick="openTokenModal()">Use developer token</a>
+      </div>
+    </div>
+  </div>
+
+  <!-- Main Console -->
+  <div class="container" id="mainConsole" style="display: none;">
     <header>
       <a href="#" class="brand" onclick="navigate(''); return false;">
         <div class="brand-logo">
@@ -732,8 +815,8 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
           <span class="status-dot" id="sseDot"></span>
           <span id="sseStatus">SSE Stream Ready</span>
         </div>
-        <button class="btn" onclick="openTokenModal()">
-          <span id="tokenStatusText">Auth Token</span>
+        <button class="btn" onclick="signOut()" title="Sign out current session">
+          <span>Sign Out</span>
         </button>
         <button class="btn btn-primary" onclick="triggerSync()">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
@@ -785,7 +868,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
         <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
           <input type="text" class="search-input" id="searchBox" placeholder="Filter objects..." oninput="onFilter()">
           <button class="btn" onclick="openMkdir()">New Folder</button>
-          <button class="btn" onclick="triggerFolderUploadInput()" title="Upload entire folder with structure">Upload Folder</button>
+          <button class="btn" onclick="triggerFolderUploadInput()" title="Upload entire folder tree">Upload Folder</button>
           <button class="btn btn-primary" onclick="triggerFileInput()">Upload File</button>
           <input type="file" id="fileInput" multiple style="display: none;" onchange="handleFileSelect(event)">
           <input type="file" id="folderInput" webkitdirectory directory multiple style="display: none;" onchange="handleFolderSelect(event)">
@@ -810,11 +893,39 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
     </section>
   </div>
 
-  <!-- Token Modal -->
+  <!-- Authenticator Setup Modal -->
+  <div class="backdrop" id="totpSetupModal">
+    <div class="dialog-box">
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <h3>Set Up Authenticator</h3>
+        <button class="icon-btn" onclick="closeTotpSetupModal()">✕</button>
+      </div>
+      <p style="font-size: 0.82rem; color: var(--ink-secondary); margin-bottom: 14px;">
+        Add ostore to Apple Passwords, Google Authenticator, or 1Password using this Secret:
+      </p>
+
+      <div style="background: #F9F9FB; border: 1px solid var(--card-border); padding: 14px; border-radius: var(--radius-sm); margin-bottom: 14px;">
+        <div style="font-size: 0.75rem; color: var(--ink-secondary); margin-bottom: 4px;">BASE32 SECRET KEY</div>
+        <div style="font-family: var(--font-mono); font-size: 1.15rem; font-weight: 600; letter-spacing: 0.08em; color: var(--accent); word-break: break-all;" id="totpSecretText">
+          LOADING...
+        </div>
+      </div>
+
+      <div style="font-size: 0.75rem; color: var(--ink-secondary); font-family: var(--font-mono); word-break: break-all; margin-bottom: 16px;">
+        URI: <span id="totpUriText">--</span>
+      </div>
+
+      <div style="display: flex; justify-content: flex-end; gap: 8px;">
+        <button class="btn btn-primary" onclick="copyTotpSecret()">Copy Secret</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Token Modal (Fallback) -->
   <div class="backdrop" id="tokenModal">
     <div class="dialog-box">
-      <h3>Access Token</h3>
-      <p style="font-size: 0.82rem; color: var(--ink-secondary); margin-bottom: 12px;">Stored in browser localStorage for direct API access:</p>
+      <h3>Developer Token</h3>
+      <p style="font-size: 0.82rem; color: var(--ink-secondary); margin-bottom: 12px;">Manual OSTORE_TOKEN override:</p>
       <input type="password" id="tokenInput" class="search-input" style="width: 100%;" placeholder="OSTORE_TOKEN">
       <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px;">
         <button class="btn" onclick="closeTokenModal()">Cancel</button>
@@ -823,7 +934,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
     </div>
   </div>
 
-  <!-- Folder Details / Inspector Modal -->
+  <!-- Folder Details Modal -->
   <div class="backdrop" id="folderDetailModal">
     <div class="dialog-box">
       <div style="display: flex; justify-content: space-between; align-items: center;">
@@ -904,7 +1015,6 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
     </div>
   </div>
 
-  <!-- Toast -->
   <div class="toast" id="toast">
     <span id="toastMsg">Action completed</span>
   </div>
@@ -922,19 +1032,21 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
 
     let inspectingFilePath = '';
     let inspectingFolderPath = '';
+    let totpSecretRaw = '';
     const replicaMapCache = new Map();
 
-    let token = localStorage.getItem('ostore_token') || '';
+    let sessionToken = localStorage.getItem('ostore_sess') || localStorage.getItem('ostore_token') || '';
     let eventSource = null;
 
     function getBasePath() {
       return window.location.pathname.startsWith('/ostore') ? '/ostore' : '';
     }
 
+    // URL token auto-capture
     const urlParams = new URLSearchParams(window.location.search);
     if (urlParams.has('token')) {
-      token = urlParams.get('token');
-      localStorage.setItem('ostore_token', token);
+      sessionToken = urlParams.get('token');
+      localStorage.setItem('ostore_sess', sessionToken);
       window.history.replaceState({}, document.title, window.location.pathname);
     }
 
@@ -961,14 +1073,139 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
     async function api(path, opts = {}) {
       const url = `${getBasePath()}${path}`;
       opts.headers = opts.headers || {};
-      if (token) opts.headers['Authorization'] = `Bearer ${token}`;
+      if (sessionToken) opts.headers['Authorization'] = `Bearer ${sessionToken}`;
       return fetch(url, opts);
+    }
+
+    // Authenticator OTP UI & Flow
+    const otpInputs = document.querySelectorAll('.otp-digit');
+    otpInputs.forEach((input, index) => {
+      input.addEventListener('input', (e) => {
+        const val = e.target.value;
+        if (val.length === 1 && index < otpInputs.length - 1) {
+          otpInputs[index + 1].focus();
+        }
+        checkAutoSubmit();
+      });
+
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Backspace' && !e.target.value && index > 0) {
+          otpInputs[index - 1].focus();
+        } else if (e.key === 'Enter') {
+          submitOtpLogin();
+        }
+      });
+
+      input.addEventListener('paste', (e) => {
+        e.preventDefault();
+        const text = (e.clipboardData || window.clipboardData).getData('text').trim();
+        if (/^\d{6}$/.test(text)) {
+          text.split('').forEach((digit, i) => {
+            if (otpInputs[i]) otpInputs[i].value = digit;
+          });
+          otpInputs[5].focus();
+          submitOtpLogin();
+        }
+      });
+    });
+
+    function checkAutoSubmit() {
+      const code = Array.from(otpInputs).map(i => i.value).join('');
+      if (code.length === 6) {
+        submitOtpLogin();
+      }
+    }
+
+    async function submitOtpLogin() {
+      const code = Array.from(otpInputs).map(i => i.value).join('');
+      if (code.length !== 6) {
+        alert('Please enter a valid 6-digit Authenticator code');
+        return;
+      }
+
+      const btn = document.getElementById('loginBtn');
+      btn.textContent = 'Verifying...';
+      btn.disabled = true;
+
+      try {
+        const res = await fetch(`${getBasePath()}/api/auth/login`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code })
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          sessionToken = data.token;
+          localStorage.setItem('ostore_sess', sessionToken);
+          showToast('Authenticator verified');
+          showConsole();
+        } else {
+          alert('Invalid verification code. Please check your Authenticator app.');
+          otpInputs.forEach(i => i.value = '');
+          otpInputs[0].focus();
+        }
+      } catch (e) {
+        alert('Authentication error: ' + e);
+      } finally {
+        btn.textContent = 'Sign In';
+        btn.disabled = false;
+      }
+    }
+
+    async function openTotpSetupModal() {
+      try {
+        const res = await fetch(`${getBasePath()}/api/auth/setup`);
+        if (res.ok) {
+          const data = await res.json();
+          totpSecretRaw = data.secret;
+          document.getElementById('totpSecretText').textContent = data.secret;
+          document.getElementById('totpUriText').textContent = data.otpauth_uri;
+          document.getElementById('totpSetupModal').style.display = 'flex';
+        }
+      } catch (e) {
+        alert('Failed to load setup info: ' + e);
+      }
+    }
+
+    function closeTotpSetupModal() {
+      document.getElementById('totpSetupModal').style.display = 'none';
+    }
+
+    function copyTotpSecret() {
+      navigator.clipboard.writeText(totpSecretRaw).then(() => {
+        showToast('Secret copied to clipboard');
+      });
+    }
+
+    async function signOut() {
+      await api('/api/auth/logout', { method: 'POST' });
+      sessionToken = '';
+      localStorage.removeItem('ostore_sess');
+      localStorage.removeItem('ostore_token');
+      if (eventSource) eventSource.close();
+      showLogin();
+    }
+
+    function showLogin() {
+      document.getElementById('loginView').style.display = 'flex';
+      document.getElementById('mainConsole').style.display = 'none';
+      otpInputs.forEach(i => i.value = '');
+      otpInputs[0].focus();
+    }
+
+    function showConsole() {
+      document.getElementById('loginView').style.display = 'none';
+      document.getElementById('mainConsole').style.display = 'block';
+      initSSE();
+      loadTopology();
+      loadDirectory('', false);
     }
 
     // Reactive SSE: Incremental updates without full-page redraws
     function initSSE() {
       if (eventSource) eventSource.close();
-      const sseUrl = `${getBasePath()}/api/events${token ? `?token=${encodeURIComponent(token)}` : ''}`;
+      const sseUrl = `${getBasePath()}/api/events${sessionToken ? `?token=${encodeURIComponent(sessionToken)}` : ''}`;
       eventSource = new EventSource(sseUrl);
 
       eventSource.onopen = () => {
@@ -1022,7 +1259,10 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
     async function loadTopology() {
       try {
         const res = await api('/api/cluster/topology');
-        if (!res.ok) return;
+        if (!res.ok) {
+          if (res.status === 401) showLogin();
+          return;
+        }
         const topo = await res.json();
 
         renderTopologySVG(topo);
@@ -1100,7 +1340,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
           <text y="38" text-anchor="middle" fill="#86868B" font-size="9" font-family="monospace">Primary Entry (:8781)</text>
         </g>
 
-        <!-- Follower 1 -->
+        <!-- Follower 1 (cc2) -->
         <g transform="translate(150, 165)">
           <circle r="20" fill="#FFFFFF" stroke="#34C759" stroke-width="2"/>
           <circle r="3" fill="#34C759"/>
@@ -1108,7 +1348,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
           <text y="44" text-anchor="middle" fill="#86868B" font-size="9" font-family="monospace">${w1.rtt_ms}ms · Follower</text>
         </g>
 
-        <!-- Follower 2 -->
+        <!-- Follower 2 (racknerd) -->
         <g transform="translate(390, 165)">
           <circle r="20" fill="#FFFFFF" stroke="#34C759" stroke-width="2"/>
           <circle r="3" fill="#34C759"/>
@@ -1118,7 +1358,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       `;
     }
 
-    // Object Explorer: True Lazy Load (Streaming Limit/Offset, Zero Open Lag)
+    // Object Explorer: True Lazy Load
     async function loadDirectory(path = currentPath, append = false) {
       if (isLoading) return;
       isLoading = true;
@@ -1141,8 +1381,11 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
 
         const res = await api(`/api/list${query}`);
         if (!res.ok) {
-          if (res.status === 401) openTokenModal();
-          return;
+          if (res.status === 401) {
+            showLogin();
+            return;
+          }
+          throw new Error(`HTTP ${res.status}`);
         }
         const data = await res.json();
 
@@ -1192,7 +1435,6 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
         const isDir = item.type === 'dir';
         const dlUrl = isDir ? `${getBasePath()}/api/archive?path=${item.path}` : `${getBasePath()}/api/files/${item.path}`;
 
-        // Node Replica Multi-Badges
         let nodeMapHtml = '-';
         if (!isDir) {
           const cached = replicaMapCache.get(item.path);
@@ -1214,7 +1456,6 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
           `;
         }
 
-        // Directory Size AND Total Items (Full Transparency)
         let sizeDisplayHtml = '';
         if (isDir) {
           const itemCount = item.item_count !== undefined && item.item_count !== null ? `${item.item_count.toLocaleString()} items` : 'Directory';
@@ -1228,7 +1469,6 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
           sizeDisplayHtml = `<span class="meta-mono">${formatBytes(item.size)}</span>`;
         }
 
-        // Action buttons: complete folder actions
         let actionsHtml = '';
         if (isDir) {
           actionsHtml = `
@@ -1296,7 +1536,6 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       return btoa(unescape(encodeURIComponent(str))).replace(/[/+=]/g, '_');
     }
 
-    // Infinite Scroll Observer for Streaming Pagination
     const scrollObserver = new IntersectionObserver(entries => {
       if (entries[0].isIntersecting && hasMore && !isLoading) {
         loadDirectory(currentPath, true);
@@ -1330,7 +1569,6 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       bc.innerHTML = html;
     }
 
-    // Folder Inspector Modal
     function openFolderDetail(path, name, size, count, mtime) {
       inspectingFolderPath = path;
       document.getElementById('folderDetailTitle').textContent = `Folder: ${name}`;
@@ -1385,7 +1623,6 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       }
     }
 
-    // Per-File Replica Topology Inspector
     async function inspectFileReplica(filePath, deepVerify = false) {
       inspectingFilePath = filePath;
       document.getElementById('fileTopoPath').textContent = filePath;
@@ -1508,7 +1745,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       }
     }
 
-    // Intelligent Text Decoding: Multi-encoding
+    // Intelligent Text Decoding
     function decodeTextSmart(uint8Array) {
       if (uint8Array.length >= 8) {
         const magic = String.fromCharCode(...uint8Array.slice(0, 8));
@@ -1567,7 +1804,6 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       return out;
     }
 
-    // Media Preview with Instant Skeleton and Accurate Metrics
     async function openMediaPreview(path) {
       const ext = path.split('.').pop().toLowerCase();
       const url = `${getBasePath()}/api/files/${path}`;
@@ -1646,19 +1882,16 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       showToast('Object link copied');
     }
 
-    // Actions
     function openTokenModal() {
-      document.getElementById('tokenInput').value = token;
+      document.getElementById('tokenInput').value = sessionToken;
       document.getElementById('tokenModal').style.display = 'flex';
     }
     function closeTokenModal() { document.getElementById('tokenModal').style.display = 'none'; }
     function saveToken() {
-      token = document.getElementById('tokenInput').value.trim();
-      localStorage.setItem('ostore_token', token);
+      sessionToken = document.getElementById('tokenInput').value.trim();
+      localStorage.setItem('ostore_sess', sessionToken);
       closeTokenModal();
-      initSSE();
-      loadTopology();
-      loadDirectory(currentPath, false);
+      showConsole();
     }
 
     function copySHA(sha) {
@@ -1691,7 +1924,6 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       }
     }
 
-    // Upload Files
     function triggerFileInput() { document.getElementById('fileInput').click(); }
     async function handleFileSelect(e) {
       const files = Array.from(e.target.files);
@@ -1705,7 +1937,6 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       loadDirectory(currentPath, false);
     }
 
-    // Upload Folder Tree (with webkitdirectory relative paths)
     function triggerFolderUploadInput() { document.getElementById('folderInput').click(); }
     async function handleFolderSelect(e) {
       const files = Array.from(e.target.files);
@@ -1732,10 +1963,26 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       }
     }
 
-    // Boot
-    initSSE();
-    loadTopology();
-    loadDirectory('', false);
+    // Initial Gatekeeper: Check Authentication
+    async function checkAuthAndBoot() {
+      if (!sessionToken) {
+        showLogin();
+        return;
+      }
+
+      try {
+        const res = await api('/api/list?limit=1');
+        if (res.ok) {
+          showConsole();
+        } else {
+          showLogin();
+        }
+      } catch (e) {
+        showLogin();
+      }
+    }
+
+    checkAuthAndBoot();
   </script>
 </body>
 </html>
