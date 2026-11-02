@@ -17,9 +17,11 @@ fn truthy(v: &Option<String>) -> bool {
 #[derive(Deserialize, Default)]
 pub struct ListQuery {
     #[serde(default)]
-    path: String,
-    recursive: Option<String>,
-    checksums: Option<String>,
+    pub path: String,
+    pub recursive: Option<String>,
+    pub checksums: Option<String>,
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
 }
 
 #[derive(Deserialize, Default)]
@@ -57,6 +59,11 @@ async fn entry(
 ) -> Result<Entry, ApiError> {
     let is_dir = meta.is_dir();
     let mtime: DateTime<Utc> = meta.modified().map(DateTime::<Utc>::from).unwrap_or_else(|_| Utc::now());
+    let size = if is_dir {
+        st.dir_size_cache.get_or_compute(abs).await.0
+    } else {
+        meta.len()
+    };
     let sha256 = if checksums && !is_dir {
         Some(st.checksum_cache.get_or_compute(abs, meta).await?)
     } else {
@@ -66,7 +73,7 @@ async fn entry(
         name,
         path: rel,
         kind: if is_dir { "dir" } else { "file" },
-        size: if is_dir { 0 } else { meta.len() },
+        size,
         mtime,
         sha256,
     })
@@ -130,7 +137,25 @@ pub async fn list(
             }
         }
     }
-    Ok(Json(json!({ "path": rel, "entries": entries })))
+
+    let total_count = entries.len();
+    let total_bytes: u64 = entries.iter().map(|e| e.size).sum();
+    let offset = q.offset.unwrap_or(0);
+    let paged: Vec<Entry> = if let Some(limit) = q.limit {
+        entries.into_iter().skip(offset).take(limit).collect()
+    } else {
+        entries.into_iter().skip(offset).collect()
+    };
+    let has_more = offset + paged.len() < total_count;
+
+    Ok(Json(json!({
+        "path": rel,
+        "total_count": total_count,
+        "total_bytes": total_bytes,
+        "offset": offset,
+        "has_more": has_more,
+        "entries": paged
+    })))
 }
 
 /// GET /api/stat?path=<rel>&checksums=<bool>

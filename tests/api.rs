@@ -731,6 +731,31 @@ async fn chinese_utf8_content_type_preserved() {
 }
 
 #[tokio::test]
+async fn directory_shows_aggregated_size_and_pagination() {
+    let f = fixture();
+    put_file(&f.app, "folder/file1.bin", &[1u8; 100]).await;
+    put_file(&f.app, "folder/file2.bin", &[2u8; 250]).await;
+
+    // Check directory size in list
+    let resp = f.app.clone().oneshot(req("GET", "/api/list")).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let j = body_json(resp).await;
+    let entries = j["entries"].as_array().unwrap();
+    let folder_entry = entries.iter().find(|e| e["name"] == "folder").unwrap();
+    assert_eq!(folder_entry["type"], "dir");
+    assert_eq!(folder_entry["size"], 350); // Aggregated 100 + 250 bytes
+
+    // Check pagination
+    let resp_page = f.app.clone().oneshot(req("GET", "/api/list?path=folder&limit=1&offset=0")).await.unwrap();
+    assert_eq!(resp_page.status(), StatusCode::OK);
+    let j_page = body_json(resp_page).await;
+    assert_eq!(j_page["total_count"], 2);
+    assert_eq!(j_page["total_bytes"], 350);
+    assert_eq!(j_page["has_more"], true);
+    assert_eq!(j_page["entries"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
 async fn ostore_prefix_routes_api() {
     let f = fixture();
     put_file(&f.app, "doc.txt", b"ostore path test").await;
