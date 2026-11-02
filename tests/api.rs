@@ -771,6 +771,74 @@ async fn download_directory_archive_tar_streaming() {
 }
 
 #[tokio::test]
+async fn totp_authenticator_login_and_session_access() {
+    let f = fixture();
+
+    // 1. Unauthenticated request to /api/list without token should yield 401
+    let unauth_req = Request::builder().uri("/api/list").body(Body::empty()).unwrap();
+    let resp = f.app.clone().oneshot(unauth_req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    // 2. Query /api/auth/setup to get secret
+    let setup_req = Request::builder().uri("/api/auth/setup").body(Body::empty()).unwrap();
+    let resp = f.app.clone().oneshot(setup_req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let j = body_json(resp).await;
+    assert!(j["secret"].as_str().is_some());
+    assert!(j["otpauth_uri"].as_str().unwrap().starts_with("otpauth://totp/"));
+
+    // 3. Compute valid current OTP using the state's secret
+    let duration = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap();
+    let step = duration.as_secs() / 30;
+    let secret_bytes = ostore::auth_otp::base32_decode(f.state.totp.get_secret_base32()).unwrap();
+    use hmac::{Hmac, Mac};
+    use sha1::Sha1;
+    let mut mac = Hmac::<Sha1>::new_from_slice(&secret_bytes).unwrap();
+    mac.update(&step.to_be_bytes());
+    let h = mac.finalize().into_bytes();
+    let offset = (h[19] & 0x0f) as usize;
+    let code_u32 = (((h[offset] & 0x7f) as u32) << 24)
+        | ((h[offset + 1] as u32) << 16)
+        | ((h[offset + 2] as u32) << 8)
+        | (h[offset + 3] as u32);
+    let valid_otp = format!("{:06}", code_u32 % 1_000_000);
+
+    // 4. Try invalid code -> 401
+    let bad_login = Request::builder()
+        .method("POST")
+        .uri("/api/auth/login")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(r#"{"code":"000000"}"#))
+        .unwrap();
+    let resp = f.app.clone().oneshot(bad_login).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    // 5. Submit valid code -> 200 and receive session
+    let good_login = Request::builder()
+        .method("POST")
+        .uri("/api/auth/login")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(format!(r#"{{"code":"{valid_otp}"}}"#)))
+        .unwrap();
+    let resp = f.app.clone().oneshot(good_login).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let set_cookie = resp.headers().get(header::SET_COOKIE).unwrap().to_str().unwrap().to_string();
+    assert!(set_cookie.contains("ostore_sess="));
+    let j = body_json(resp).await;
+    let sess_token = j["token"].as_str().unwrap().to_string();
+    assert!(sess_token.starts_with("sess_"));
+
+    // 6. Access protected API using session token Bearer
+    let sess_req = Request::builder()
+        .uri("/api/list")
+        .header(header::AUTHORIZATION, format!("Bearer {sess_token}"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = f.app.clone().oneshot(sess_req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
 async fn ostore_prefix_routes_api() {
     let f = fixture();
     put_file(&f.app, "doc.txt", b"ostore path test").await;

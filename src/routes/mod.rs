@@ -1,6 +1,7 @@
 //! Router assembly.
 
 pub mod archive;
+pub mod auth_routes;
 pub mod cluster;
 pub mod events;
 pub mod files;
@@ -35,7 +36,7 @@ async fn api_not_found() -> crate::error::ApiError {
 /// root and guards itself with SigV4. Returns `Router<()>` so tests can drive
 /// it with `tower::ServiceExt::oneshot` without binding a port.
 pub fn build_router(state: AppState) -> Router {
-    let api = Router::new()
+    let protected_api = Router::new()
         .route("/help", get(help::help))
         .route("/list", get(list::list))
         .route("/stat", get(list::stat))
@@ -64,6 +65,12 @@ pub fn build_router(state: AppState) -> Router {
         // and the request would otherwise fall out to the S3 surface.
         .route("/{*rest}", any(api_not_found))
         .route_layer(middleware::from_fn_with_state(state.clone(), auth::require_auth));
+
+    let api = Router::new()
+        .route("/auth/login", post(auth_routes::login))
+        .route("/auth/logout", post(auth_routes::logout))
+        .route("/auth/setup", get(auth_routes::setup_info))
+        .merge(protected_api);
 
     Router::new()
         .route("/", get(crate::ui::handler))

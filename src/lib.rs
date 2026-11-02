@@ -6,6 +6,7 @@
 //! metrics.
 
 pub mod auth;
+pub mod auth_otp;
 pub mod cluster;
 pub mod config;
 pub mod error;
@@ -186,6 +187,10 @@ pub struct AppState {
     pub checksum_cache: Arc<ChecksumCache>,
     /// Cache for aggregated directory sizes.
     pub dir_size_cache: Arc<DirSizeCache>,
+    /// RFC 6238 Authenticator TOTP verifier.
+    pub totp: Arc<auth_otp::TotpAuth>,
+    /// Active 14-day persistent sessions.
+    pub sessions: Arc<auth_otp::SessionStore>,
 }
 
 impl AppState {
@@ -211,6 +216,8 @@ impl AppState {
         std::fs::create_dir_all(&root)?;
         std::fs::create_dir_all(root.join(".ostore"))?;
         let metrics = Arc::new(Metrics::new());
+        let totp = Arc::new(auth_otp::TotpAuth::load_or_generate(&root)?);
+        let sessions = Arc::new(auth_otp::SessionStore::default());
         Ok(Self {
             webhooks: Arc::new(WebhookStore::load(&root, metrics.clone())),
             root,
@@ -225,6 +232,8 @@ impl AppState {
             cluster,
             checksum_cache,
             dir_size_cache: Arc::new(DirSizeCache::new()),
+            totp,
+            sessions,
         })
     }
 

@@ -17,22 +17,38 @@ pub async fn require_auth(
     req: Request,
     next: Next,
 ) -> Result<Response, ApiError> {
-    let bearer_ok = req
+    // 1. Check Bearer token
+    if let Some(bearer) = req
         .headers()
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
-        .is_some_and(|t| t == state.token.as_ref());
-    let query_ok = req
-        .uri()
-        .query()
-        .and_then(query_token)
-        .is_some_and(|t| t == state.token.as_ref());
-    if bearer_ok || query_ok {
-        Ok(next.run(req).await)
-    } else {
-        Err(ApiError::unauthorized())
+    {
+        if bearer == state.token.as_ref() || state.sessions.verify_session(bearer).await {
+            return Ok(next.run(req).await);
+        }
     }
+
+    // 2. Check query parameter
+    if let Some(token) = req.uri().query().and_then(query_token) {
+        if token == state.token.as_ref() || state.sessions.verify_session(&token).await {
+            return Ok(next.run(req).await);
+        }
+    }
+
+    // 3. Check Cookie (ostore_sess=...)
+    if let Some(cookie_hdr) = req.headers().get(header::COOKIE).and_then(|v| v.to_str().ok()) {
+        for cookie in cookie_hdr.split(';') {
+            let trimmed = cookie.trim();
+            if let Some(sess) = trimmed.strip_prefix("ostore_sess=") {
+                if state.sessions.verify_session(sess).await {
+                    return Ok(next.run(req).await);
+                }
+            }
+        }
+    }
+
+    Err(ApiError::unauthorized())
 }
 
 /// Extract and percent-decode the `token` query parameter, if present.
