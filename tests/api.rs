@@ -744,6 +744,7 @@ async fn directory_shows_aggregated_size_and_pagination() {
     let folder_entry = entries.iter().find(|e| e["name"] == "folder").unwrap();
     assert_eq!(folder_entry["type"], "dir");
     assert_eq!(folder_entry["size"], 350); // Aggregated 100 + 250 bytes
+    assert_eq!(folder_entry["item_count"], 2); // Aggregated total items count
 
     // Check pagination
     let resp_page = f.app.clone().oneshot(req("GET", "/api/list?path=folder&limit=1&offset=0")).await.unwrap();
@@ -753,6 +754,20 @@ async fn directory_shows_aggregated_size_and_pagination() {
     assert_eq!(j_page["total_bytes"], 350);
     assert_eq!(j_page["has_more"], true);
     assert_eq!(j_page["entries"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn download_directory_archive_tar_streaming() {
+    let f = fixture();
+    put_file(&f.app, "archive_test/sub/f1.txt", b"hello tar archive").await;
+    let resp = f.app.clone().oneshot(req("GET", "/api/archive?path=archive_test")).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(resp.headers()[header::CONTENT_TYPE], "application/x-tar");
+    let bytes = body_bytes(resp).await;
+    assert!(bytes.len() > 512);
+    // Posix ustar header magic check
+    let s = String::from_utf8_lossy(&bytes[..512]);
+    assert!(s.contains("ustar") || bytes.windows(5).any(|w| w == b"ustar"));
 }
 
 #[tokio::test]

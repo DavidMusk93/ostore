@@ -1,5 +1,6 @@
 //! Router assembly.
 
+pub mod archive;
 pub mod cluster;
 pub mod events;
 pub mod files;
@@ -52,6 +53,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/webhooks", post(webhooks::create).get(webhooks::list))
         .route("/webhooks/{id}", delete(webhooks::delete))
         .route("/metrics", get(metrics::handler))
+        .route("/archive", get(archive::download_archive))
         .route("/cluster/nodes", get(cluster::get_nodes))
         .route("/cluster/topology", get(cluster::get_topology))
         .route("/cluster/file-status", get(cluster::get_file_status))

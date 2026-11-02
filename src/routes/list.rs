@@ -38,6 +38,8 @@ pub struct Entry {
     #[serde(rename = "type")]
     kind: &'static str,
     size: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    item_count: Option<usize>,
     mtime: DateTime<Utc>,
     #[serde(skip_serializing_if = "Option::is_none")]
     sha256: Option<String>,
@@ -59,10 +61,11 @@ async fn entry(
 ) -> Result<Entry, ApiError> {
     let is_dir = meta.is_dir();
     let mtime: DateTime<Utc> = meta.modified().map(DateTime::<Utc>::from).unwrap_or_else(|_| Utc::now());
-    let size = if is_dir {
-        st.dir_size_cache.get_or_compute(abs).await.0
+    let (size, item_count) = if is_dir {
+        let (bytes, count) = st.dir_size_cache.get_or_compute(abs).await;
+        (bytes, Some(count))
     } else {
-        meta.len()
+        (meta.len(), None)
     };
     let sha256 = if checksums && !is_dir {
         Some(st.checksum_cache.get_or_compute(abs, meta).await?)
@@ -74,6 +77,7 @@ async fn entry(
         path: rel,
         kind: if is_dir { "dir" } else { "file" },
         size,
+        item_count,
         mtime,
         sha256,
     })
