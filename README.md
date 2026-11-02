@@ -78,6 +78,7 @@ are rejected with `400 BAD_PATH`.
 
 | Method | Path | Description |
 |---|---|---|
+| GET | `/` / `/ostore` | Modern Web UI single-page frontend (embedded). |
 | GET | `/healthz` | Liveness probe (unauthenticated). |
 | GET | `/api/help` | Machine-readable listing of all endpoints (self-discovery). |
 | GET | `/api/list?path=&recursive=&checksums=` | List a directory. |
@@ -93,6 +94,8 @@ are rejected with `400 BAD_PATH`.
 | POST | `/api/webhooks` | `{"url","events"?}` — register webhook. |
 | GET | `/api/webhooks` | List webhook registrations. |
 | DELETE | `/api/webhooks/{id}` | Remove a registration. |
+| GET | `/api/cluster/nodes` | Multi-node storage cluster fleet status and aggregated capacity. |
+| POST | `/api/cluster/sync?prefix=` | Trigger cluster self-healing and replication sync across nodes. |
 | GET | `/api/metrics` | Prometheus metrics (see [Metrics](#metrics)). |
 | GET/HEAD | `/{bucket}/{key}` | S3-compatible object read, SigV4-signed (see [S3 read surface](#s3-read-surface)). |
 
@@ -295,6 +298,44 @@ text format. Scrape config: `authorization: {credentials: <token>}`.
 | `ostore_s3_requests_total{method}` | counter | S3-surface `GET`/`HEAD` counts |
 | `ostore_s3_denied_total` | counter | S3-surface requests rejected by signature verification |
 | `ostore_s3_bytes_total` | counter | Bytes streamed by the S3 surface |
+
+## Cluster & multi-node storage control plane
+
+ostore can act as a unified distributed control plane managing multiple
+remote ostore storage workers (e.g. across VPS instances).
+
+Set `OSTORE_CLUSTER_CONFIG` to a JSON path (or JSON string). Default:
+`/etc/ostore-cluster.json`.
+
+```json
+{
+  "nodes": [
+    { "id": "cc", "name": "cc-master", "is_local": true, "url": "", "token": "" },
+    { "id": "cc2", "name": "cc2-worker", "is_local": false, "url": "http://113.20.5.130:8783", "token": "..." },
+    { "id": "racknerd", "name": "racknerd-worker", "is_local": false, "url": "http://192.129.240.103:8783", "token": "..." }
+  ],
+  "replicate_prefixes": ["clipvault"]
+}
+```
+
+Key capabilities:
+- **Fleet health & capacity monitoring**: background task probes worker
+  `/healthz` and scrapes `/api/metrics` every 15s, tracking RTT and storage水位.
+- **Write-time replication**: writes to paths matching `replicate_prefixes`
+  are automatically replicated to all healthy worker nodes.
+- **On-demand self-healing sync**: `POST /api/cluster/sync?prefix=clipvault`
+  computes diffs via remote checksums and concurrently syncs missing or
+  modified blobs with concurrency limit.
+
+## Web frontend (FE)
+
+ostore embeds a modern zero-dependency responsive SPA at `/` and `/ostore`:
+- Fleet dashboard: aggregated storage capacity progress bar and node cards
+  with live RTT and online badges.
+- File explorer: breadcrumbs, file search filter, type icons, SHA-256 badges.
+- Manual upload: drag-and-drop zone with multi-file progress drawer.
+- Preview modal: in-browser streaming player for videos, image zoom, text code viewer.
+- Token management: secure browser localStorage persistence with URL query auto-import.
 
 ## S3 API subset
 
