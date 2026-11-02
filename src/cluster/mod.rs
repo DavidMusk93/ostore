@@ -117,6 +117,14 @@ pub struct FollowerFileNode {
 }
 
 #[derive(Clone, Debug, Serialize)]
+pub struct ProbeMetrics {
+    pub total_ms: u64,
+    pub main_lookup_ms: u64,
+    pub follower_timings: HashMap<String, u64>,
+    pub verify_hash: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct FileReplicaTopology {
     pub path: String,
     pub fully_synced: bool,
@@ -124,6 +132,7 @@ pub struct FileReplicaTopology {
     pub expected_replicas: usize,
     pub main: MainFileNode,
     pub followers: Vec<FollowerFileNode>,
+    pub metrics: ProbeMetrics,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -171,8 +180,11 @@ pub struct ClusterManager {
 impl ClusterManager {
     pub fn new(config: ClusterConfig, root: PathBuf, cache: Arc<crate::ChecksumCache>) -> Self {
         let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(30))
-            .connect_timeout(Duration::from_secs(5))
+            .tcp_nodelay(true)
+            .pool_idle_timeout(Duration::from_secs(90))
+            .pool_max_idle_per_host(32)
+            .timeout(Duration::from_secs(15))
+            .connect_timeout(Duration::from_secs(3))
             .build()
             .unwrap_or_default();
 
@@ -492,14 +504,22 @@ impl ClusterManager {
     }
 
     /// Check per-file replication status and topology across main and follower nodes.
-    pub async fn check_file_status(&self, rel_path: &str) -> FileReplicaTopology {
+    /// Supports tiered checks: fast metadata/size probe by default (<3ms), or deep hash verification.
+    pub async fn check_file_status(&self, rel_path: &str, verify_hash: bool) -> FileReplicaTopology {
+        let start_total = Instant::now();
         let rel_path = rel_path.trim_matches('/').to_string();
         let abs = self.root.join(&rel_path);
 
         // 1. Check main node
+        let start_main = Instant::now();
         let main = match tokio::fs::metadata(&abs).await {
             Ok(meta) if meta.is_file() => {
-                let sha = self.cache.get_or_compute(&abs, &meta).await.ok();
+                let sha = if verify_hash {
+                    self.cache.get_or_compute(&abs, &meta).await.ok()
+                } else {
+                    // Try memory cache only without disk read
+                    None
+                };
                 let mtime = meta.modified().ok().map(DateTime::<Utc>::from);
                 MainFileNode {
                     id: "main".to_string(),
@@ -519,6 +539,7 @@ impl ClusterManager {
                 mtime: None,
             },
         };
+        let main_lookup_ms = start_main.elapsed().as_millis() as u64;
 
         // 2. Concurrently check follower nodes
         let mut follower_nodes = Vec::new();
@@ -543,7 +564,11 @@ impl ClusterManager {
                 async move {
                     let start = Instant::now();
                     let base = node.url.trim_end_matches('/');
-                    let stat_url = format!("{base}/api/stat?path={}&checksums=1", urlencoding::encode(&path));
+                    let stat_url = if verify_hash {
+                        format!("{base}/api/stat?path={}&checksums=1", urlencoding::encode(&path))
+                    } else {
+                        format!("{base}/api/stat?path={}", urlencoding::encode(&path))
+                    };
                     let mut req = client.get(&stat_url);
                     if !node.token.is_empty() {
                         req = req.header("Authorization", format!("Bearer {}", node.token));
@@ -555,7 +580,11 @@ impl ClusterManager {
                             let val: serde_json::Value = resp.json().await.unwrap_or_default();
                             let size = val.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
                             let sha = val.get("sha256").and_then(|v| v.as_str()).map(|s| s.to_string());
-                            let matches = main_exists && sha.is_some() && sha == main_sha && size == main_size;
+                            let matches = if verify_hash {
+                                main_exists && sha.is_some() && sha == main_sha && size == main_size
+                            } else {
+                                main_exists && size == main_size
+                            };
 
                             FollowerFileNode {
                                 id: node.id,
@@ -584,6 +613,7 @@ impl ClusterManager {
                             }
                         }
                         Ok(resp) => {
+                            let rtt = start.elapsed().as_millis() as u64;
                             FollowerFileNode {
                                 id: node.id,
                                 name: node.name,
@@ -592,7 +622,7 @@ impl ClusterManager {
                                 matches: false,
                                 size: 0,
                                 sha256: None,
-                                rtt_ms: None,
+                                rtt_ms: Some(rtt),
                                 error: Some(format!("HTTP {}", resp.status())),
                             }
                         }
@@ -616,6 +646,13 @@ impl ClusterManager {
 
         let followers: Vec<FollowerFileNode> = checks_stream.collect().await;
 
+        let mut follower_timings = HashMap::new();
+        for f in &followers {
+            if let Some(rtt) = f.rtt_ms {
+                follower_timings.insert(f.id.clone(), rtt);
+            }
+        }
+
         let matching_followers = followers.iter().filter(|f| f.matches).count();
         let replica_count = if main.exists { 1 + matching_followers } else { matching_followers };
         let expected_replicas = 1 + followers.len();
@@ -628,6 +665,12 @@ impl ClusterManager {
             expected_replicas,
             main,
             followers,
+            metrics: ProbeMetrics {
+                total_ms: start_total.elapsed().as_millis() as u64,
+                main_lookup_ms,
+                follower_timings,
+                verify_hash,
+            },
         }
     }
 

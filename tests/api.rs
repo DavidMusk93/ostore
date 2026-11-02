@@ -123,8 +123,8 @@ async fn put_list_stat_download_move_mkdir_delete_flow() {
     assert_eq!(resp.headers()["accept-ranges"], "bytes");
     assert_eq!(
         resp.headers()["content-type"],
-        "text/plain",
-        "mime_guess should detect .txt"
+        "text/plain; charset=utf-8",
+        "mime_guess should detect .txt with utf-8 charset"
     );
     assert_eq!(body_bytes(resp).await, &data[..]);
 
@@ -713,6 +713,21 @@ async fn cluster_file_status_endpoint_standalone() {
     let j = body_json(resp).await;
     assert_eq!(j["fully_synced"], true);
     assert_eq!(j["main"]["exists"], true);
+    assert!(j["metrics"]["total_ms"].is_number());
+}
+
+#[tokio::test]
+async fn chinese_utf8_content_type_preserved() {
+    let f = fixture();
+    let chinese_text = "分布式存储 中文测试 内容完整性 2026";
+    put_file(&f.app, "chinese.txt", chinese_text.as_bytes()).await;
+    let resp = f.app.clone().oneshot(req("GET", "/api/files/chinese.txt")).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let ct = resp.headers()[header::CONTENT_TYPE].to_str().unwrap();
+    assert!(ct.contains("charset=utf-8"));
+    let bytes = body_bytes(resp).await;
+    let s = String::from_utf8(bytes.to_vec()).unwrap();
+    assert_eq!(s, chinese_text);
 }
 
 #[tokio::test]

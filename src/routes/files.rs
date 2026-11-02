@@ -230,9 +230,26 @@ pub async fn get_file(
             metrics.download_bytes.fetch_add(b.len() as u64, Ordering::Relaxed);
         }
     });
+    let mime_str = mime.to_string();
+    let content_type = if mime.type_() == mime_guess::mime::TEXT
+        || mime.subtype() == mime_guess::mime::JSON
+        || mime_str.contains("text")
+        || mime_str.contains("json")
+        || mime_str.contains("xml")
+        || mime_str.contains("javascript")
+    {
+        if !mime_str.contains("charset") {
+            format!("{mime_str}; charset=utf-8")
+        } else {
+            mime_str
+        }
+    } else {
+        mime_str
+    };
+
     let mut builder = Response::builder()
         .status(status)
-        .header(header::CONTENT_TYPE, hv(mime.to_string()))
+        .header(header::CONTENT_TYPE, hv(content_type))
         .header(header::CONTENT_LENGTH, len.to_string())
         .header(header::ACCEPT_RANGES, "bytes")
         .header(header::ETAG, hv(etag))
