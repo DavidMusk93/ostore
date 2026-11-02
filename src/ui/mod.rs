@@ -2,10 +2,11 @@
 //!
 //! Crafted to strictly adhere to Owner UI Taste & Operational Excellence:
 //! - Apple-design restraint: Light theme (#F5F5F7, #1D1D1F, #0071E3).
+//! - Directory total size display & live folder statistics.
+//! - Server-side incremental Lazy Load (limit/offset stream pagination) - zero open lag.
 //! - Multi-node visual replica badges per row (`● cc` `● cc2` `● rn` / `○ cc2` `○ rn`).
 //! - Intelligent multi-encoding text decoding (UTF-8, GB18030/GBK, UTF-16, binary detection).
 //! - Complete Metrics performance diagnostics (Server-Timing header + client round-trip).
-//! - Zero unresponsive lag with instant skeleton feedback and virtual scrolling.
 
 use axum::response::Html;
 
@@ -345,6 +346,13 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       gap: 12px;
     }
 
+    .breadcrumbs-wrap {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
     .breadcrumbs {
       display: flex;
       align-items: center;
@@ -371,6 +379,16 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
     .crumb-sep {
       color: var(--ink-tertiary);
       font-size: 0.75rem;
+    }
+
+    .folder-stat-badge {
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      padding: 3px 8px;
+      background: #FFFFFF;
+      border: 1px solid var(--card-border);
+      border-radius: 6px;
+      color: var(--ink-secondary);
     }
 
     .search-input {
@@ -453,7 +471,12 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       color: var(--ink-secondary);
     }
 
-    /* Node Replica Multi-Badges: Visually crystal clear which nodes hold data */
+    .dir-size-tag {
+      font-weight: 500;
+      color: var(--ink);
+    }
+
+    /* Node Replica Multi-Badges */
     .node-badges-cluster {
       display: inline-flex;
       align-items: center;
@@ -720,18 +743,12 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       </div>
 
       <div class="topology-wrap">
-        <!-- SVG Canvas for Main -> Followers -->
         <div class="topo-canvas-container">
-          <svg id="topoCanvas" width="100%" height="220" viewBox="0 0 540 220" style="overflow: visible;">
-            <!-- Dynamically generated SVG -->
-          </svg>
+          <svg id="topoCanvas" width="100%" height="220" viewBox="0 0 540 220" style="overflow: visible;"></svg>
         </div>
-
-        <!-- Node Status Cards -->
         <div class="topo-cards-grid" id="topoCardsList"></div>
       </div>
 
-      <!-- Namespace Distribution Spectrum -->
       <div class="spectrum-panel">
         <div style="display: flex; justify-content: space-between; font-size: 0.74rem; color: var(--ink-secondary); margin-bottom: 6px; font-family: var(--font-mono);">
           <span>DATA DISTRIBUTION SPECTRUM</span>
@@ -746,8 +763,11 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
     <div class="eyebrow">02 . Object Storage Explorer</div>
     <section class="panel">
       <div class="explorer-bar">
-        <div class="breadcrumbs" id="breadcrumbs">
-          <span class="crumb-link" onclick="navigate('')">root</span>
+        <div class="breadcrumbs-wrap">
+          <div class="breadcrumbs" id="breadcrumbs">
+            <span class="crumb-link" onclick="navigate('')">root</span>
+          </div>
+          <span class="folder-stat-badge" id="folderStatBadge">0 items · 0 B</span>
         </div>
         <div style="display: flex; gap: 8px; align-items: center;">
           <input type="text" class="search-input" id="searchBox" placeholder="Filter objects..." oninput="onFilter()">
@@ -762,15 +782,15 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
           <thead>
             <tr>
               <th style="width: 44%;">Name</th>
-              <th style="width: 12%;">Size</th>
+              <th style="width: 14%;">Size / Total</th>
               <th style="width: 16%;">Modified</th>
-              <th style="width: 18%;">Node Replication Map</th>
+              <th style="width: 16%;">Replication Map</th>
               <th style="width: 10%; text-align: right;">Actions</th>
             </tr>
           </thead>
           <tbody id="fileTableBody"></tbody>
         </table>
-        <div id="scrollAnchor" style="height: 20px;"></div>
+        <div id="scrollAnchor" style="height: 24px; text-align: center; color: var(--ink-secondary); font-size: 0.75rem; padding: 6px;"></div>
       </div>
     </section>
   </div>
@@ -838,15 +858,17 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
   </div>
 
   <script>
-    // State Architecture
+    // App Architecture & State
     let currentPath = '';
-    let allEntries = [];
-    let filteredEntries = [];
-    let renderedCount = 0;
-    const CHUNK_SIZE = 40;
-    let inspectingFilePath = '';
+    let currentEntries = [];
+    let currentTotalCount = 0;
+    let currentTotalBytes = 0;
+    let currentOffset = 0;
+    let hasMore = false;
+    let isLoading = false;
+    const PAGE_LIMIT = 50;
 
-    // Per-path replica status cache: path -> { cc: true, cc2: boolean, rn: boolean }
+    let inspectingFilePath = '';
     const replicaMapCache = new Map();
 
     let token = localStorage.getItem('ostore_token') || '';
@@ -910,7 +932,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       eventSource.addEventListener('object.updated', e => onObjectEvent(JSON.parse(e.data), 'updated'));
       eventSource.addEventListener('object.deleted', e => onObjectEvent(JSON.parse(e.data), 'deleted'));
       eventSource.addEventListener('object.moved', e => onObjectEvent(JSON.parse(e.data), 'moved'));
-      eventSource.addEventListener('stream.reset', () => loadDirectory());
+      eventSource.addEventListener('stream.reset', () => loadDirectory(currentPath, false));
     }
 
     function onObjectEvent(data, kind) {
@@ -921,11 +943,11 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       const sub = p.substring(cur.length);
       if (sub.includes('/')) return;
 
-      const idx = allEntries.findIndex(e => e.name === sub);
+      const idx = currentEntries.findIndex(e => e.name === sub);
       if (kind === 'deleted') {
         if (idx !== -1) {
-          allEntries.splice(idx, 1);
-          onFilter();
+          currentEntries.splice(idx, 1);
+          renderTable(currentEntries, false);
         }
       } else if (kind === 'created' || kind === 'updated') {
         const item = {
@@ -936,9 +958,9 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
           mtime: data.ts || new Date().toISOString(),
           sha256: null
         };
-        if (idx !== -1) allEntries[idx] = item;
-        else allEntries.unshift(item);
-        onFilter();
+        if (idx !== -1) currentEntries[idx] = item;
+        else currentEntries.unshift(item);
+        renderTable(currentEntries, false);
       }
     }
 
@@ -1042,51 +1064,91 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       `;
     }
 
-    // Object Explorer: Lazy Chunked Rendering (60fps)
-    async function loadDirectory(path = currentPath) {
-      currentPath = path;
-      updateBreadcrumbs();
+    // Object Explorer: True Lazy Load (Streaming Limit/Offset, Zero Open Lag)
+    async function loadDirectory(path = currentPath, append = false) {
+      if (isLoading) return;
+      isLoading = true;
+
+      if (!append) {
+        currentPath = path;
+        currentOffset = 0;
+        currentEntries = [];
+        updateBreadcrumbs();
+        // Instant visual feedback: Skeleton row
+        document.getElementById('fileTableBody').innerHTML = `
+          <tr><td colspan="5" style="text-align:center; padding: 24px; color: var(--ink-secondary); font-family:var(--font-mono);">
+            ⚡ Reading directory metadata...
+          </td></tr>
+        `;
+      }
+
       try {
-        const query = path ? `?path=${encodeURIComponent(path)}&checksums=1` : '?checksums=1';
+        // High-performance: DO NOT pass checksums=1 on directory open!
+        let query = `?limit=${PAGE_LIMIT}&offset=${currentOffset}`;
+        if (currentPath) query += `&path=${encodeURIComponent(currentPath)}`;
+
         const res = await api(`/api/list${query}`);
         if (!res.ok) {
           if (res.status === 401) openTokenModal();
           return;
         }
         const data = await res.json();
-        allEntries = data.entries || [];
-        onFilter();
+
+        currentTotalCount = data.total_count || 0;
+        currentTotalBytes = data.total_bytes || 0;
+        hasMore = data.has_more || false;
+
+        document.getElementById('folderStatBadge').textContent = 
+          `${currentTotalCount.toLocaleString()} items · Total ${formatBytes(currentTotalBytes)}`;
+
+        const newEntries = data.entries || [];
+        if (append) {
+          currentEntries = currentEntries.concat(newEntries);
+        } else {
+          currentEntries = newEntries;
+        }
+
+        currentOffset = currentEntries.length;
+        renderTable(currentEntries, append);
+
+        document.getElementById('scrollAnchor').textContent = hasMore 
+          ? `Scroll down for more (${currentEntries.length}/${currentTotalCount})...` 
+          : `Showing all ${currentTotalCount.toLocaleString()} items`;
+
       } catch (e) {
         console.error('List error:', e);
+      } finally {
+        isLoading = false;
       }
     }
 
-    function onFilter() {
-      const q = document.getElementById('searchBox').value.toLowerCase();
-      filteredEntries = allEntries.filter(e => e.name.toLowerCase().includes(q));
-      renderedCount = 0;
-      document.getElementById('fileTableBody').innerHTML = '';
-      renderNextBatch();
-    }
-
-    function renderNextBatch() {
-      if (renderedCount >= filteredEntries.length) return;
-      const batch = filteredEntries.slice(renderedCount, renderedCount + CHUNK_SIZE);
+    function renderTable(entries, append) {
       const tbody = document.getElementById('fileTableBody');
+      const q = document.getElementById('searchBox').value.toLowerCase();
+      const filtered = q ? entries.filter(e => e.name.toLowerCase().includes(q)) : entries;
 
-      const rows = batch.map(item => {
+      if (!append) {
+        tbody.innerHTML = '';
+      }
+
+      if (filtered.length === 0 && !append) {
+        tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; padding: 32px; color: var(--ink-secondary);">Folder is empty</td></tr>`;
+        return;
+      }
+
+      const rows = (append ? filtered.slice(filtered.length - PAGE_LIMIT) : filtered).map(item => {
         const isDir = item.type === 'dir';
         const dlUrl = `${getBasePath()}/api/files/${item.path}`;
 
-        // Node Replica Multi-Badges: Visually Crystal Clear Node Map
+        // Node Replica Multi-Badges
         let nodeMapHtml = '-';
         if (!isDir) {
           const cached = replicaMapCache.get(item.path);
           const hasCc2 = cached ? cached.cc2 : null;
           const hasRn = cached ? cached.rn : null;
 
-          const cc2DotClass = hasCc2 === true ? 'present' : (hasCc2 === false ? 'missing' : 'missing');
-          const rnDotClass = hasRn === true ? 'present' : (hasRn === false ? 'missing' : 'missing');
+          const cc2DotClass = hasCc2 === true ? 'present' : 'missing';
+          const rnDotClass = hasRn === true ? 'present' : 'missing';
           const count = (1 + (hasCc2 === true ? 1 : 0) + (hasRn === true ? 1 : 0));
           const ratioClass = count === 3 ? 'full' : 'partial';
 
@@ -1100,6 +1162,11 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
           `;
         }
 
+        // Directory Total Size vs File Size
+        const sizeDisplay = isDir 
+          ? `<span class="dir-size-tag">${formatBytes(item.size)}</span>`
+          : formatBytes(item.size);
+
         return `
           <tr class="file-row" id="row-${escapeId(item.path)}">
             <td>
@@ -1111,7 +1178,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
                 <span>${item.name}</span>
               </div>
             </td>
-            <td class="meta-mono">${isDir ? '-' : formatBytes(item.size)}</td>
+            <td class="meta-mono">${sizeDisplay}</td>
             <td class="meta-mono">${formatDate(item.mtime)}</td>
             <td>${nodeMapHtml}</td>
             <td>
@@ -1120,8 +1187,8 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
                   <a class="icon-btn" href="${dlUrl}" download title="Download">
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                   </a>
-                  <button class="icon-btn" title="Copy SHA-256" onclick="copySHA('${item.sha256}')">
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                  <button class="icon-btn" title="Copy Direct URL" onclick="copyURL('${dlUrl}')">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
                   </button>
                 ` : ''}
                 <button class="icon-btn btn-delete" title="Delete" onclick="deleteItem('${item.path}', ${isDir})">
@@ -1134,21 +1201,27 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       }).join('');
 
       tbody.insertAdjacentHTML('beforeend', rows);
-      renderedCount += batch.length;
+    }
+
+    function onFilter() {
+      renderTable(currentEntries, false);
     }
 
     function escapeId(str) {
       return btoa(unescape(encodeURIComponent(str))).replace(/[/+=]/g, '_');
     }
 
+    // Server-side Infinite Scroll Observer: Lazy Loads Next 50 Items on Bottom Touch
     const scrollObserver = new IntersectionObserver(entries => {
-      if (entries[0].isIntersecting) renderNextBatch();
+      if (entries[0].isIntersecting && hasMore && !isLoading) {
+        loadDirectory(currentPath, true);
+      }
     }, { root: document.getElementById('tableViewport'), threshold: 0.1 });
 
     scrollObserver.observe(document.getElementById('scrollAnchor'));
 
     function navigate(p) {
-      loadDirectory(p);
+      loadDirectory(p, false);
     }
 
     function updateBreadcrumbs() {
@@ -1244,7 +1317,6 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
 
         document.getElementById('fileTopoFlow').innerHTML = html;
 
-        // Metrics breakdown
         let timingBreakdown = `Total: ${metrics.total_ms}ms (Main: ${metrics.main_lookup_ms}ms`;
         for (const [k, v] of Object.entries(metrics.follower_timings || {})) {
           timingBreakdown += `, ${k}: ${v}ms`;
@@ -1255,7 +1327,6 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
           <span>Mode: <strong>${metrics.verify_hash ? 'Deep Hash' : 'Fast Tiered Probe'}</strong></span>
         `;
 
-        // Update Node Replica Badge in Table Row
         replicaMapCache.set(filePath, { cc2: hasCc2, rn: hasRn });
         updateRowBadge(filePath, hasCc2, hasRn);
 
@@ -1299,7 +1370,6 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
 
     // Intelligent Text Decoding: Multi-encoding (UTF-8, GB18030/GBK, UTF-16, Binary Guard)
     function decodeTextSmart(uint8Array) {
-      // 1. Detect binary / encrypted magic signatures (e.g. XSTRMENC1) or excessive NULs
       if (uint8Array.length >= 8) {
         const magic = String.fromCharCode(...uint8Array.slice(0, 8));
         if (magic.startsWith('XSTRMENC') || magic.startsWith('\x7fELF') || magic.startsWith('SQLite')) {
@@ -1311,7 +1381,6 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
         }
       }
 
-      // Check first 1KB for null bytes
       let nullCount = 0;
       const sampleLen = Math.min(uint8Array.length, 1024);
       for (let i = 0; i < sampleLen; i++) {
@@ -1325,25 +1394,21 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
         };
       }
 
-      // 2. Strict UTF-8 trial
       try {
         const text = new TextDecoder('utf-8', { fatal: true }).decode(uint8Array);
         return { isBinary: false, encoding: 'UTF-8', text };
       } catch (_) {}
 
-      // 3. Fallback to GB18030 / GBK for Chinese text
       try {
         const text = new TextDecoder('gb18030', { fatal: true }).decode(uint8Array);
         return { isBinary: false, encoding: 'GB18030 / GBK', text };
       } catch (_) {}
 
-      // 4. Fallback to UTF-16LE
       try {
         const text = new TextDecoder('utf-16le', { fatal: true }).decode(uint8Array);
         return { isBinary: false, encoding: 'UTF-16LE', text };
       } catch (_) {}
 
-      // 5. Permissive fallback
       return {
         isBinary: false,
         encoding: 'UTF-8 (Lossy)',
@@ -1390,7 +1455,6 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
         try {
           const resp = await api(`/api/files/${path}`);
           const serverTiming = resp.headers.get('Server-Timing') || 'local';
-          const contentLength = resp.headers.get('Content-Length') || 0;
           const buf = await resp.arrayBuffer();
           const tNet = (performance.now() - t0).toFixed(1);
 
@@ -1408,12 +1472,9 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
               </div>
             `;
           } else {
-            // Guard against massive DOM blowup: truncate display if over 256KB
             let displayText = decoded.text;
-            let truncatedNotice = '';
             if (displayText.length > 250000) {
               displayText = displayText.substring(0, 250000) + '\n\n... [Content truncated for preview performance. Download for full file]';
-              truncatedNotice = ' · Preview 256KB Capped';
             }
             container.innerHTML = `<pre>${escapeHtml(displayText)}</pre>`;
           }
@@ -1440,6 +1501,11 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       document.getElementById('mediaModal').style.display = 'none';
     }
 
+    function copyURL(path) {
+      navigator.clipboard.writeText(window.location.origin + path);
+      showToast('Object link copied');
+    }
+
     // Actions
     function openTokenModal() {
       document.getElementById('tokenInput').value = token;
@@ -1452,7 +1518,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       closeTokenModal();
       initSSE();
       loadTopology();
-      loadDirectory();
+      loadDirectory(currentPath, false);
     }
 
     function copySHA(sha) {
@@ -1505,7 +1571,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
     // Boot
     initSSE();
     loadTopology();
-    loadDirectory();
+    loadDirectory('', false);
   </script>
 </body>
 </html>
