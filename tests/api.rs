@@ -695,6 +695,27 @@ async fn cluster_nodes_endpoint_standalone() {
 }
 
 #[tokio::test]
+async fn cluster_topology_endpoint_standalone() {
+    let f = fixture();
+    let resp = f.app.clone().oneshot(req("GET", "/api/cluster/topology")).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let j = body_json(resp).await;
+    assert!(j["control_plane"].is_object());
+    assert_eq!(j["control_plane"]["id"], "local");
+}
+
+#[tokio::test]
+async fn cluster_file_status_endpoint_standalone() {
+    let f = fixture();
+    put_file(&f.app, "doc.txt", b"ostore replica test").await;
+    let resp = f.app.clone().oneshot(req("GET", "/api/cluster/file-status?path=doc.txt")).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let j = body_json(resp).await;
+    assert_eq!(j["fully_synced"], true);
+    assert_eq!(j["main"]["exists"], true);
+}
+
+#[tokio::test]
 async fn ostore_prefix_routes_api() {
     let f = fixture();
     put_file(&f.app, "doc.txt", b"ostore path test").await;

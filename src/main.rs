@@ -21,6 +21,7 @@ async fn main() {
             std::process::exit(2);
         }
     };
+    let checksum_cache = std::sync::Arc::new(ostore::ChecksumCache::new());
     let cluster_cfg = match ostore::cluster::ClusterConfig::from_env() {
         Ok(c) => c,
         Err(e) => {
@@ -28,7 +29,13 @@ async fn main() {
             std::process::exit(2);
         }
     };
-    let cluster_mgr = cluster_cfg.map(|c| std::sync::Arc::new(ostore::cluster::ClusterManager::new(c, cfg.root.clone())));
+    let cluster_mgr = cluster_cfg.map(|c| {
+        std::sync::Arc::new(ostore::cluster::ClusterManager::new(
+            c,
+            cfg.root.clone(),
+            checksum_cache.clone(),
+        ))
+    });
 
     let state = match ostore::s3::S3Auth::from_env() {
         Ok(s3) => match AppState::with_cluster_and_s3(
@@ -36,6 +43,7 @@ async fn main() {
             cfg.token.clone(),
             cluster_mgr.clone(),
             s3,
+            checksum_cache,
         ) {
             Ok(s) => s,
             Err(e) => {

@@ -94,6 +94,57 @@ pub struct ClusterStatus {
 }
 
 #[derive(Clone, Debug, Serialize)]
+pub struct MainFileNode {
+    pub id: String,
+    pub name: String,
+    pub exists: bool,
+    pub size: u64,
+    pub sha256: Option<String>,
+    pub mtime: Option<DateTime<Utc>>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct FollowerFileNode {
+    pub id: String,
+    pub name: String,
+    pub url: String,
+    pub exists: bool,
+    pub matches: bool,
+    pub size: u64,
+    pub sha256: Option<String>,
+    pub rtt_ms: Option<u64>,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct FileReplicaTopology {
+    pub path: String,
+    pub fully_synced: bool,
+    pub replica_count: usize,
+    pub expected_replicas: usize,
+    pub main: MainFileNode,
+    pub followers: Vec<FollowerFileNode>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct PrefixDistribution {
+    pub prefix: String,
+    pub object_count: usize,
+    pub total_bytes: u64,
+    pub replica_factor: usize,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ClusterTopology {
+    pub control_plane: Option<NodeStatus>,
+    pub workers: Vec<NodeStatus>,
+    pub total_disk_bytes: u64,
+    pub available_disk_bytes: u64,
+    pub distributions: Vec<PrefixDistribution>,
+    pub replicate_prefixes: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct NodeSyncResult {
     pub node_id: String,
     pub total_checked: usize,
@@ -114,10 +165,11 @@ pub struct ClusterManager {
     client: reqwest::Client,
     statuses: Arc<RwLock<HashMap<String, NodeStatus>>>,
     root: PathBuf,
+    cache: Arc<crate::ChecksumCache>,
 }
 
 impl ClusterManager {
-    pub fn new(config: ClusterConfig, root: PathBuf) -> Self {
+    pub fn new(config: ClusterConfig, root: PathBuf, cache: Arc<crate::ChecksumCache>) -> Self {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
             .connect_timeout(Duration::from_secs(5))
@@ -148,6 +200,7 @@ impl ClusterManager {
             client,
             statuses: Arc::new(RwLock::new(initial_statuses)),
             root,
+            cache,
         }
     }
 
@@ -268,6 +321,86 @@ impl ClusterManager {
         }
     }
 
+    pub async fn get_topology(&self) -> ClusterTopology {
+        let lock = self.statuses.read().await;
+        let mut control_plane = None;
+        let mut workers = Vec::new();
+        let mut total_disk = 0u64;
+        let mut avail_disk = 0u64;
+
+        for node_cfg in &self.config.nodes {
+            if let Some(st) = lock.get(&node_cfg.id) {
+                total_disk = total_disk.saturating_add(st.disk_total_bytes);
+                avail_disk = avail_disk.saturating_add(st.disk_available_bytes);
+                if st.is_local {
+                    control_plane = Some(st.clone());
+                } else {
+                    workers.push(st.clone());
+                }
+            }
+        }
+
+        let mut distributions = Vec::new();
+        if let Ok(mut rd) = tokio::fs::read_dir(&self.root).await {
+            while let Ok(Some(entry)) = rd.next_entry().await {
+                let fname = entry.file_name().to_string_lossy().to_string();
+                if fname == crate::paths::META_DIR || fname.contains(crate::TMP_MARKER) {
+                    continue;
+                }
+                if let Ok(ft) = entry.file_type().await {
+                    if ft.is_dir() {
+                        let (count, bytes) = self.scan_dir_summary(&entry.path()).await;
+                        let replica_factor = if self.should_replicate(&fname) {
+                            1 + workers.iter().filter(|w| w.healthy).count()
+                        } else {
+                            1
+                        };
+                        distributions.push(PrefixDistribution {
+                            prefix: fname,
+                            object_count: count,
+                            total_bytes: bytes,
+                            replica_factor,
+                        });
+                    }
+                }
+            }
+        }
+        distributions.sort_by(|a, b| b.total_bytes.cmp(&a.total_bytes));
+
+        ClusterTopology {
+            control_plane,
+            workers,
+            total_disk_bytes: total_disk,
+            available_disk_bytes: avail_disk,
+            distributions,
+            replicate_prefixes: self.config.replicate_prefixes.clone(),
+        }
+    }
+
+    async fn scan_dir_summary(&self, dir: &Path) -> (usize, u64) {
+        let mut count = 0;
+        let mut total_bytes = 0u64;
+        let mut stack = vec![dir.to_path_buf()];
+        while let Some(cur) = stack.pop() {
+            let Ok(mut rd) = tokio::fs::read_dir(&cur).await else { continue };
+            while let Ok(Some(e)) = rd.next_entry().await {
+                let name = e.file_name().to_string_lossy().to_string();
+                if name == crate::paths::META_DIR || name.contains(crate::TMP_MARKER) {
+                    continue;
+                }
+                if let Ok(m) = e.metadata().await {
+                    if m.is_dir() {
+                        stack.push(e.path());
+                    } else if m.is_file() {
+                        count += 1;
+                        total_bytes = total_bytes.saturating_add(m.len());
+                    }
+                }
+            }
+        }
+        (count, total_bytes)
+    }
+
     pub fn should_replicate(&self, rel_path: &str) -> bool {
         if self.config.replicate_prefixes.is_empty() {
             return true;
@@ -356,6 +489,146 @@ impl ClusterManager {
                 }
             }
         });
+    }
+
+    /// Check per-file replication status and topology across main and follower nodes.
+    pub async fn check_file_status(&self, rel_path: &str) -> FileReplicaTopology {
+        let rel_path = rel_path.trim_matches('/').to_string();
+        let abs = self.root.join(&rel_path);
+
+        // 1. Check main node
+        let main = match tokio::fs::metadata(&abs).await {
+            Ok(meta) if meta.is_file() => {
+                let sha = self.cache.get_or_compute(&abs, &meta).await.ok();
+                let mtime = meta.modified().ok().map(DateTime::<Utc>::from);
+                MainFileNode {
+                    id: "main".to_string(),
+                    name: "cc-main".to_string(),
+                    exists: true,
+                    size: meta.len(),
+                    sha256: sha,
+                    mtime,
+                }
+            }
+            _ => MainFileNode {
+                id: "main".to_string(),
+                name: "cc-main".to_string(),
+                exists: false,
+                size: 0,
+                sha256: None,
+                mtime: None,
+            },
+        };
+
+        // 2. Concurrently check follower nodes
+        let mut follower_nodes = Vec::new();
+        for node in &self.config.nodes {
+            if node.is_local {
+                continue;
+            }
+            follower_nodes.push(node.clone());
+        }
+
+        let main_sha = main.sha256.clone();
+        let main_size = main.size;
+        let main_exists = main.exists;
+        let client = self.client.clone();
+        let path_clone = rel_path.clone();
+
+        let checks_stream = futures::stream::iter(follower_nodes)
+            .map(|node| {
+                let client = client.clone();
+                let path = path_clone.clone();
+                let main_sha = main_sha.clone();
+                async move {
+                    let start = Instant::now();
+                    let base = node.url.trim_end_matches('/');
+                    let stat_url = format!("{base}/api/stat?path={}&checksums=1", urlencoding::encode(&path));
+                    let mut req = client.get(&stat_url);
+                    if !node.token.is_empty() {
+                        req = req.header("Authorization", format!("Bearer {}", node.token));
+                    }
+
+                    match req.send().await {
+                        Ok(resp) if resp.status().is_success() => {
+                            let rtt = start.elapsed().as_millis() as u64;
+                            let val: serde_json::Value = resp.json().await.unwrap_or_default();
+                            let size = val.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
+                            let sha = val.get("sha256").and_then(|v| v.as_str()).map(|s| s.to_string());
+                            let matches = main_exists && sha.is_some() && sha == main_sha && size == main_size;
+
+                            FollowerFileNode {
+                                id: node.id,
+                                name: node.name,
+                                url: node.url,
+                                exists: true,
+                                matches,
+                                size,
+                                sha256: sha,
+                                rtt_ms: Some(rtt),
+                                error: None,
+                            }
+                        }
+                        Ok(resp) if resp.status() == reqwest::StatusCode::NOT_FOUND => {
+                            let rtt = start.elapsed().as_millis() as u64;
+                            FollowerFileNode {
+                                id: node.id,
+                                name: node.name,
+                                url: node.url,
+                                exists: false,
+                                matches: false,
+                                size: 0,
+                                sha256: None,
+                                rtt_ms: Some(rtt),
+                                error: None,
+                            }
+                        }
+                        Ok(resp) => {
+                            FollowerFileNode {
+                                id: node.id,
+                                name: node.name,
+                                url: node.url,
+                                exists: false,
+                                matches: false,
+                                size: 0,
+                                sha256: None,
+                                rtt_ms: None,
+                                error: Some(format!("HTTP {}", resp.status())),
+                            }
+                        }
+                        Err(e) => {
+                            FollowerFileNode {
+                                id: node.id,
+                                name: node.name,
+                                url: node.url,
+                                exists: false,
+                                matches: false,
+                                size: 0,
+                                sha256: None,
+                                rtt_ms: None,
+                                error: Some(e.to_string()),
+                            }
+                        }
+                    }
+                }
+            })
+            .buffer_unordered(8);
+
+        let followers: Vec<FollowerFileNode> = checks_stream.collect().await;
+
+        let matching_followers = followers.iter().filter(|f| f.matches).count();
+        let replica_count = if main.exists { 1 + matching_followers } else { matching_followers };
+        let expected_replicas = 1 + followers.len();
+        let fully_synced = main.exists && followers.iter().all(|f| f.matches);
+
+        FileReplicaTopology {
+            path: rel_path,
+            fully_synced,
+            replica_count,
+            expected_replicas,
+            main,
+            followers,
+        }
     }
 
     /// Sync a directory prefix from local master to all remote worker nodes.
@@ -521,8 +794,10 @@ impl ClusterManager {
                 } else if ft.is_file() {
                     if let Ok(rel) = path.strip_prefix(&self.root) {
                         let rel_str = rel.to_string_lossy().to_string();
-                        if let Ok(sha) = crate::routes::files::sha256_file(&path).await {
-                            results.push((rel_str, sha));
+                        if let Ok(m) = entry.metadata().await {
+                            if let Ok(sha) = self.cache.get_or_compute(&path, &m).await {
+                                results.push((rel_str, sha));
+                            }
                         }
                     }
                 }

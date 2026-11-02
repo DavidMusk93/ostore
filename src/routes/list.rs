@@ -9,7 +9,6 @@ use serde_json::json;
 use crate::AppState;
 use crate::error::ApiError;
 use crate::paths;
-use crate::routes::files::sha256_file;
 
 fn truthy(v: &Option<String>) -> bool {
     matches!(v.as_deref(), Some("1") | Some("true") | Some("yes"))
@@ -49,6 +48,7 @@ pub(crate) fn hidden(name: &str) -> bool {
 }
 
 async fn entry(
+    st: &AppState,
     rel: String,
     name: String,
     abs: &std::path::Path,
@@ -58,7 +58,7 @@ async fn entry(
     let is_dir = meta.is_dir();
     let mtime: DateTime<Utc> = meta.modified().map(DateTime::<Utc>::from).unwrap_or_else(|_| Utc::now());
     let sha256 = if checksums && !is_dir {
-        Some(sha256_file(abs).await?)
+        Some(st.checksum_cache.get_or_compute(abs, meta).await?)
     } else {
         None
     };
@@ -118,10 +118,10 @@ pub async fn list(
         dirs.sort_by(|a, b| a.0.cmp(&b.0));
         files.sort_by(|a, b| a.0.cmp(&b.0));
         for (name, child_abs, child_rel, m) in &dirs {
-            entries.push(entry(child_rel.clone(), name.clone(), child_abs, m, checksums).await?);
+            entries.push(entry(&st, child_rel.clone(), name.clone(), child_abs, m, checksums).await?);
         }
         for (name, child_abs, child_rel, m) in &files {
-            entries.push(entry(child_rel.clone(), name.clone(), child_abs, m, checksums).await?);
+            entries.push(entry(&st, child_rel.clone(), name.clone(), child_abs, m, checksums).await?);
         }
         if recursive {
             // Push reversed so subdirectories are visited in name order.
@@ -141,5 +141,5 @@ pub async fn stat(
     let (abs, rel) = paths::resolve(&st.root, &q.path)?;
     let meta = tokio::fs::metadata(&abs).await.map_err(|e| not_found_or_internal(e, &rel))?;
     let name = rel.rsplit('/').next().unwrap_or("").to_string();
-    entry(rel, name, &abs, &meta, truthy(&q.checksums)).await.map(Json)
+    entry(&st, rel, name, &abs, &meta, truthy(&q.checksums)).await.map(Json)
 }

@@ -111,6 +111,10 @@ pub async fn put_file(
     let existed = tokio::fs::metadata(&abs).await.is_ok();
     let stream = body.into_data_stream();
     let (size, sha256) = stream_to_disk(&st, &abs, stream).await?;
+    if let Ok(m) = tokio::fs::metadata(&abs).await {
+        let mtime = m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_nanos()).unwrap_or(0);
+        st.checksum_cache.insert(&abs, size, mtime, sha256.clone()).await;
+    }
     let kind = if existed { events::UPDATED } else { events::CREATED };
     st.publish(kind, &rel, false, Some(size), None);
     if let Some(cluster) = &st.cluster {
@@ -268,6 +272,7 @@ pub async fn delete_file(
             });
         }
     } else {
+        st.checksum_cache.invalidate(&abs).await;
         tokio::fs::remove_file(&abs).await.map_err(|e| io_err(e, &rel))?;
     }
     st.publish(events::DELETED, &rel, meta.is_dir(), None, None);
@@ -335,6 +340,8 @@ pub async fn mv(
         tokio::fs::create_dir_all(parent).await.map_err(ApiError::internal)?;
     }
     tokio::fs::rename(&from_abs, &to_abs).await.map_err(ApiError::internal)?;
+    st.checksum_cache.invalidate(&from_abs).await;
+    st.checksum_cache.invalidate(&to_abs).await;
     let size = if from_meta.is_file() { Some(from_meta.len()) } else { None };
     st.publish(events::MOVED, &to_rel, from_meta.is_dir(), size, Some(from_rel.clone()));
     tracing::info!(from = %from_rel, to = %to_rel, "object moved");

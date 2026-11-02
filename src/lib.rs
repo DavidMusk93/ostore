@@ -18,12 +18,13 @@ pub mod s3;
 pub mod ui;
 pub mod webhooks;
 
+use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use chrono::Utc;
-use tokio::sync::Semaphore;
+use tokio::sync::{RwLock, Semaphore};
 use tokio_util::sync::CancellationToken;
 
 use crate::events::{EventBus, ObjectEvent};
@@ -35,6 +36,54 @@ pub use routes::build_router;
 
 /// Marker embedded in in-flight upload temp file names.
 pub const TMP_MARKER: &str = ".ostore-tmp-";
+
+/// Fast in-memory cache of (size, mtime_nanos) -> sha256_hex to eliminate
+/// disk re-reads on /api/list and cluster syncs.
+#[derive(Default)]
+pub struct ChecksumCache {
+    cache: RwLock<HashMap<PathBuf, (u64, u128, String)>>,
+}
+
+impl ChecksumCache {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub async fn get_or_compute(&self, abs: &Path, meta: &std::fs::Metadata) -> Result<String, crate::error::ApiError> {
+        let size = meta.len();
+        let mtime = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+
+        {
+            let lock = self.cache.read().await;
+            if let Some((c_size, c_mtime, sha)) = lock.get(abs) {
+                if *c_size == size && *c_mtime == mtime {
+                    return Ok(sha.clone());
+                }
+            }
+        }
+
+        // Cache miss: compute from disk
+        let sha = crate::routes::files::sha256_file(abs).await?;
+        let mut lock = self.cache.write().await;
+        lock.insert(abs.to_path_buf(), (size, mtime, sha.clone()));
+        Ok(sha)
+    }
+
+    pub async fn insert(&self, abs: &Path, size: u64, mtime: u128, sha: String) {
+        let mut lock = self.cache.write().await;
+        lock.insert(abs.to_path_buf(), (size, mtime, sha));
+    }
+
+    pub async fn invalidate(&self, abs: &Path) {
+        let mut lock = self.cache.write().await;
+        lock.remove(abs);
+    }
+}
 
 /// Shared application state, cheap to clone.
 #[derive(Clone)]
@@ -57,6 +106,8 @@ pub struct AppState {
     pub s3: Option<Arc<S3Auth>>,
     /// Multi-node storage cluster manager (None in standalone mode).
     pub cluster: Option<Arc<crate::cluster::ClusterManager>>,
+    /// Memory cache for file checksums.
+    pub checksum_cache: Arc<ChecksumCache>,
 }
 
 impl AppState {
@@ -68,15 +119,16 @@ impl AppState {
 
     /// [`AppState::new`], plus optional S3-surface credentials.
     pub fn with_s3(root: PathBuf, token: String, s3: Option<S3Auth>) -> io::Result<Self> {
-        Self::with_cluster_and_s3(root, token, None, s3)
+        Self::with_cluster_and_s3(root, token, None, s3, Arc::new(ChecksumCache::new()))
     }
 
-    /// [`AppState::new`], plus cluster manager and optional S3 credentials.
+    /// [`AppState::new`], plus cluster manager, optional S3 credentials, and checksum cache.
     pub fn with_cluster_and_s3(
         root: PathBuf,
         token: String,
         cluster: Option<Arc<crate::cluster::ClusterManager>>,
         s3: Option<S3Auth>,
+        checksum_cache: Arc<ChecksumCache>,
     ) -> io::Result<Self> {
         std::fs::create_dir_all(&root)?;
         std::fs::create_dir_all(root.join(".ostore"))?;
@@ -93,6 +145,7 @@ impl AppState {
             )),
             s3: s3.map(Arc::new),
             cluster,
+            checksum_cache,
         })
     }
 
