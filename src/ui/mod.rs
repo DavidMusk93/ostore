@@ -2,7 +2,8 @@
 //!
 //! Crafted to strictly adhere to Owner UI Taste & Operational Excellence:
 //! - Apple-design restraint: Light theme (#F5F5F7, #1D1D1F, #0071E3).
-//! - Authenticator OTP Login View with 6-digit split inputs & setup QR guidance.
+//! - Dedicated Mobile Viewport & Touch Optimization (anti-distortion button CSS).
+//! - Clean, popup-free login transition: zero unwanted OTP/token modals post-login.
 //! - Directory Dual-Metrics: Displays both Total Aggregated Size and Total Item Count.
 //! - Complete Folder Capabilities: Download directory as tar, rename/move, inspect, sync, upload folder tree.
 //! - Server-side incremental Lazy Load (limit/offset stream pagination) - zero open lag.
@@ -20,7 +21,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <title>ostore — Distributed Object Storage</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%230071E3'><path d='M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5'/></svg>">
   <style>
@@ -60,6 +61,18 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       display: flex;
       flex-direction: column;
       -webkit-font-smoothing: antialiased;
+      -webkit-text-size-adjust: 100%;
+    }
+
+    /* Universal Anti-Distortion Button Reset */
+    button, .btn, .login-btn {
+      -webkit-appearance: none;
+      -moz-appearance: none;
+      appearance: none;
+      touch-action: manipulation;
+      user-select: none;
+      -webkit-user-select: none;
+      font-family: inherit;
     }
 
     /* Login Screen Layout */
@@ -71,16 +84,16 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       display: flex;
       align-items: center;
       justify-content: center;
-      padding: 24px;
+      padding: 16px;
     }
 
     .login-card {
       background: #FFFFFF;
       border: 1px solid var(--card-border);
       border-radius: var(--radius-lg);
-      padding: 40px 36px;
+      padding: 36px 28px;
       width: 100%;
-      max-width: 420px;
+      max-width: 400px;
       box-shadow: var(--shadow-lg);
       text-align: center;
       display: flex;
@@ -97,28 +110,30 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       display: flex;
       align-items: center;
       justify-content: center;
-      margin-bottom: 20px;
+      margin-bottom: 18px;
       box-shadow: var(--shadow-sm);
     }
 
-    .login-logo svg { width: 26px; height: 26px; fill: var(--accent); }
-    .login-card h2 { font-size: 1.35rem; font-weight: 600; letter-spacing: -0.02em; margin-bottom: 8px; }
-    .login-card p { font-size: 0.84rem; color: var(--ink-secondary); line-height: 1.45; margin-bottom: 24px; }
+    .login-logo svg { width: 24px; height: 24px; fill: var(--accent); }
+    .login-card h2 { font-size: 1.3rem; font-weight: 600; letter-spacing: -0.02em; margin-bottom: 8px; }
+    .login-card p { font-size: 0.82rem; color: var(--ink-secondary); line-height: 1.45; margin-bottom: 22px; }
 
-    /* 6-Digit OTP Box */
+    /* 6-Digit OTP Box (Adaptive Flex, zero overflow) */
     .otp-input-group {
       display: flex;
-      gap: 8px;
+      gap: 6px;
       justify-content: center;
-      margin-bottom: 24px;
+      margin-bottom: 22px;
       width: 100%;
+      max-width: 330px;
     }
 
     .otp-digit {
-      width: 46px;
+      flex: 1 1 0;
+      min-width: 0;
       height: 52px;
       font-family: var(--font-mono);
-      font-size: 1.4rem;
+      font-size: 1.35rem;
       font-weight: 600;
       text-align: center;
       background: #F9F9FB;
@@ -127,6 +142,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       color: var(--ink);
       outline: none;
       transition: all 0.15s;
+      -webkit-appearance: none;
     }
 
     .otp-digit:focus {
@@ -137,8 +153,10 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
 
     .login-btn {
       width: 100%;
-      padding: 10px 16px;
-      font-size: 0.9rem;
+      height: 46px;
+      line-height: 46px;
+      padding: 0 16px;
+      font-size: 0.92rem;
       font-weight: 500;
       border-radius: var(--radius-sm);
       cursor: pointer;
@@ -147,6 +165,9 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       color: #FFFFFF;
       transition: all 0.15s;
       box-shadow: 0 2px 8px rgba(0, 113, 227, 0.25);
+      display: flex;
+      align-items: center;
+      justify-content: center;
     }
 
     .login-btn:hover { background: var(--accent-hover); }
@@ -155,7 +176,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       margin-top: 20px;
       display: flex;
       flex-direction: column;
-      gap: 10px;
+      gap: 8px;
       font-size: 0.78rem;
     }
 
@@ -171,9 +192,15 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
     .container {
       max-width: 1260px;
       margin: 0 auto;
-      padding: 32px 24px;
+      padding: 28px 20px;
       width: 100%;
       flex: 1;
+    }
+
+    @media (max-width: 640px) {
+      .container { padding: 16px 12px; }
+      .login-card { padding: 28px 18px; }
+      .otp-digit { height: 46px; font-size: 1.2rem; }
     }
 
     .eyebrow {
@@ -200,11 +227,11 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       display: flex;
       justify-content: space-between;
       align-items: center;
-      padding-bottom: 24px;
-      margin-bottom: 28px;
+      padding-bottom: 20px;
+      margin-bottom: 24px;
       border-bottom: 1px solid var(--card-border);
       flex-wrap: wrap;
-      gap: 16px;
+      gap: 12px;
     }
 
     .brand {
@@ -234,7 +261,8 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
     .header-actions {
       display: flex;
       align-items: center;
-      gap: 10px;
+      gap: 8px;
+      flex-wrap: wrap;
     }
 
     .status-pill {
@@ -249,6 +277,8 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       border: 1px solid var(--card-border);
       color: var(--ink-secondary);
       box-shadow: var(--shadow-sm);
+      height: 34px;
+      box-sizing: border-box;
     }
 
     .status-dot {
@@ -267,8 +297,10 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
     .btn {
       display: inline-flex;
       align-items: center;
+      justify-content: center;
       gap: 6px;
-      padding: 7px 14px;
+      height: 34px;
+      padding: 0 14px;
       border-radius: var(--radius-sm);
       font-size: 0.82rem;
       font-weight: 500;
@@ -278,6 +310,8 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       color: var(--ink);
       transition: all 0.15s ease;
       box-shadow: var(--shadow-sm);
+      white-space: nowrap;
+      box-sizing: border-box;
     }
 
     .btn:hover {
@@ -292,9 +326,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       box-shadow: 0 2px 8px rgba(0, 113, 227, 0.25);
     }
 
-    .btn-primary:hover {
-      background: var(--accent-hover);
-    }
+    .btn-primary:hover { background: var(--accent-hover); }
 
     .panel {
       background: var(--card-bg);
@@ -302,18 +334,18 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       border-radius: var(--radius-md);
       backdrop-filter: blur(20px);
       box-shadow: var(--shadow-sm);
-      margin-bottom: 28px;
+      margin-bottom: 24px;
       overflow: hidden;
     }
 
     .panel-header {
-      padding: 16px 20px;
+      padding: 14px 18px;
       border-bottom: 1px solid var(--card-border);
       display: flex;
       justify-content: space-between;
       align-items: center;
       flex-wrap: wrap;
-      gap: 12px;
+      gap: 10px;
     }
 
     .panel-title {
@@ -326,10 +358,10 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
     }
 
     .topology-wrap {
-      padding: 20px;
+      padding: 16px;
       display: grid;
-      grid-template-columns: 1fr 360px;
-      gap: 20px;
+      grid-template-columns: 1fr 340px;
+      gap: 16px;
     }
 
     @media (max-width: 960px) {
@@ -344,6 +376,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       display: flex;
       align-items: center;
       justify-content: center;
+      overflow: hidden;
     }
 
     .topo-cards-grid {
@@ -407,7 +440,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
     }
 
     .spectrum-panel {
-      padding: 14px 20px;
+      padding: 14px 18px;
       border-top: 1px solid var(--card-border);
       background: rgba(255, 255, 255, 0.5);
     }
@@ -426,7 +459,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
     .spectrum-legend {
       display: flex;
       flex-wrap: wrap;
-      gap: 16px;
+      gap: 14px;
       font-size: 0.74rem;
       color: var(--ink-secondary);
     }
@@ -440,7 +473,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
     .legend-dot { width: 7px; height: 7px; border-radius: 2px; }
 
     .explorer-bar {
-      padding: 12px 20px;
+      padding: 12px 18px;
       border-bottom: 1px solid var(--card-border);
       display: flex;
       justify-content: space-between;
@@ -452,7 +485,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
     .breadcrumbs-wrap {
       display: flex;
       align-items: center;
-      gap: 12px;
+      gap: 10px;
       flex-wrap: wrap;
     }
 
@@ -474,15 +507,8 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       transition: all 0.12s;
     }
 
-    .crumb-link:hover {
-      color: var(--ink);
-      background: rgba(0, 0, 0, 0.04);
-    }
-
-    .crumb-sep {
-      color: var(--ink-tertiary);
-      font-size: 0.75rem;
-    }
+    .crumb-link:hover { color: var(--ink); background: rgba(0, 0, 0, 0.04); }
+    .crumb-sep { color: var(--ink-tertiary); font-size: 0.75rem; }
 
     .folder-stat-badge {
       font-family: var(--font-mono);
@@ -492,34 +518,39 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       border: 1px solid var(--card-border);
       border-radius: 6px;
       color: var(--ink-secondary);
+      white-space: nowrap;
     }
 
     .search-input {
       background: #FFFFFF;
       border: 1px solid var(--card-border);
       border-radius: var(--radius-sm);
-      padding: 6px 12px;
+      height: 34px;
+      padding: 0 12px;
       color: var(--ink);
-      font-size: 0.82rem;
-      width: 180px;
+      font-size: 16px; /* 16px prevents iOS zoom-on-focus */
+      width: 170px;
       outline: none;
       transition: all 0.2s;
+      box-sizing: border-box;
     }
 
-    .search-input:focus {
-      width: 240px;
-      border-color: var(--accent);
-      box-shadow: 0 0 0 2px var(--accent-soft);
+    @media (min-width: 640px) {
+      .search-input { font-size: 0.82rem; }
+      .search-input:focus { width: 220px; }
     }
 
     .table-viewport {
-      max-height: 600px;
+      max-height: 580px;
       overflow-y: auto;
+      overflow-x: auto;
       position: relative;
+      -webkit-overflow-scrolling: touch;
     }
 
     .file-table {
       width: 100%;
+      min-width: 640px;
       border-collapse: collapse;
       text-align: left;
       font-size: 0.84rem;
@@ -529,7 +560,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       position: sticky;
       top: 0;
       background: #FAFAFC;
-      padding: 10px 20px;
+      padding: 10px 16px;
       color: var(--ink-secondary);
       font-weight: 500;
       font-size: 0.72rem;
@@ -544,12 +575,10 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       transition: background 0.12s;
     }
 
-    .file-row:hover {
-      background: var(--card-hover);
-    }
+    .file-row:hover { background: var(--card-hover); }
 
     .file-row td {
-      padding: 10px 20px;
+      padding: 10px 16px;
       vertical-align: middle;
     }
 
@@ -561,17 +590,8 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       font-weight: 500;
     }
 
-    .name-cell svg {
-      width: 16px;
-      height: 16px;
-      flex-shrink: 0;
-    }
-
-    .meta-mono {
-      font-family: var(--font-mono);
-      font-size: 0.76rem;
-      color: var(--ink-secondary);
-    }
+    .name-cell svg { width: 16px; height: 16px; flex-shrink: 0; }
+    .meta-mono { font-family: var(--font-mono); font-size: 0.76rem; color: var(--ink-secondary); }
 
     .dir-size-cell {
       display: flex;
@@ -596,6 +616,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       font-family: var(--font-mono);
       font-size: 0.72rem;
       transition: all 0.15s;
+      white-space: nowrap;
     }
 
     .node-badges-cluster:hover {
@@ -639,16 +660,20 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       align-items: center;
       gap: 6px;
       justify-content: flex-end;
-      opacity: 0;
-      transition: opacity 0.15s ease;
     }
 
-    .file-row:hover .row-actions { opacity: 1; }
+    @media (min-width: 768px) {
+      .row-actions {
+        opacity: 0;
+        transition: opacity 0.15s ease;
+      }
+      .file-row:hover .row-actions { opacity: 1; }
+    }
 
     .icon-btn {
       background: transparent;
       border: none;
-      padding: 5px;
+      padding: 6px;
       border-radius: 4px;
       cursor: pointer;
       color: var(--ink-secondary);
@@ -670,7 +695,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       display: none;
       align-items: center;
       justify-content: center;
-      padding: 20px;
+      padding: 16px;
     }
 
     .dialog-box {
@@ -679,7 +704,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       border-radius: var(--radius-md);
       padding: 24px;
       width: 100%;
-      max-width: 500px;
+      max-width: 480px;
       box-shadow: var(--shadow-md);
     }
 
@@ -1138,6 +1163,9 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
           const data = await res.json();
           sessionToken = data.token;
           localStorage.setItem('ostore_sess', sessionToken);
+          // Force close any setup/token modal on login
+          closeTotpSetupModal();
+          closeTokenModal();
           showToast('Authenticator verified');
           showConsole();
         } else {
@@ -1188,6 +1216,8 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
     }
 
     function showLogin() {
+      // Close all modals cleanly
+      closeAllModals();
       document.getElementById('loginView').style.display = 'flex';
       document.getElementById('mainConsole').style.display = 'none';
       otpInputs.forEach(i => i.value = '');
@@ -1195,11 +1225,21 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
     }
 
     function showConsole() {
+      // Close all modals cleanly: NEVER leave setup or token modal open post-login
+      closeAllModals();
       document.getElementById('loginView').style.display = 'none';
       document.getElementById('mainConsole').style.display = 'block';
       initSSE();
       loadTopology();
       loadDirectory('', false);
+    }
+
+    function closeAllModals() {
+      document.getElementById('totpSetupModal').style.display = 'none';
+      document.getElementById('tokenModal').style.display = 'none';
+      document.getElementById('folderDetailModal').style.display = 'none';
+      document.getElementById('fileTopoModal').style.display = 'none';
+      document.getElementById('mediaModal').style.display = 'none';
     }
 
     // Reactive SSE: Incremental updates without full-page redraws
@@ -1340,7 +1380,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
           <text y="38" text-anchor="middle" fill="#86868B" font-size="9" font-family="monospace">Primary Entry (:8781)</text>
         </g>
 
-        <!-- Follower 1 (cc2) -->
+        <!-- Follower 1 -->
         <g transform="translate(150, 165)">
           <circle r="20" fill="#FFFFFF" stroke="#34C759" stroke-width="2"/>
           <circle r="3" fill="#34C759"/>
@@ -1348,7 +1388,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
           <text y="44" text-anchor="middle" fill="#86868B" font-size="9" font-family="monospace">${w1.rtt_ms}ms · Follower</text>
         </g>
 
-        <!-- Follower 2 (racknerd) -->
+        <!-- Follower 2 -->
         <g transform="translate(390, 165)">
           <circle r="20" fill="#FFFFFF" stroke="#34C759" stroke-width="2"/>
           <circle r="3" fill="#34C759"/>
@@ -1474,16 +1514,16 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
           actionsHtml = `
             <div class="row-actions">
               <a class="icon-btn" href="${dlUrl}" download title="Download folder as tar archive">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
               </a>
               <button class="icon-btn" title="Folder properties and sync" onclick="openFolderDetail('${item.path}', '${item.name}', ${item.size}, ${item.item_count || 0}, '${item.mtime}')">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
               </button>
               <button class="icon-btn" title="Rename folder" onclick="renamePrompt('${item.path}')">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
               </button>
               <button class="icon-btn btn-delete" title="Delete folder" onclick="deleteItem('${item.path}', true)">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
               </button>
             </div>
           `;
@@ -1491,16 +1531,16 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
           actionsHtml = `
             <div class="row-actions">
               <a class="icon-btn" href="${dlUrl}" download title="Download">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
               </a>
               <button class="icon-btn" title="Copy Direct URL" onclick="copyURL('${dlUrl}')">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
               </button>
               <button class="icon-btn" title="Copy SHA-256" onclick="copySHA('${item.sha256}')">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
               </button>
               <button class="icon-btn btn-delete" title="Delete" onclick="deleteItem('${item.path}', false)">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
               </button>
             </div>
           `;
