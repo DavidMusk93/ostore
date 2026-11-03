@@ -899,7 +899,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
         </div>
         <div>
           <div class="brand-title">ostore</div>
-          <div class="brand-subtitle">Distributed Object Storage Control Plane</div>
+          <div class="brand-subtitle">Distributed Object Storage · MD5 &amp; GDrive Cloud</div>
         </div>
       </a>
 
@@ -910,6 +910,17 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
         </div>
         <button class="btn" onclick="signOut()" title="Sign out current session">
           <span>Sign Out</span>
+        </button>
+        <button class="btn" id="gdriveHeaderBtn" onclick="openGDriveModal()" title="Google Drive Cloud Storage Node">
+          <svg width="14" height="14" viewBox="0 0 87.3 78">
+            <path d="m6.6 66.85 3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3l13.75-23.8h-27.5c0 1.55.4 3.1 1.2 4.5z" fill="#0066da"/>
+            <path d="m43.65 25-13.75-23.8c-1.35.8-2.5 1.9-3.3 3.3l-25.4 44c-.8 1.4-1.2 2.95-1.2 4.5h27.5z" fill="#00ac47"/>
+            <path d="m73.55 76.8c1.35-.8 2.5-1.9 3.3-3.3l1.6-2.75 7.65-13.25c.8-1.4 1.2-2.95 1.2-4.5h-27.502l5.852 11.5z" fill="#ea4335"/>
+            <path d="m43.65 25 13.75-23.8c-1.35-.8-2.9-1.2-4.5-1.2h-18.5c-1.6 0-3.15.45-4.5 1.2z" fill="#00832d"/>
+            <path d="m59.8 53h-32.3l-13.75 23.8c1.35.8 2.9 1.2 4.5 1.2h50.8c1.6 0 3.15-.45 4.5-1.2z" fill="#2684fc"/>
+            <path d="m73.4 26.5-12.7-22c-.8-1.4-1.95-2.5-3.3-3.3l-13.75 23.8 16.15 28h27.45c0-1.55-.4-3.1-1.2-4.5z" fill="#ffba00"/>
+          </svg>
+          <span id="gdriveHeaderLabel">Google Drive</span>
         </button>
         <button class="btn btn-primary" onclick="openClusterSyncModal()" title="View cluster synchronization status & run fleet replication">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
@@ -1169,6 +1180,114 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       <div class="metrics-bar" id="mediaMetricsBar">
         <span id="mediaServerTiming">Loading metrics...</span>
         <span id="mediaTransferSpeed">--</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Google Drive Cloud Storage Modal -->
+  <div class="backdrop" id="gdriveModal">
+    <div class="dialog-box" style="max-width: 520px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <svg width="20" height="20" viewBox="0 0 87.3 78">
+            <path d="m6.6 66.85 3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3l13.75-23.8h-27.5c0 1.55.4 3.1 1.2 4.5z" fill="#0066da"/>
+            <path d="m43.65 25-13.75-23.8c-1.35.8-2.5 1.9-3.3 3.3l-25.4 44c-.8 1.4-1.2 2.95-1.2 4.5h27.5z" fill="#00ac47"/>
+            <path d="m73.55 76.8c1.35-.8 2.5-1.9 3.3-3.3l1.6-2.75 7.65-13.25c.8-1.4 1.2-2.95 1.2-4.5h-27.502l5.852 11.5z" fill="#ea4335"/>
+            <path d="m43.65 25 13.75-23.8c-1.35-.8-2.9-1.2-4.5-1.2h-18.5c-1.6 0-3.15.45-4.5 1.2z" fill="#00832d"/>
+            <path d="m59.8 53h-32.3l-13.75 23.8c1.35.8 2.9 1.2 4.5 1.2h50.8c1.6 0 3.15-.45 4.5-1.2z" fill="#2684fc"/>
+            <path d="m73.4 26.5-12.7-22c-.8-1.4-1.95-2.5-3.3-3.3l-13.75 23.8 16.15 28h27.45c0-1.55-.4-3.1-1.2-4.5z" fill="#ffba00"/>
+          </svg>
+          <h3 style="margin: 0; font-size: 1.05rem;">Google Drive 云存储节点</h3>
+        </div>
+        <button class="icon-btn" onclick="closeGDriveModal()">✕</button>
+      </div>
+
+      <!-- Connected State Banner -->
+      <div id="gdriveConnectedCard" style="display: none; background: rgba(52, 199, 89, 0.08); border: 1px solid rgba(52, 199, 89, 0.25); border-radius: 12px; padding: 14px 16px; margin-bottom: 16px;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span class="status-dot"></span>
+            <strong style="font-size: 0.88rem; color: #1D1D1F;">已连接 Google Drive</strong>
+          </div>
+          <span class="ratio-badge full" id="gdriveQuotaText">-- GB / -- GB</span>
+        </div>
+        <div style="font-size: 0.74rem; font-family: var(--font-mono); color: var(--ink-secondary); margin-top: 6px;" id="gdriveClientText">
+          Client ID: --
+        </div>
+        <div style="margin-top: 10px; display: flex; justify-content: flex-end;">
+          <button class="btn btn-delete" style="font-size: 0.76rem; height: 26px; padding: 0 10px;" onclick="disconnectGDrive()">断开连接</button>
+        </div>
+      </div>
+
+      <!-- Connect Form Tabs -->
+      <div id="gdriveConnectTabs">
+        <div style="display: flex; border-bottom: 1px solid var(--card-border); margin-bottom: 16px; gap: 16px;">
+          <button id="tabOAuthBtn" onclick="switchGDriveTab('oauth')" style="border:none; background:none; padding: 6px 0; font-size: 0.82rem; font-weight:600; color: var(--accent); border-bottom: 2px solid var(--accent); cursor: pointer;">
+            网页一键授权 (OAuth)
+          </button>
+          <button id="tabManualBtn" onclick="switchGDriveTab('manual')" style="border:none; background:none; padding: 6px 0; font-size: 0.82rem; font-weight:500; color: var(--ink-secondary); border-bottom: 2px solid transparent; cursor: pointer;">
+            填入凭据 (Credentials)
+          </button>
+        </div>
+
+        <!-- OAuth Tab Pane -->
+        <div id="paneOAuth">
+          <p style="font-size: 0.78rem; color: var(--ink-secondary); line-height: 1.5; margin-bottom: 12px;">
+            填入您在 Google Cloud 创建的 OAuth Client ID 与 Client Secret，点击下方按钮将自动唤起 Google 授权页。
+          </p>
+          <div style="display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px;">
+            <div>
+              <label style="display: block; font-size: 0.74rem; font-weight:600; color: var(--ink-secondary); margin-bottom: 4px;">Client ID</label>
+              <input type="text" id="gdOAuthClientId" placeholder="xxxx.apps.googleusercontent.com" style="width: 100%; height: 34px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--card-border); font-size: 0.8rem; font-family: var(--font-mono); box-sizing: border-box;">
+            </div>
+            <div>
+              <label style="display: block; font-size: 0.74rem; font-weight:600; color: var(--ink-secondary); margin-bottom: 4px;">Client Secret</label>
+              <input type="password" id="gdOAuthClientSecret" placeholder="GOCSPX-xxxx" style="width: 100%; height: 34px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--card-border); font-size: 0.8rem; font-family: var(--font-mono); box-sizing: border-box;">
+            </div>
+          </div>
+          <button class="btn btn-primary" style="width: 100%; height: 36px; justify-content: center;" onclick="startGDriveOAuth()">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
+            前往 Google 授权登录
+          </button>
+        </div>
+
+        <!-- Manual Tab Pane -->
+        <div id="paneManual" style="display: none;">
+          <p style="font-size: 0.78rem; color: var(--ink-secondary); line-height: 1.5; margin-bottom: 12px;">
+            如果您已有包含 Refresh Token 的凭据（如使用 Rclone authorize 生成）：
+          </p>
+          <div style="display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px;">
+            <div>
+              <label style="display: block; font-size: 0.74rem; font-weight:600; color: var(--ink-secondary); margin-bottom: 4px;">Client ID</label>
+              <input type="text" id="gdManualClientId" placeholder="xxxx.apps.googleusercontent.com" style="width: 100%; height: 34px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--card-border); font-size: 0.8rem; font-family: var(--font-mono); box-sizing: border-box;">
+            </div>
+            <div>
+              <label style="display: block; font-size: 0.74rem; font-weight:600; color: var(--ink-secondary); margin-bottom: 4px;">Client Secret</label>
+              <input type="password" id="gdManualClientSecret" placeholder="GOCSPX-xxxx" style="width: 100%; height: 34px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--card-border); font-size: 0.8rem; font-family: var(--font-mono); box-sizing: border-box;">
+            </div>
+            <div>
+              <label style="display: block; font-size: 0.74rem; font-weight:600; color: var(--ink-secondary); margin-bottom: 4px;">Refresh Token</label>
+              <input type="password" id="gdManualRefreshToken" placeholder="1//xxxx" style="width: 100%; height: 34px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--card-border); font-size: 0.8rem; font-family: var(--font-mono); box-sizing: border-box;">
+            </div>
+          </div>
+          <button class="btn btn-primary" style="width: 100%; height: 36px; justify-content: center;" onclick="submitManualGDrive()">
+            验证凭据并保存
+          </button>
+        </div>
+
+        <!-- Google Guide Details Accordion -->
+        <details style="margin-top: 14px; font-size: 0.75rem; color: var(--ink-secondary); border-top: 1px solid var(--card-border); padding-top: 10px;">
+          <summary style="cursor: pointer; font-weight: 600; color: var(--accent);">如何获取 Google Client ID & Secret？（3步教程）</summary>
+          <div style="line-height: 1.6; margin-top: 8px;">
+            1. 登录 <a href="https://console.cloud.google.com/" target="_blank" style="color:var(--accent);">Google Cloud Console</a> 新建一个项目。<br>
+            2. 在「API 和服务」→「库」中搜索 <strong>Google Drive API</strong> 并点击启用。<br>
+            3. 在「OAuth 同意屏幕」将类型选为外部，填写应用名并添加自己的 Google 邮箱为测试用户。<br>
+            4. 在「凭据」→「创建凭据」选择 <strong>OAuth 客户端 ID</strong>，应用类型选「Web 应用」。<br>
+            5. 在「已获授权的重定向 URI」中添加：<br>
+            <code style="display:block; background:rgba(0,0,0,0.05); padding: 4px 8px; border-radius: 4px; margin: 4px 0; word-break: break-all;">https://xyz69.top/ostore/api/cluster/gdrive/callback</code>
+            6. 复制生成的 Client ID 与 Client Secret 粘贴至上方即可。
+          </div>
+        </details>
       </div>
     </div>
   </div>
@@ -1492,6 +1611,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       document.getElementById('mainConsole').style.display = 'block';
       initSSE();
       loadTopology();
+      checkGDriveStatus();
       loadDirectory('', false);
     }
 
@@ -1501,6 +1621,136 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       document.getElementById('folderDetailModal').style.display = 'none';
       document.getElementById('fileTopoModal').style.display = 'none';
       document.getElementById('mediaModal').style.display = 'none';
+      const gdModal = document.getElementById('gdriveModal');
+      if (gdModal) gdModal.style.display = 'none';
+    }
+
+    function openGDriveModal() {
+      checkGDriveStatus();
+      document.getElementById('gdriveModal').style.display = 'flex';
+    }
+
+    function closeGDriveModal() {
+      document.getElementById('gdriveModal').style.display = 'none';
+    }
+
+    function switchGDriveTab(tab) {
+      const paneOAuth = document.getElementById('paneOAuth');
+      const paneManual = document.getElementById('paneManual');
+      const tabOAuthBtn = document.getElementById('tabOAuthBtn');
+      const tabManualBtn = document.getElementById('tabManualBtn');
+
+      if (tab === 'oauth') {
+        paneOAuth.style.display = 'block';
+        paneManual.style.display = 'none';
+        tabOAuthBtn.style.color = 'var(--accent)';
+        tabOAuthBtn.style.borderBottom = '2px solid var(--accent)';
+        tabManualBtn.style.color = 'var(--ink-secondary)';
+        tabManualBtn.style.borderBottom = '2px solid transparent';
+      } else {
+        paneOAuth.style.display = 'none';
+        paneManual.style.display = 'block';
+        tabManualBtn.style.color = 'var(--accent)';
+        tabManualBtn.style.borderBottom = '2px solid var(--accent)';
+        tabOAuthBtn.style.color = 'var(--ink-secondary)';
+        tabOAuthBtn.style.borderBottom = '2px solid transparent';
+      }
+    }
+
+    async function checkGDriveStatus() {
+      try {
+        const res = await api('/api/cluster/gdrive/status');
+        if (!res.ok) return;
+        const data = await res.json();
+        const headerLabel = document.getElementById('gdriveHeaderLabel');
+        const card = document.getElementById('gdriveConnectedCard');
+        const tabs = document.getElementById('gdriveConnectTabs');
+        const quota = document.getElementById('gdriveQuotaText');
+        const clientText = document.getElementById('gdriveClientText');
+
+        if (data && data.connected) {
+          const used = formatBytes(data.disk_total_bytes - data.disk_available_bytes);
+          const total = formatBytes(data.disk_total_bytes);
+          if (headerLabel) headerLabel.textContent = `GDrive (${total})`;
+          if (card) card.style.display = 'block';
+          if (tabs) tabs.style.display = 'none';
+          if (quota) quota.textContent = `${used} / ${total}`;
+          if (clientText) clientText.textContent = `Client: ${data.client_id} · Root: ${data.root_folder_id}`;
+        } else {
+          if (headerLabel) headerLabel.textContent = 'Google Drive';
+          if (card) card.style.display = 'none';
+          if (tabs) tabs.style.display = 'block';
+        }
+      } catch (e) {
+        console.error('Failed to check GDrive status', e);
+      }
+    }
+
+    async function startGDriveOAuth() {
+      const clientId = document.getElementById('gdOAuthClientId').value.trim();
+      const clientSecret = document.getElementById('gdOAuthClientSecret').value.trim();
+      if (!clientId || !clientSecret) {
+        showToast('请完整输入 Client ID 与 Client Secret');
+        return;
+      }
+      try {
+        const redirectUri = window.location.origin + getBasePath() + '/api/cluster/gdrive/callback';
+        const res = await api('/api/cluster/gdrive/auth-url', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ client_id: clientId, client_secret: clientSecret, redirect_uri: redirectUri })
+        });
+        const data = await res.json();
+        if (data && data.auth_url) {
+          showToast('正在前往 Google 授权页面...');
+          window.location.href = data.auth_url;
+        } else {
+          showToast('获取授权链接失败: ' + (data.error || '未知错误'));
+        }
+      } catch (e) {
+        showToast('获取授权链接失败: ' + (e.error || e.message));
+      }
+    }
+
+    async function submitManualGDrive() {
+      const clientId = document.getElementById('gdManualClientId').value.trim();
+      const clientSecret = document.getElementById('gdManualClientSecret').value.trim();
+      const refreshToken = document.getElementById('gdManualRefreshToken').value.trim();
+      if (!clientId || !clientSecret || !refreshToken) {
+        showToast('请完整输入 Client ID, Client Secret 和 Refresh Token');
+        return;
+      }
+      try {
+        const res = await api('/api/cluster/gdrive/connect', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ client_id: clientId, client_secret: clientSecret, refresh_token: refreshToken })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          showToast('Google Drive 接入成功！');
+          checkGDriveStatus();
+          loadTopology();
+        } else {
+          showToast('接入失败: ' + (data.error || '凭据无效'));
+        }
+      } catch (e) {
+        showToast('接入失败: ' + (e.error || e.message));
+      }
+    }
+
+    async function disconnectGDrive() {
+      if (!confirm('确定断开与 Google Drive 的连接吗？')) return;
+      try {
+        const res = await api('/api/cluster/gdrive/disconnect', { method: 'POST' });
+        if (res.ok) {
+          showToast('已断开 Google Drive 连接');
+          checkGDriveStatus();
+          loadTopology();
+        }
+      } catch (e) {
+        showToast('断开失败: ' + (e.error || e.message));
+      }
     }
 
     // Reactive SSE: Targeted DOM updates (Zero whole-table wipes -> Zero jitter)
@@ -1586,7 +1836,10 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
         const cardsList = document.getElementById('topoCardsList');
         const list = [];
         if (topo.control_plane) list.push({ ...topo.control_plane, role: 'Main Control Node' });
-        for (const w of (topo.workers || [])) list.push({ ...w, role: 'Storage Follower' });
+        for (const w of (topo.workers || [])) {
+          const role = (w.node_type === 'gdrive' || w.id === 'gdrive') ? 'Google Drive Cloud Node' : 'Storage Follower';
+          list.push({ ...w, role });
+        }
 
         cardsList.innerHTML = list.map(n => {
           const used = n.disk_total_bytes - n.disk_available_bytes;

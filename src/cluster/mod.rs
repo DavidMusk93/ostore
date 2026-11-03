@@ -213,7 +213,7 @@ pub struct DirReplicaStatus {
 
 pub struct ClusterManager {
     pub config: ClusterConfig,
-    pub gdrive: Option<Arc<GDriveClient>>,
+    pub gdrive: Arc<RwLock<Option<Arc<GDriveClient>>>>,
     client: reqwest::Client,
     statuses: Arc<RwLock<HashMap<String, NodeStatus>>>,
     last_sync_report: Arc<RwLock<Option<SyncReport>>>,
@@ -257,7 +257,7 @@ impl ClusterManager {
                 }
             }
         }
-        let gdrive = gdrive_client.map(Arc::new);
+        let gdrive = Arc::new(RwLock::new(gdrive_client.map(Arc::new)));
 
         let mut initial_statuses = HashMap::new();
         for node in &config.nodes {
@@ -323,7 +323,7 @@ impl ClusterManager {
             }
 
             if node.node_type.as_deref() == Some("gdrive") || node.id == "gdrive" {
-                if let Some(gdrive) = &self.gdrive {
+                if let Some(gdrive) = self.gdrive.read().await.clone() {
                     let start = Instant::now();
                     match gdrive.get_storage_quota().await {
                         Ok((total, avail)) => {
@@ -561,7 +561,7 @@ impl ClusterManager {
                 continue;
             }
             if node.node_type.as_deref() == Some("gdrive") || node.id == "gdrive" {
-                if let Some(gdrive) = &self.gdrive {
+                if let Some(gdrive) = self.gdrive.read().await.clone() {
                     let md5 = match tokio::fs::metadata(abs_path).await {
                         Ok(meta) => self.cache.get_or_compute(abs_path, &meta).await.unwrap_or_default(),
                         Err(_) => String::new(),
@@ -617,7 +617,7 @@ impl ClusterManager {
                     continue;
                 }
                 if node.node_type.as_deref() == Some("gdrive") || node.id == "gdrive" {
-                    if let Some(gdrive) = &self.gdrive {
+                    if let Some(gdrive) = self.gdrive.read().await.clone() {
                         let _ = gdrive.delete_file(&rel_path).await;
                     }
                     continue;
@@ -691,7 +691,7 @@ impl ClusterManager {
         let main_exists = main.exists;
         let client = self.client.clone();
         let path_clone = rel_path.clone();
-        let gdrive_client = self.gdrive.clone();
+        let gdrive_client = self.gdrive.read().await.clone();
         let root_clone = self.root.clone();
 
         let checks_stream = futures::stream::iter(follower_nodes)
@@ -923,7 +923,7 @@ impl ClusterManager {
             };
 
             if node.node_type.as_deref() == Some("gdrive") || node.id == "gdrive" {
-                if let Some(gdrive) = &self.gdrive {
+                if let Some(gdrive) = self.gdrive.read().await.clone() {
                     match gdrive.list_dir(&prefix).await {
                         Ok(gdrive_items) => {
                             let mut remote_map = HashMap::new();
@@ -1138,7 +1138,7 @@ impl ClusterManager {
 
         let client = self.client.clone();
         let prefix_clone = prefix.clone();
-        let gdrive_client = self.gdrive.clone();
+        let gdrive_client = self.gdrive.read().await.clone();
         let fetches = futures::stream::iter(follower_nodes)
             .map(|node| {
                 let client = client.clone();
@@ -1291,5 +1291,88 @@ impl ClusterManager {
         }
 
         results
+    }
+
+    /// Dynamically connect and persist Google Drive credentials to /etc/ostore-cluster.json and activate cloud node.
+    pub async fn update_and_persist_gdrive(&self, cfg: GDriveConfig) -> Result<(), String> {
+        let client = Arc::new(GDriveClient::new(cfg.clone()));
+        let (total, avail) = client.get_storage_quota().await?;
+
+        // 1. Update /etc/ostore-cluster.json on disk
+        let config_path = Path::new("/etc/ostore-cluster.json");
+        let mut cluster_cfg = if config_path.exists() {
+            let s = std::fs::read_to_string(config_path).map_err(|e| e.to_string())?;
+            serde_json::from_str::<ClusterConfig>(&s).unwrap_or_default()
+        } else {
+            ClusterConfig::default()
+        };
+
+        let gdrive_node = NodeConfig {
+            id: "gdrive".to_string(),
+            name: "Google Drive Cloud".to_string(),
+            url: "".to_string(),
+            token: "".to_string(),
+            is_local: false,
+            node_type: Some("gdrive".to_string()),
+            gdrive_client_id: Some(cfg.client_id.clone()),
+            gdrive_client_secret: Some(cfg.client_secret.clone()),
+            gdrive_refresh_token: Some(cfg.refresh_token.clone()),
+            gdrive_root_folder_id: Some(cfg.root_folder_id.clone()),
+        };
+
+        if let Some(pos) = cluster_cfg.nodes.iter().position(|n| n.id == "gdrive") {
+            cluster_cfg.nodes[pos] = gdrive_node.clone();
+        } else {
+            cluster_cfg.nodes.push(gdrive_node.clone());
+        }
+
+        let json_text = serde_json::to_string_pretty(&cluster_cfg).map_err(|e| e.to_string())?;
+        std::fs::write(config_path, json_text).map_err(|e| e.to_string())?;
+
+        // 2. Update in-memory state
+        *self.gdrive.write().await = Some(client);
+        let mut statuses = self.statuses.write().await;
+        statuses.insert(
+            "gdrive".to_string(),
+            NodeStatus {
+                id: "gdrive".to_string(),
+                name: "Google Drive Cloud".to_string(),
+                url: "".to_string(),
+                is_local: false,
+                healthy: true,
+                rtt_ms: Some(15),
+                disk_total_bytes: total,
+                disk_available_bytes: avail,
+                last_seen: Some(Utc::now()),
+                error: None,
+            },
+        );
+
+        *self.cached_topology.write().await = None;
+
+        Ok(())
+    }
+
+    /// Disconnect Google Drive cloud node, remove from configuration and memory.
+    pub async fn remove_and_persist_gdrive(&self) -> Result<(), String> {
+        let config_path = Path::new("/etc/ostore-cluster.json");
+        if config_path.exists() {
+            let s = std::fs::read_to_string(config_path).map_err(|e| e.to_string())?;
+            if let Ok(mut cluster_cfg) = serde_json::from_str::<ClusterConfig>(&s) {
+                cluster_cfg
+                    .nodes
+                    .retain(|n| n.id != "gdrive" && n.node_type.as_deref() != Some("gdrive"));
+                let json_text = serde_json::to_string_pretty(&cluster_cfg).map_err(|e| e.to_string())?;
+                let _ = std::fs::write(config_path, json_text);
+            }
+        }
+
+        *self.gdrive.write().await = None;
+        let mut statuses = self.statuses.write().await;
+        statuses.remove("gdrive");
+
+        *self.cached_topology.write().await = None;
+
+        Ok(())
     }
 }

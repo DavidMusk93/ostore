@@ -63,6 +63,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/cluster/sync-status", get(cluster::get_sync_status))
         .route("/cluster/sync-file", post(cluster::sync_single_file))
         .route("/cluster/sync", post(cluster::trigger_sync))
+        .route("/cluster/gdrive/status", get(cluster::gdrive_status))
+        .route("/cluster/gdrive/auth-url", post(cluster::gdrive_auth_url))
+        .route("/cluster/gdrive/connect", post(cluster::gdrive_connect))
+        .route("/cluster/gdrive/disconnect", post(cluster::gdrive_disconnect))
         // Catch-all *inside* `/api` so unmatched API paths stay JSON and stay
         // behind the token; a nested router's own `fallback` is not consulted,
         // and the request would otherwise fall out to the S3 surface.
@@ -73,6 +77,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/auth/login", post(auth_routes::login))
         .route("/auth/logout", post(auth_routes::logout))
         .route("/auth/setup", get(auth_routes::setup_info))
+        .route("/cluster/gdrive/callback", get(cluster::gdrive_callback))
         .merge(protected_api);
 
     Router::new()
