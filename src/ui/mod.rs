@@ -767,7 +767,8 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       overflow: auto;
       display: flex;
       justify-content: center;
-      align-items: center;
+      align-items: flex-start;
+      width: 100%;
     }
 
     .media-container pre {
@@ -783,6 +784,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       color: #1D1D1F;
       white-space: pre-wrap;
       line-height: 1.5;
+      box-sizing: border-box;
     }
 
     .toast {
@@ -1034,11 +1036,20 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
   <div class="backdrop" id="mediaModal">
     <div class="dialog-box media-box">
       <div class="media-header">
-        <div>
-          <span id="mediaTitle" style="font-weight: 600; font-size: 0.9rem;"></span>
-          <span id="mediaEncodingTag" style="font-family: var(--font-mono); font-size: 0.7rem; padding: 2px 8px; border-radius: var(--radius-pill); background: rgba(0,0,0,0.05); margin-left: 8px;"></span>
+        <div style="display:flex; align-items:center; gap:8px; min-width:0; overflow:hidden;">
+          <span id="mediaIcon" style="display:inline-flex; align-items:center; width:16px; height:16px; flex-shrink:0;"></span>
+          <span id="mediaTitle" style="font-weight:600; font-size:0.9rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;"></span>
+          <span id="mediaEncodingTag" style="font-family:var(--font-mono); font-size:0.7rem; padding:2px 8px; border-radius:var(--radius-pill); background:rgba(0,0,0,0.05); flex-shrink:0;"></span>
         </div>
-        <button class="icon-btn" onclick="closeMediaModal()">✕</button>
+        <div style="display:flex; align-items:center; gap:6px; flex-shrink:0;">
+          <button id="mediaCopyBtn" class="icon-btn" title="Copy text content" onclick="copyCurrentPreviewText()" style="display:none;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          </button>
+          <a id="mediaDownloadBtn" class="icon-btn" title="Download object" href="#" download>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          </a>
+          <button class="icon-btn" title="Close" onclick="closeMediaModal()">✕</button>
+        </div>
       </div>
       <div class="media-container" id="mediaContainer"></div>
       <div class="metrics-bar" id="mediaMetricsBar">
@@ -1100,6 +1111,137 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       document.getElementById('toastMsg').textContent = msg;
       t.style.display = 'flex';
       setTimeout(() => { t.style.display = 'none'; }, 2200);
+    }
+
+    let currentPreviewText = '';
+    let currentPreviewUrl = '';
+
+    function escapeHtml(s) {
+      if (s === null || s === undefined) return '';
+      return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    }
+
+    function escapeJs(s) {
+      if (s === null || s === undefined) return '';
+      return String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    }
+
+    function copyCurrentPreviewText() {
+      if (!currentPreviewText) return;
+      navigator.clipboard.writeText(currentPreviewText);
+      showToast('Object content copied');
+    }
+
+    function stripBackupSuffix(name) {
+      if (!name) return '';
+      const backupRegex = /\.(?:bak|backup|old|orig|original|save|saved|tmp|temp|swp|dist|default|example|sample|template|tpl|\d{8}(?:[-_]\d{4,6})?|\d{10,14}|\d+)$/i;
+      if (backupRegex.test(name)) {
+        return name.replace(backupRegex, '');
+      }
+      return name;
+    }
+
+    function getFileCategory(name) {
+      if (!name) return { category: 'file', ext: '', tag: 'FILE' };
+      const clean = stripBackupSuffix(name);
+      const lowerClean = clean.toLowerCase();
+      const dotIdx = clean.lastIndexOf('.');
+      const ext = dotIdx >= 0 ? clean.substring(dotIdx + 1).toLowerCase() : '';
+
+      // Special configuration & build filenames
+      if (lowerClean === 'caddyfile' || lowerClean.startsWith('caddyfile.') || lowerClean.endsWith('.caddyfile')) {
+        return { category: 'code', ext: 'caddyfile', tag: 'CADDYFILE' };
+      }
+      if (lowerClean === 'dockerfile' || lowerClean.startsWith('dockerfile.') || lowerClean === 'containerfile') {
+        return { category: 'code', ext: 'dockerfile', tag: 'DOCKER' };
+      }
+      if (['makefile', 'gnumakefile', 'justfile', 'earthfile', 'taskfile', 'procfile', 'gemfile', 'rakefile', 'vagrantfile', 'brewfile'].includes(lowerClean)) {
+        return { category: 'code', ext: ext || lowerClean, tag: 'BUILD' };
+      }
+      if (['hosts', 'resolv.conf', 'crontab', 'sudoers', 'fstab'].includes(lowerClean) || lowerClean.startsWith('.env')) {
+        return { category: 'code', ext: ext || 'env', tag: 'CONFIG' };
+      }
+      if (['license', 'copying', 'authors', 'changelog', 'changes', 'readme', 'todo', 'notice'].includes(lowerClean)) {
+        return { category: 'text', ext: ext || 'txt', tag: 'DOC' };
+      }
+      if (['.gitignore', '.gitattributes', '.gitmodules', '.dockerignore', '.editorconfig', '.npmrc', '.zshrc', '.bashrc', '.profile', '.tmux.conf', '.prettierrc', '.eslintrc', '.babelrc'].includes(lowerClean)) {
+        return { category: 'code', ext: ext || 'conf', tag: 'CONFIG' };
+      }
+
+      // Compound archive extensions
+      if (lowerClean.endsWith('.tar.gz') || lowerClean.endsWith('.tgz')) return { category: 'archive', ext: 'tar.gz', tag: 'TAR.GZ' };
+      if (lowerClean.endsWith('.tar.bz2') || lowerClean.endsWith('.tbz2')) return { category: 'archive', ext: 'tar.bz2', tag: 'TAR.BZ2' };
+      if (lowerClean.endsWith('.tar.xz') || lowerClean.endsWith('.txz')) return { category: 'archive', ext: 'tar.xz', tag: 'TAR.XZ' };
+
+      // Images
+      if (['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'svg', 'ico', 'avif', 'tif', 'tiff'].includes(ext)) {
+        return { category: 'image', ext, tag: ext.toUpperCase() };
+      }
+      // Videos
+      if (['mp4', 'webm', 'mov', 'mkv', 'avi', 'm4v', 'ogv'].includes(ext)) {
+        return { category: 'video', ext, tag: ext.toUpperCase() };
+      }
+      // Audio
+      if (['mp3', 'wav', 'ogg', 'aac', 'flac', 'm4a', 'opus', 'weba'].includes(ext)) {
+        return { category: 'audio', ext, tag: ext.toUpperCase() };
+      }
+      // PDF
+      if (ext === 'pdf') {
+        return { category: 'pdf', ext, tag: 'PDF' };
+      }
+      // Archives
+      if (['zip', 'tar', 'gz', 'tgz', 'bz2', 'tbz2', 'xz', 'txz', 'zst', '7z', 'rar', 'iso', 'dmg', 'pkg', 'deb', 'rpm'].includes(ext)) {
+        return { category: 'archive', ext, tag: ext.toUpperCase() };
+      }
+      // Executables & binary bytecode/fonts
+      if (['exe', 'dll', 'so', 'dylib', 'a', 'o', 'bin', 'wasm', 'class', 'pyc', 'woff', 'woff2', 'ttf', 'otf', 'eot'].includes(ext)) {
+        return { category: 'binary', ext, tag: ext.toUpperCase() };
+      }
+      // Code & Scripts
+      if (['rs', 'go', 'py', 'js', 'mjs', 'cjs', 'ts', 'tsx', 'jsx', 'c', 'cpp', 'cc', 'cxx', 'h', 'hpp', 'java', 'kt', 'kts', 'scala', 'rb', 'php', 'lua', 'pl', 'pm', 'r', 'swift', 'dart', 'cs', 'fs', 'sh', 'bash', 'zsh', 'fish', 'sql', 'proto', 'graphql', 'gql', 'vue', 'svelte', 'diff', 'patch'].includes(ext)) {
+        return { category: 'code', ext, tag: ext.toUpperCase() };
+      }
+      // Config & Markup
+      if (['caddyfile', 'caddy', 'toml', 'yaml', 'yml', 'json', 'json5', 'jsonc', 'jsonl', 'ndjson', 'ini', 'conf', 'cnf', 'cfg', 'properties', 'env', 'xml', 'html', 'htm', 'css', 'scss', 'sass', 'less', 'service', 'unit', 'rules'].includes(ext)) {
+        return { category: 'code', ext, tag: ext.toUpperCase() };
+      }
+      // Text & Docs
+      if (['txt', 'text', 'log', 'md', 'markdown', 'rst', 'adoc', 'org', 'csv', 'tsv', 'lock', 'sum', 'mod'].includes(ext)) {
+        return { category: 'text', ext, tag: ext.toUpperCase() };
+      }
+
+      return { category: 'unknown', ext: ext || '', tag: (ext || 'OBJECT').toUpperCase() };
+    }
+
+    function getFileIcon(name) {
+      const { category } = getFileCategory(name);
+      if (category === 'code') {
+        return `<svg viewBox="0 0 24 24" fill="none" stroke="#5E5CE6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>`;
+      }
+      if (category === 'text') {
+        return `<svg viewBox="0 0 24 24" fill="none" stroke="#34C759" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>`;
+      }
+      if (category === 'image') {
+        return `<svg viewBox="0 0 24 24" fill="none" stroke="#FF9500" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>`;
+      }
+      if (category === 'video') {
+        return `<svg viewBox="0 0 24 24" fill="none" stroke="#FF2D55" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>`;
+      }
+      if (category === 'audio') {
+        return `<svg viewBox="0 0 24 24" fill="none" stroke="#AF52DE" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>`;
+      }
+      if (category === 'pdf') {
+        return `<svg viewBox="0 0 24 24" fill="none" stroke="#FF3B30" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/></svg>`;
+      }
+      if (category === 'archive') {
+        return `<svg viewBox="0 0 24 24" fill="none" stroke="#8E8E93" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/></svg>`;
+      }
+      return `<svg viewBox="0 0 24 24" fill="none" stroke="#86868B" stroke-width="1.5"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg>`;
     }
 
     async function api(path, opts = {}) {
@@ -1573,12 +1715,12 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       return `
         <tr class="file-row" id="row-${escapeId(item.path)}">
           <td>
-            <div class="name-cell" onclick="${isDir ? `navigate('${item.path}')` : `openMediaPreview('${item.path}')`}">
+            <div class="name-cell" onclick="${isDir ? `navigate('${escapeJs(item.path)}')` : `openMediaPreview('${escapeJs(item.path)}', ${item.size || 0}, '${escapeJs(item.sha256 || '')}')`}">
               ${isDir
                 ? `<svg viewBox="0 0 24 24" fill="#0071E3"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>`
-                : `<svg viewBox="0 0 24 24" fill="none" stroke="#86868B" stroke-width="1.5"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg>`
+                : getFileIcon(item.name)
               }
-              <span>${item.name}</span>
+              <span>${escapeHtml(item.name)}</span>
             </div>
           </td>
           <td>${sizeDisplayHtml}</td>
@@ -1866,77 +2008,170 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       return out;
     }
 
-    async function openMediaPreview(path) {
-      const ext = path.split('.').pop().toLowerCase();
+    async function openMediaPreview(path, size = 0, sha256 = '') {
+      const filename = path.split('/').pop();
+      const fileInfo = getFileCategory(filename);
       const url = `${getBasePath()}/api/files/${path}`;
+      currentPreviewUrl = url;
+      currentPreviewText = '';
+
       const modal = document.getElementById('mediaModal');
       const container = document.getElementById('mediaContainer');
       const metricsBar = document.getElementById('mediaMetricsBar');
       const encodingTag = document.getElementById('mediaEncodingTag');
+      const iconSpan = document.getElementById('mediaIcon');
+      const downloadBtn = document.getElementById('mediaDownloadBtn');
+      const copyBtn = document.getElementById('mediaCopyBtn');
 
-      document.getElementById('mediaTitle').textContent = path.split('/').pop();
-      encodingTag.textContent = ext.toUpperCase();
+      document.getElementById('mediaTitle').textContent = filename;
+      encodingTag.textContent = fileInfo.tag;
+      if (iconSpan) iconSpan.innerHTML = getFileIcon(filename);
       metricsBar.innerHTML = '<span>⚡ Loading object & metrics...</span><span>--</span>';
       container.innerHTML = '<div style="color:var(--ink-secondary); padding: 40px; font-family:var(--font-mono); font-size:0.82rem;">Loading stream...</div>';
+
+      if (downloadBtn) {
+        downloadBtn.href = url;
+        downloadBtn.setAttribute('download', filename);
+      }
+      if (copyBtn) copyBtn.style.display = 'none';
+
       modal.style.display = 'flex';
 
       const t0 = performance.now();
 
-      if (['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp'].includes(ext)) {
-        container.innerHTML = `<img src="${url}" style="max-width: 100%; max-height: 68vh; border-radius: 8px;">`;
+      // 1. Direct Image
+      if (fileInfo.category === 'image') {
+        container.innerHTML = `<img src="${url}" style="max-width: 100%; max-height: 68vh; border-radius: 8px; object-fit: contain; align-self: center;">`;
         const dur = (performance.now() - t0).toFixed(1);
         metricsBar.innerHTML = `<span>⚡ Image View · Client Render: ${dur}ms</span><span>HTTP Stream</span>`;
-      } else if (['mp4', 'webm', 'mov'].includes(ext)) {
-        container.innerHTML = `<video src="${url}" controls autoplay style="max-width: 100%; max-height: 68vh; border-radius: 8px;"></video>`;
+        return;
+      }
+
+      // 2. Direct Video
+      if (fileInfo.category === 'video') {
+        container.innerHTML = `<video src="${url}" controls autoplay style="max-width: 100%; max-height: 68vh; border-radius: 8px; align-self: center;"></video>`;
         metricsBar.innerHTML = `<span>⚡ HTML5 Media Stream · Range Enabled</span><span>HTTP 206 Partial</span>`;
-      } else if (['txt', 'json', 'log', 'md', 'xml', 'csv', 'sql'].includes(ext)) {
-        try {
-          const resp = await api(`/api/files/${path}`);
-          const serverTiming = resp.headers.get('Server-Timing') || 'local';
-          const buf = await resp.arrayBuffer();
-          const tNet = (performance.now() - t0).toFixed(1);
+        return;
+      }
 
-          const uint8 = new Uint8Array(buf);
-          const decoded = decodeTextSmart(uint8);
+      // 3. Direct Audio
+      if (fileInfo.category === 'audio') {
+        container.innerHTML = `
+          <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 40px 20px; width: 100%; align-self: center;">
+            <div style="width: 44px; height: 44px; margin-bottom: 20px; color: var(--accent);">${getFileIcon(filename)}</div>
+            <audio src="${url}" controls autoplay style="width: 100%; max-width: 460px;"></audio>
+          </div>
+        `;
+        metricsBar.innerHTML = `<span>⚡ HTML5 Audio Stream</span><span>HTTP Stream</span>`;
+        return;
+      }
 
-          encodingTag.textContent = decoded.encoding;
-          if (decoded.isBinary) {
-            container.innerHTML = `
-              <div style="width:100%;">
-                <div style="color:var(--warning); font-size:0.78rem; font-family:var(--font-mono); margin-bottom:8px;">
+      // 4. PDF Document
+      if (fileInfo.category === 'pdf') {
+        container.innerHTML = `<iframe src="${url}" style="width: 80vw; height: 68vh; border: 1px solid var(--card-border); border-radius: 8px;"></iframe>`;
+        metricsBar.innerHTML = `<span>⚡ Native PDF Preview</span><span>Embedded View</span>`;
+        return;
+      }
+
+      // 5. Large Known Binary / Archive (> 3MB): Show Info Card with Download actions instead of fetching
+      if ((fileInfo.category === 'archive' || fileInfo.category === 'binary') && size > 3 * 1024 * 1024) {
+        container.innerHTML = `
+          <div style="display: flex; flex-direction: column; align-items: center; text-align: center; padding: 36px 20px; max-width: 520px; align-self: center; width: 100%;">
+            <div style="width: 48px; height: 48px; margin-bottom: 16px;">${getFileIcon(filename)}</div>
+            <div style="font-weight: 600; font-size: 1rem; margin-bottom: 6px;">${escapeHtml(filename)}</div>
+            <div style="font-family: var(--font-mono); font-size: 0.8rem; color: var(--ink-secondary); margin-bottom: 18px;">
+              ${fileInfo.tag} Object · ${formatBytes(size)}
+            </div>
+            <div style="font-size: 0.82rem; color: var(--ink-secondary); line-height: 1.5; margin-bottom: 24px;">
+              Direct inline preview is not supported for ${fileInfo.tag} binary objects. You can download the file or copy its link.
+            </div>
+            <div style="display: flex; gap: 10px;">
+              <a href="${url}" download="${escapeHtml(filename)}" class="btn-primary" style="text-decoration:none; display:inline-flex; align-items:center; gap:6px;">
+                Download Object (${formatBytes(size)})
+              </a>
+              <button class="btn-secondary" onclick="copyURL('${url}')">Copy Link</button>
+            </div>
+          </div>
+        `;
+        metricsBar.innerHTML = `<span>⚡ Binary Object Metadata</span><span>Size: <strong>${formatBytes(size)}</strong></span>`;
+        return;
+      }
+
+      // 6. Text / Code / Config / Unknown file: Fetch & Smart Sniff / Decode
+      try {
+        const resp = await api(`/api/files/${path}`);
+        if (!resp.ok) {
+          throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
+        }
+
+        const serverTiming = resp.headers.get('Server-Timing') || 'local';
+        const contentType = resp.headers.get('Content-Type') || '';
+        const buf = await resp.arrayBuffer();
+        const tNet = (performance.now() - t0).toFixed(1);
+
+        // Check if server headers revealed an image/video/audio format
+        if (contentType.startsWith('image/') && !contentType.includes('svg')) {
+          container.innerHTML = `<img src="${url}" style="max-width: 100%; max-height: 68vh; border-radius: 8px; object-fit: contain; align-self: center;">`;
+          metricsBar.innerHTML = `<span>⚡ Image View · Network: ${tNet}ms</span><span>HTTP Stream</span>`;
+          return;
+        }
+
+        const uint8 = new Uint8Array(buf);
+        const decoded = decodeTextSmart(uint8);
+
+        encodingTag.textContent = decoded.encoding;
+
+        if (decoded.isBinary) {
+          container.innerHTML = `
+            <div style="width:100%;">
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                <div style="color:var(--warning); font-size:0.78rem; font-family:var(--font-mono);">
                   ⚠️ Binary / Encrypted Data Detected (${decoded.encoding}). Displaying Hex Dump:
                 </div>
-                <pre>${escapeHtml(decoded.text)}</pre>
+                <a href="${url}" download="${escapeHtml(filename)}" class="btn-secondary" style="font-size:0.72rem; padding:3px 10px; text-decoration:none;">
+                  Download Raw Binary
+                </a>
               </div>
-            `;
-          } else {
-            let displayText = decoded.text;
-            if (displayText.length > 250000) {
-              displayText = displayText.substring(0, 250000) + '\n\n... [Content truncated for preview performance. Download for full file]';
-            }
-            container.innerHTML = `<pre>${escapeHtml(displayText)}</pre>`;
+              <pre>${escapeHtml(decoded.text)}</pre>
+            </div>
+          `;
+        } else {
+          currentPreviewText = decoded.text;
+          if (copyBtn) copyBtn.style.display = 'inline-flex';
+
+          let displayText = decoded.text;
+          const isTruncated = displayText.length > 350000;
+          if (isTruncated) {
+            displayText = displayText.substring(0, 350000) + '\n\n... [Content truncated for preview performance. Download full file to view complete content]';
           }
 
-          metricsBar.innerHTML = `
-            <span>⚡ Server Time: <strong>${serverTiming}</strong> · Network RTT: <strong>${tNet}ms</strong></span>
-            <span>Size: <strong>${formatBytes(buf.byteLength)}</strong></span>
-          `;
-        } catch (e) {
-          container.innerHTML = `<div style="color: var(--danger)">Error reading file: ${e}</div>`;
+          container.innerHTML = `<pre style="tab-size: 4; width: 100%;">${escapeHtml(displayText)}</pre>`;
         }
-      } else {
-        window.location.href = url;
-        closeMediaModal();
+
+        metricsBar.innerHTML = `
+          <span>⚡ Server Time: <strong>${serverTiming}</strong> · Network RTT: <strong>${tNet}ms</strong></span>
+          <span>Size: <strong>${formatBytes(buf.byteLength)}</strong></span>
+        `;
+      } catch (e) {
+        container.innerHTML = `
+          <div style="padding: 30px; text-align: center; width: 100%; align-self: center;">
+            <div style="color: var(--danger); font-size: 0.9rem; margin-bottom: 12px;">Failed to load object preview: ${escapeHtml(String(e))}</div>
+            <a href="${url}" download="${escapeHtml(filename)}" class="btn-secondary" style="text-decoration:none; display:inline-block;">Try Direct Download</a>
+          </div>
+        `;
+        metricsBar.innerHTML = `<span>⚠️ Error loading stream</span><span>--</span>`;
       }
     }
 
-    function escapeHtml(s) {
-      return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    }
-
     function closeMediaModal() {
-      document.getElementById('mediaContainer').innerHTML = '';
-      document.getElementById('mediaModal').style.display = 'none';
+      currentPreviewText = '';
+      currentPreviewUrl = '';
+      const container = document.getElementById('mediaContainer');
+      if (container) container.innerHTML = '';
+      const modal = document.getElementById('mediaModal');
+      if (modal) modal.style.display = 'none';
+      const copyBtn = document.getElementById('mediaCopyBtn');
+      if (copyBtn) copyBtn.style.display = 'none';
     }
 
     function copyURL(path) {
