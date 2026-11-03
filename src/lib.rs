@@ -9,6 +9,7 @@ pub mod auth;
 pub mod auth_otp;
 pub mod cluster;
 pub mod config;
+pub mod content_type;
 pub mod error;
 pub mod events;
 pub mod metrics;

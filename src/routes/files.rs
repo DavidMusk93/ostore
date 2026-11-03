@@ -198,7 +198,7 @@ pub async fn get_file(
     if not_modified {
         return Ok((StatusCode::NOT_MODIFIED, [(header::ETAG, hv(etag))]).into_response());
     }
-    let mime = mime_guess::from_path(&abs).first_or_octet_stream();
+    let fast_ct = crate::content_type::detect_content_type_from_path(&abs);
     let range_hdr = headers.get(header::RANGE).and_then(|v| v.to_str().ok());
 
     let parsed = match range_hdr {
@@ -224,6 +224,22 @@ pub async fn get_file(
         None => (StatusCode::OK, 0, size),
     };
     let mut file = tokio::fs::File::open(&abs).await.map_err(ApiError::internal)?;
+
+    // If MIME couldn't be detected purely from path, peek first 512 bytes for content sniffing.
+    let content_type = if fast_ct == "application/octet-stream" && start == 0 && size > 0 {
+        use tokio::io::AsyncReadExt;
+        let mut peek_buf = [0u8; 512];
+        let n = file.read(&mut peek_buf).await.unwrap_or(0);
+        if n > 0 {
+            file.seek(std::io::SeekFrom::Start(0)).await.map_err(ApiError::internal)?;
+            crate::content_type::detect_content_type(&abs, Some(&peek_buf[..n]))
+        } else {
+            fast_ct
+        }
+    } else {
+        fast_ct
+    };
+
     if start > 0 {
         file.seek(std::io::SeekFrom::Start(start)).await.map_err(ApiError::internal)?;
     }
@@ -233,22 +249,6 @@ pub async fn get_file(
             metrics.download_bytes.fetch_add(b.len() as u64, Ordering::Relaxed);
         }
     });
-    let mime_str = mime.to_string();
-    let content_type = if mime.type_() == mime_guess::mime::TEXT
-        || mime.subtype() == mime_guess::mime::JSON
-        || mime_str.contains("text")
-        || mime_str.contains("json")
-        || mime_str.contains("xml")
-        || mime_str.contains("javascript")
-    {
-        if !mime_str.contains("charset") {
-            format!("{mime_str}; charset=utf-8")
-        } else {
-            mime_str
-        }
-    } else {
-        mime_str
-    };
 
     let server_time_ms = start_instant.elapsed().as_secs_f64() * 1000.0;
     let timing_hdr = format!("total;dur={server_time_ms:.2}");

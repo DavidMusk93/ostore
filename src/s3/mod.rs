@@ -167,7 +167,7 @@ async fn object_get(
     let size = meta.len();
     let etag = strong_etag(&meta);
     let last_modified = http_date(meta.modified().ok());
-    let mime = mime_guess::from_path(&abs).first_or_octet_stream().to_string();
+    let mime = crate::content_type::detect_content_type_from_path(&abs);
 
     if let Some(inm) = headers.get(header::IF_NONE_MATCH).and_then(|v| v.to_str().ok())
         && inm.split(',').any(|t| t.trim() == etag || t.trim() == "*" || t.trim().trim_start_matches("W/") == etag)

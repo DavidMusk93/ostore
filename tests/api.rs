@@ -674,6 +674,9 @@ async fn ui_serves_html_at_root_and_ostore() {
     let html = String::from_utf8_lossy(&bytes);
     assert!(html.contains("ostore"));
     assert!(html.contains("Distributed Object Storage"));
+    assert!(html.contains("getFileCategory"));
+    assert!(html.contains("CADDYFILE"));
+    assert!(html.contains("mediaDownloadBtn"));
 
     let resp_ostore = f.app.clone().oneshot(Request::builder().uri("/ostore").body(Body::empty()).unwrap()).await.unwrap();
     assert_eq!(resp_ostore.status(), StatusCode::OK);
@@ -847,4 +850,31 @@ async fn ostore_prefix_routes_api() {
     let j = body_json(resp).await;
     assert_eq!(j["entries"].as_array().unwrap().len(), 1);
 }
+
+#[tokio::test]
+async fn caddyfile_and_timestamped_backup_content_type() {
+    let f = fixture();
+    let caddy_data = b":8080 {\n  respond \"hello\"\n}\n";
+    put_file(&f.app, "backups/caddy/Caddyfile.20261102-214513", caddy_data).await;
+    put_file(&f.app, "Caddyfile", caddy_data).await;
+
+    let resp = f
+        .app
+        .clone()
+        .oneshot(req("GET", "/api/files/backups/caddy/Caddyfile.20261102-214513"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(resp.headers()["content-type"], "text/plain; charset=utf-8");
+
+    let resp = f
+        .app
+        .clone()
+        .oneshot(req("GET", "/api/files/Caddyfile"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(resp.headers()["content-type"], "text/plain; charset=utf-8");
+}
+
 
