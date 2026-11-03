@@ -1779,7 +1779,9 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
     function onObjectEvent(data, kind) {
       const p = data.path;
       replicaMapCache.delete(p);
-      dirCache.clear();
+      const parent = p.includes('/') ? p.substring(0, p.lastIndexOf('/')) : '';
+      dirCache.delete(parent);
+      dirCache.delete(p);
       const cur = currentPath ? currentPath + '/' : '';
       if (!p.startsWith(cur)) return;
       const sub = p.substring(cur.length);
@@ -2608,7 +2610,8 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       if (!confirm(`Delete ${isDir ? 'folder' : 'file'} "${path}"?`)) return;
       const res = await api(`/api/files/${path}${isDir ? '?recursive=1' : ''}`, { method: 'DELETE' });
       if (res.ok) {
-        dirCache.clear();
+        dirCache.delete(currentPath);
+        dirCache.delete(path);
         showToast('Deleted successfully');
         loadDirectory(currentPath, false);
       }
@@ -2624,7 +2627,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
         body: JSON.stringify({ path: target })
       });
       if (res.ok) {
-        dirCache.clear();
+        dirCache.delete(currentPath);
         showToast('Folder created');
         loadDirectory(currentPath, false);
       }
@@ -2638,7 +2641,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
         const dest = currentPath ? `${currentPath}/${f.name}` : f.name;
         await api(`/api/files/${dest}`, { method: 'PUT', body: f });
       }
-      dirCache.clear();
+      dirCache.delete(currentPath);
       showToast('Uploads completed');
       e.target.value = '';
       loadDirectory(currentPath, false);
@@ -2654,7 +2657,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
         const dest = currentPath ? `${currentPath}/${relPath}` : relPath;
         await api(`/api/files/${dest}`, { method: 'PUT', body: f });
       }
-      dirCache.clear();
+      dirCache.delete(currentPath);
       showToast('Folder tree uploaded successfully');
       e.target.value = '';
       loadDirectory(currentPath, false);
