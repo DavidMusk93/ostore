@@ -177,10 +177,17 @@ pub async fn upload_multipart(
     Ok(Json(json!({ "uploaded": uploaded })))
 }
 
+#[derive(Deserialize, Default)]
+pub struct FileGetQuery {
+    download: Option<String>,
+    attachment: Option<String>,
+}
+
 /// GET /api/files/{*path} — download, with single-range support.
 pub async fn get_file(
     State(st): State<AppState>,
     Path(path): Path<String>,
+    Query(q): Query<FileGetQuery>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let start_instant = std::time::Instant::now();
@@ -253,9 +260,25 @@ pub async fn get_file(
     let server_time_ms = start_instant.elapsed().as_secs_f64() * 1000.0;
     let timing_hdr = format!("total;dur={server_time_ms:.2}");
 
+    let filename = abs.file_name().and_then(|s| s.to_str()).unwrap_or("file");
+    let disp_type = if truthy(&q.download) || truthy(&q.attachment) {
+        "attachment"
+    } else {
+        "inline"
+    };
+    let encoded_fn = urlencoding::encode(filename);
+    let ascii_fallback = filename
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' { c } else { '_' })
+        .collect::<String>();
+    let disposition = format!(
+        "{disp_type}; filename=\"{ascii_fallback}\"; filename*=UTF-8''{encoded_fn}"
+    );
+
     let mut builder = Response::builder()
         .status(status)
         .header(header::CONTENT_TYPE, hv(content_type))
+        .header(header::CONTENT_DISPOSITION, hv(disposition))
         .header(header::CONTENT_LENGTH, len.to_string())
         .header(header::ACCEPT_RANGES, "bytes")
         .header(header::ETAG, hv(etag))

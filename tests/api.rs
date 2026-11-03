@@ -866,6 +866,22 @@ async fn caddyfile_and_timestamped_backup_content_type() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     assert_eq!(resp.headers()["content-type"], "text/plain; charset=utf-8");
+    assert_eq!(
+        resp.headers()["content-disposition"],
+        "inline; filename=\"Caddyfile.20261102-214513\"; filename*=UTF-8''Caddyfile.20261102-214513"
+    );
+
+    let resp_dl = f
+        .app
+        .clone()
+        .oneshot(req("GET", "/api/files/backups/caddy/Caddyfile.20261102-214513?download=1"))
+        .await
+        .unwrap();
+    assert_eq!(resp_dl.status(), StatusCode::OK);
+    assert_eq!(
+        resp_dl.headers()["content-disposition"],
+        "attachment; filename=\"Caddyfile.20261102-214513\"; filename*=UTF-8''Caddyfile.20261102-214513"
+    );
 
     let resp = f
         .app
@@ -875,6 +891,10 @@ async fn caddyfile_and_timestamped_backup_content_type() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     assert_eq!(resp.headers()["content-type"], "text/plain; charset=utf-8");
+    assert_eq!(
+        resp.headers()["content-disposition"],
+        "inline; filename=\"Caddyfile\"; filename*=UTF-8''Caddyfile"
+    );
 }
 
 

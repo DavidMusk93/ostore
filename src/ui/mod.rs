@@ -1679,7 +1679,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       if (isDir) {
         actionsHtml = `
           <div class="row-actions">
-            <a class="icon-btn" href="${dlUrl}" download title="Download folder as tar archive">
+            <a class="icon-btn" href="${dlUrl}" download="${escapeHtml(item.name)}.tar" title="Download folder as tar archive">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
             </a>
             <button class="icon-btn" title="Folder properties and sync" onclick="openFolderDetail('${item.path}', '${item.name}', ${item.size}, ${item.item_count || 0}, '${item.mtime}')">
@@ -1696,7 +1696,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       } else {
         actionsHtml = `
           <div class="row-actions">
-            <a class="icon-btn" href="${dlUrl}" download title="Download">
+            <a class="icon-btn" href="${dlUrl}?download=1" download="${escapeHtml(item.name)}" title="Download">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
             </a>
             <button class="icon-btn" title="Copy Direct URL" onclick="copyURL('${dlUrl}')">
