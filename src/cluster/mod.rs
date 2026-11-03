@@ -17,6 +17,9 @@ use tokio::sync::RwLock;
 use tokio_util::io::ReaderStream;
 use tokio_util::sync::CancellationToken;
 
+pub mod gdrive;
+use self::gdrive::{GDriveClient, GDriveConfig};
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct NodeConfig {
     pub id: String,
@@ -27,6 +30,16 @@ pub struct NodeConfig {
     pub token: String,
     #[serde(default)]
     pub is_local: bool,
+    #[serde(default)]
+    pub node_type: Option<String>,
+    #[serde(default)]
+    pub gdrive_client_id: Option<String>,
+    #[serde(default)]
+    pub gdrive_client_secret: Option<String>,
+    #[serde(default)]
+    pub gdrive_refresh_token: Option<String>,
+    #[serde(default)]
+    pub gdrive_root_folder_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
@@ -100,6 +113,7 @@ pub struct MainFileNode {
     pub name: String,
     pub exists: bool,
     pub size: u64,
+    pub md5: Option<String>,
     pub sha256: Option<String>,
     pub mtime: Option<DateTime<Utc>>,
 }
@@ -112,6 +126,7 @@ pub struct FollowerFileNode {
     pub exists: bool,
     pub matches: bool,
     pub size: u64,
+    pub md5: Option<String>,
     pub sha256: Option<String>,
     pub rtt_ms: Option<u64>,
     pub error: Option<String>,
@@ -198,6 +213,7 @@ pub struct DirReplicaStatus {
 
 pub struct ClusterManager {
     pub config: ClusterConfig,
+    pub gdrive: Option<Arc<GDriveClient>>,
     client: reqwest::Client,
     statuses: Arc<RwLock<HashMap<String, NodeStatus>>>,
     last_sync_report: Arc<RwLock<Option<SyncReport>>>,
@@ -217,6 +233,31 @@ impl ClusterManager {
             .connect_timeout(Duration::from_secs(3))
             .build()
             .unwrap_or_default();
+
+        let mut gdrive_client = GDriveClient::from_env();
+        if gdrive_client.is_none() {
+            for node in &config.nodes {
+                if node.node_type.as_deref() == Some("gdrive") || node.id == "gdrive" {
+                    if let (Some(client_id), Some(client_secret), Some(refresh_token)) = (
+                        &node.gdrive_client_id,
+                        &node.gdrive_client_secret,
+                        &node.gdrive_refresh_token,
+                    ) {
+                        gdrive_client = Some(GDriveClient::new(GDriveConfig {
+                            client_id: client_id.clone(),
+                            client_secret: client_secret.clone(),
+                            refresh_token: refresh_token.clone(),
+                            root_folder_id: node
+                                .gdrive_root_folder_id
+                                .clone()
+                                .unwrap_or_else(|| "root".to_string()),
+                        }));
+                        break;
+                    }
+                }
+            }
+        }
+        let gdrive = gdrive_client.map(Arc::new);
 
         let mut initial_statuses = HashMap::new();
         for node in &config.nodes {
@@ -239,6 +280,7 @@ impl ClusterManager {
 
         Self {
             config,
+            gdrive,
             client,
             statuses: Arc::new(RwLock::new(initial_statuses)),
             last_sync_report: Arc::new(RwLock::new(None)),
@@ -275,6 +317,36 @@ impl ClusterManager {
                         st.disk_available_bytes = avail;
                         st.last_seen = Some(Utc::now());
                         st.error = None;
+                    }
+                }
+                continue;
+            }
+
+            if node.node_type.as_deref() == Some("gdrive") || node.id == "gdrive" {
+                if let Some(gdrive) = &self.gdrive {
+                    let start = Instant::now();
+                    match gdrive.get_storage_quota().await {
+                        Ok((total, avail)) => {
+                            let rtt = start.elapsed().as_millis() as u64;
+                            let mut lock = self.statuses.write().await;
+                            if let Some(st) = lock.get_mut(&node.id) {
+                                st.healthy = true;
+                                st.rtt_ms = Some(rtt);
+                                st.disk_total_bytes = total;
+                                st.disk_available_bytes = avail;
+                                st.last_seen = Some(Utc::now());
+                                st.error = None;
+                            }
+                        }
+                        Err(e) => {
+                            let mut lock = self.statuses.write().await;
+                            if let Some(st) = lock.get_mut(&node.id) {
+                                st.healthy = false;
+                                st.rtt_ms = None;
+                                st.last_seen = Some(Utc::now());
+                                st.error = Some(e);
+                            }
+                        }
                     }
                 }
                 continue;
@@ -488,6 +560,18 @@ impl ClusterManager {
             if node.is_local {
                 continue;
             }
+            if node.node_type.as_deref() == Some("gdrive") || node.id == "gdrive" {
+                if let Some(gdrive) = &self.gdrive {
+                    let md5 = match tokio::fs::metadata(abs_path).await {
+                        Ok(meta) => self.cache.get_or_compute(abs_path, &meta).await.unwrap_or_default(),
+                        Err(_) => String::new(),
+                    };
+                    if let Err(e) = gdrive.upload_file(rel_path, abs_path, &md5).await {
+                        tracing::warn!(node = %node.id, path = %rel_path, error = %e, "gdrive replication failed");
+                    }
+                }
+                continue;
+            }
             let base = node.url.trim_end_matches('/');
             let target_url = format!("{base}/api/files/{rel_path}");
 
@@ -532,6 +616,12 @@ impl ClusterManager {
                 if node.is_local {
                     continue;
                 }
+                if node.node_type.as_deref() == Some("gdrive") || node.id == "gdrive" {
+                    if let Some(gdrive) = &self.gdrive {
+                        let _ = gdrive.delete_file(&rel_path).await;
+                    }
+                    continue;
+                }
                 let base = node.url.trim_end_matches('/');
                 let mut url = format!("{base}/api/files/{rel_path}");
                 if recursive {
@@ -559,10 +649,9 @@ impl ClusterManager {
         let start_main = Instant::now();
         let main = match tokio::fs::metadata(&abs).await {
             Ok(meta) if meta.is_file() => {
-                let sha = if verify_hash {
+                let md5 = if verify_hash {
                     self.cache.get_or_compute(&abs, &meta).await.ok()
                 } else {
-                    // Try memory cache only without disk read
                     None
                 };
                 let mtime = meta.modified().ok().map(DateTime::<Utc>::from);
@@ -571,7 +660,8 @@ impl ClusterManager {
                     name: "cc-main".to_string(),
                     exists: true,
                     size: meta.len(),
-                    sha256: sha,
+                    md5: md5.clone(),
+                    sha256: md5,
                     mtime,
                 }
             }
@@ -580,6 +670,7 @@ impl ClusterManager {
                 name: "cc-main".to_string(),
                 exists: false,
                 size: 0,
+                md5: None,
                 sha256: None,
                 mtime: None,
             },
@@ -595,94 +686,183 @@ impl ClusterManager {
             follower_nodes.push(node.clone());
         }
 
-        let main_sha = main.sha256.clone();
+        let main_md5 = main.md5.clone();
         let main_size = main.size;
         let main_exists = main.exists;
         let client = self.client.clone();
         let path_clone = rel_path.clone();
+        let gdrive_client = self.gdrive.clone();
+        let root_clone = self.root.clone();
 
         let checks_stream = futures::stream::iter(follower_nodes)
             .map(|node| {
                 let client = client.clone();
                 let path = path_clone.clone();
-                let main_sha = main_sha.clone();
+                let main_md5 = main_md5.clone();
+                let gdrive = gdrive_client.clone();
+                let root = root_clone.clone();
                 async move {
-                    let start = Instant::now();
-                    let base = node.url.trim_end_matches('/');
-                    let stat_url = if verify_hash {
-                        format!("{base}/api/stat?path={}&checksums=1", urlencoding::encode(&path))
+                    if node.node_type.as_deref() == Some("gdrive") || node.id == "gdrive" {
+                        if let Some(gdrive) = gdrive {
+                            let start = Instant::now();
+                            match gdrive.get_file_metadata(&path).await {
+                                Ok(Some(meta)) => {
+                                    let rtt = start.elapsed().as_millis() as u64;
+                                    let md5 = meta.md5.clone();
+                                    let matches = if verify_hash {
+                                        main_exists && md5.is_some() && md5 == main_md5 && meta.size == main_size
+                                    } else {
+                                        main_exists && meta.size == main_size
+                                    };
+                                    FollowerFileNode {
+                                        id: node.id,
+                                        name: node.name,
+                                        url: node.url,
+                                        exists: true,
+                                        matches,
+                                        size: meta.size,
+                                        md5: md5.clone(),
+                                        sha256: md5,
+                                        rtt_ms: Some(rtt),
+                                        error: None,
+                                    }
+                                }
+                                Ok(None) => {
+                                    let rtt = start.elapsed().as_millis() as u64;
+                                    FollowerFileNode {
+                                        id: node.id,
+                                        name: node.name,
+                                        url: node.url,
+                                        exists: false,
+                                        matches: false,
+                                        size: 0,
+                                        md5: None,
+                                        sha256: None,
+                                        rtt_ms: Some(rtt),
+                                        error: None,
+                                    }
+                                }
+                                Err(e) => FollowerFileNode {
+                                    id: node.id,
+                                    name: node.name,
+                                    url: node.url,
+                                    exists: false,
+                                    matches: false,
+                                    size: 0,
+                                    md5: None,
+                                    sha256: None,
+                                    rtt_ms: None,
+                                    error: Some(e),
+                                },
+                            }
+                        } else {
+                            FollowerFileNode {
+                                id: node.id,
+                                name: node.name,
+                                url: node.url,
+                                exists: false,
+                                matches: false,
+                                size: 0,
+                                md5: None,
+                                sha256: None,
+                                rtt_ms: None,
+                                error: Some("GDrive backend uninitialized".to_string()),
+                            }
+                        }
                     } else {
-                        format!("{base}/api/stat?path={}", urlencoding::encode(&path))
-                    };
-                    let mut req = client.get(&stat_url);
-                    if !node.token.is_empty() {
-                        req = req.header("Authorization", format!("Bearer {}", node.token));
-                    }
+                        let start = Instant::now();
+                        let base = node.url.trim_end_matches('/');
+                        let stat_url = if verify_hash {
+                            format!("{base}/api/stat?path={}&checksums=1", urlencoding::encode(&path))
+                        } else {
+                            format!("{base}/api/stat?path={}", urlencoding::encode(&path))
+                        };
+                        let mut req = client.get(&stat_url);
+                        if !node.token.is_empty() {
+                            req = req.header("Authorization", format!("Bearer {}", node.token));
+                        }
 
-                    match req.send().await {
-                        Ok(resp) if resp.status().is_success() => {
-                            let rtt = start.elapsed().as_millis() as u64;
-                            let val: serde_json::Value = resp.json().await.unwrap_or_default();
-                            let size = val.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
-                            let sha = val.get("sha256").and_then(|v| v.as_str()).map(|s| s.to_string());
-                            let matches = if verify_hash {
-                                main_exists && sha.is_some() && sha == main_sha && size == main_size
-                            } else {
-                                main_exists && size == main_size
-                            };
+                        match req.send().await {
+                            Ok(resp) if resp.status().is_success() => {
+                                let rtt = start.elapsed().as_millis() as u64;
+                                let val: serde_json::Value = resp.json().await.unwrap_or_default();
+                                let size = val.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
+                                let md5 = val
+                                    .get("md5")
+                                    .or_else(|| val.get("sha256"))
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| s.to_string());
+                                let matches = if verify_hash {
+                                    if let (Some(f_hash), Some(m_md5)) = (&md5, &main_md5) {
+                                        if f_hash.len() == 64 {
+                                            let abs = root.join(&path);
+                                            let m_sha = crate::routes::files::sha256_file_real(&abs).await.ok();
+                                            main_exists && m_sha.as_deref() == Some(f_hash.as_str()) && size == main_size
+                                        } else {
+                                            main_exists && f_hash == m_md5 && size == main_size
+                                        }
+                                    } else {
+                                        false
+                                    }
+                                } else {
+                                    main_exists && size == main_size
+                                };
 
-                            FollowerFileNode {
-                                id: node.id,
-                                name: node.name,
-                                url: node.url,
-                                exists: true,
-                                matches,
-                                size,
-                                sha256: sha,
-                                rtt_ms: Some(rtt),
-                                error: None,
+                                FollowerFileNode {
+                                    id: node.id,
+                                    name: node.name,
+                                    url: node.url,
+                                    exists: true,
+                                    matches,
+                                    size,
+                                    md5: md5.clone(),
+                                    sha256: md5,
+                                    rtt_ms: Some(rtt),
+                                    error: None,
+                                }
                             }
-                        }
-                        Ok(resp) if resp.status() == reqwest::StatusCode::NOT_FOUND => {
-                            let rtt = start.elapsed().as_millis() as u64;
-                            FollowerFileNode {
+                            Ok(resp) if resp.status() == reqwest::StatusCode::NOT_FOUND => {
+                                let rtt = start.elapsed().as_millis() as u64;
+                                FollowerFileNode {
+                                    id: node.id,
+                                    name: node.name,
+                                    url: node.url,
+                                    exists: false,
+                                    matches: false,
+                                    size: 0,
+                                    md5: None,
+                                    sha256: None,
+                                    rtt_ms: Some(rtt),
+                                    error: None,
+                                }
+                            }
+                            Ok(resp) => {
+                                let rtt = start.elapsed().as_millis() as u64;
+                                FollowerFileNode {
+                                    id: node.id,
+                                    name: node.name,
+                                    url: node.url,
+                                    exists: false,
+                                    matches: false,
+                                    size: 0,
+                                    md5: None,
+                                    sha256: None,
+                                    rtt_ms: Some(rtt),
+                                    error: Some(format!("HTTP {}", resp.status())),
+                                }
+                            }
+                            Err(e) => FollowerFileNode {
                                 id: node.id,
                                 name: node.name,
                                 url: node.url,
                                 exists: false,
                                 matches: false,
                                 size: 0,
-                                sha256: None,
-                                rtt_ms: Some(rtt),
-                                error: None,
-                            }
-                        }
-                        Ok(resp) => {
-                            let rtt = start.elapsed().as_millis() as u64;
-                            FollowerFileNode {
-                                id: node.id,
-                                name: node.name,
-                                url: node.url,
-                                exists: false,
-                                matches: false,
-                                size: 0,
-                                sha256: None,
-                                rtt_ms: Some(rtt),
-                                error: Some(format!("HTTP {}", resp.status())),
-                            }
-                        }
-                        Err(e) => {
-                            FollowerFileNode {
-                                id: node.id,
-                                name: node.name,
-                                url: node.url,
-                                exists: false,
-                                matches: false,
-                                size: 0,
+                                md5: None,
                                 sha256: None,
                                 rtt_ms: None,
                                 error: Some(e.to_string()),
-                            }
+                            },
                         }
                     }
                 }
@@ -742,6 +922,47 @@ impl ClusterManager {
                 errors: Vec::new(),
             };
 
+            if node.node_type.as_deref() == Some("gdrive") || node.id == "gdrive" {
+                if let Some(gdrive) = &self.gdrive {
+                    match gdrive.list_dir(&prefix).await {
+                        Ok(gdrive_items) => {
+                            let mut remote_map = HashMap::new();
+                            for item in gdrive_items {
+                                if !item.is_dir {
+                                    let item_rel = if prefix.is_empty() {
+                                        item.name.clone()
+                                    } else {
+                                        format!("{prefix}/{}", item.name)
+                                    };
+                                    if let Some(md5) = item.md5 {
+                                        remote_map.insert(item_rel, md5);
+                                    }
+                                }
+                            }
+
+                            for (rel_path, md5) in &local_files {
+                                if let Some(r_md5) = remote_map.get(rel_path) {
+                                    if r_md5 == md5 {
+                                        res.skipped += 1;
+                                        continue;
+                                    }
+                                }
+                                let abs_path = self.root.join(rel_path);
+                                match gdrive.upload_file(rel_path, &abs_path, md5).await {
+                                    Ok(_) => res.synced += 1,
+                                    Err(e) => res.errors.push(format!("gdrive sync {rel_path} error: {e}")),
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            res.errors.push(format!("failed to list gdrive dir {prefix}: {e}"));
+                        }
+                    }
+                    node_results.push(res);
+                }
+                continue;
+            }
+
             // 2. Query remote node list with checksums
             let base = node.url.trim_end_matches('/');
             let list_url = format!("{base}/api/list?path={prefix}&recursive=1&checksums=1");
@@ -757,11 +978,11 @@ impl ClusterManager {
                     if let Some(entries) = val.get("entries").and_then(|v| v.as_array()) {
                         for e in entries {
                             if e.get("type").and_then(|v| v.as_str()) == Some("file") {
-                                if let (Some(path), Some(sha)) = (
+                                if let (Some(path), Some(hash)) = (
                                     e.get("path").and_then(|v| v.as_str()),
-                                    e.get("sha256").and_then(|v| v.as_str()),
+                                    e.get("md5").or_else(|| e.get("sha256")).and_then(|v| v.as_str()),
                                 ) {
-                                    map.insert(path.to_string(), sha.to_string());
+                                    map.insert(path.to_string(), hash.to_string());
                                 }
                             }
                         }
@@ -786,11 +1007,20 @@ impl ClusterManager {
 
             // 3. Compare and push missing or modified files concurrently
             let mut to_sync = Vec::new();
-            for (rel_path, sha256) in &local_files {
-                if let Some(r_sha) = remote_map.get(rel_path) {
-                    if r_sha == sha256 {
+            for (rel_path, md5) in &local_files {
+                if let Some(r_hash) = remote_map.get(rel_path) {
+                    if r_hash == md5 {
                         res.skipped += 1;
                         continue;
+                    }
+                    if r_hash.len() == 64 {
+                        let abs = self.root.join(rel_path);
+                        if let Ok(m_sha) = crate::routes::files::sha256_file_real(&abs).await {
+                            if &m_sha == r_hash {
+                                res.skipped += 1;
+                                continue;
+                            }
+                        }
                     }
                 }
                 to_sync.push(rel_path.clone());
@@ -908,11 +1138,28 @@ impl ClusterManager {
 
         let client = self.client.clone();
         let prefix_clone = prefix.clone();
+        let gdrive_client = self.gdrive.clone();
         let fetches = futures::stream::iter(follower_nodes)
             .map(|node| {
                 let client = client.clone();
                 let prefix = prefix_clone.clone();
+                let gdrive = gdrive_client.clone();
                 async move {
+                    if node.node_type.as_deref() == Some("gdrive") || node.id == "gdrive" {
+                        if let Some(gdrive) = gdrive {
+                            let mut files = HashMap::new();
+                            if let Ok(items) = gdrive.list_dir(&prefix).await {
+                                for item in items {
+                                    if !item.is_dir {
+                                        files.insert(item.name, item.size);
+                                    }
+                                }
+                            }
+                            return (node.id, files);
+                        } else {
+                            return (node.id, HashMap::new());
+                        }
+                    }
                     let base = node.url.trim_end_matches('/');
                     let list_url = format!("{base}/api/list?path={}", urlencoding::encode(&prefix));
                     let mut req = client.get(&list_url);

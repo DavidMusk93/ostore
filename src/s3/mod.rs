@@ -272,7 +272,7 @@ async fn put_object(
     }
     let existed = tokio::fs::metadata(&abs).await.is_ok();
     let stream = body.into_data_stream();
-    let (size, sha256) = match stream_to_disk(&st, &abs, stream).await {
+    let (size, md5, sha256) = match stream_to_disk(&st, &abs, stream).await {
         Ok(v) => v,
         Err(e) => {
             return xml_error(
@@ -293,13 +293,18 @@ async fn put_object(
         );
     }
 
+    if let Ok(m) = tokio::fs::metadata(&abs).await {
+        let mtime = m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_nanos()).unwrap_or(0);
+        st.checksum_cache.insert(&abs, size, mtime, md5.clone()).await;
+    }
+
     st.metrics.s3_puts.fetch_add(1, Ordering::Relaxed);
     let kind = if existed { events::UPDATED } else { events::CREATED };
     st.publish(kind, &rel, false, Some(size), None);
     tracing::info!(kind, path = %rel, size, "s3 object written");
 
     let meta = tokio::fs::metadata(&abs).await.ok();
-    let etag = meta.as_ref().map(strong_etag).unwrap_or_else(|| content_md5_etag(&sha256));
+    let etag = meta.as_ref().map(strong_etag).unwrap_or_else(|| content_md5_etag(&md5));
     Response::builder()
         .status(StatusCode::OK)
         .header(header::ETAG, etag)

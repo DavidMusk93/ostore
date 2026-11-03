@@ -42,7 +42,9 @@ pub struct Entry {
     item_count: Option<usize>,
     mtime: DateTime<Utc>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    sha256: Option<String>,
+    pub md5: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
 }
 
 /// Names never exposed through listings: the meta dir itself (exactly
@@ -67,7 +69,7 @@ async fn entry(
     } else {
         (meta.len(), None)
     };
-    let sha256 = if checksums && !is_dir {
+    let md5 = if checksums && !is_dir {
         Some(st.checksum_cache.get_or_compute(abs, meta).await?)
     } else {
         None
@@ -79,7 +81,8 @@ async fn entry(
         size,
         item_count,
         mtime,
-        sha256,
+        md5: md5.clone(),
+        sha256: md5,
     })
 }
 

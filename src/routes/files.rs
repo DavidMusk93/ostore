@@ -11,6 +11,7 @@ use axum::extract::{Multipart, Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use futures::StreamExt;
+use md5::Md5;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -44,8 +45,8 @@ static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 /// Write a byte stream to `abs` atomically via a unique sibling temp file
 /// (`<path>.ostore-tmp-<pid>-<seq>`, so concurrent uploads to one path never
 /// share a temp file), fsync'd before the rename so a committed object
-/// survives a crash. Returns `(size, sha256_hex)`.
-pub(crate) async fn stream_to_disk<S, E>(st: &AppState, abs: &std::path::Path, mut stream: S) -> Result<(u64, String), ApiError>
+/// survives a crash. Returns `(size, md5_hex, sha256_hex)`.
+pub(crate) async fn stream_to_disk<S, E>(st: &AppState, abs: &std::path::Path, mut stream: S) -> Result<(u64, String, String), ApiError>
 where
     S: futures::Stream<Item = Result<Bytes, E>> + Unpin,
     E: std::fmt::Display,
@@ -53,21 +54,23 @@ where
     let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
     let tmp = PathBuf::from(format!("{}{}{}-{seq}", abs.display(), crate::TMP_MARKER, std::process::id()));
     let _inflight = GaugeGuard::new(&st.metrics.uploads_in_flight);
-    let written: Result<(u64, String), ApiError> = async {
+    let written: Result<(u64, String, String), ApiError> = async {
         let file = tokio::fs::File::create(&tmp).await.map_err(ApiError::internal)?;
         let mut file = BufWriter::with_capacity(1 << 20, file);
-        let mut hasher = Sha256::new();
+        let mut md5_hasher = Md5::new();
+        let mut sha_hasher = Sha256::new();
         let mut size: u64 = 0;
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(|e| ApiError::bad_request("BODY_ERROR", e.to_string()))?;
             file.write_all(&chunk).await.map_err(ApiError::internal)?;
-            hasher.update(&chunk);
+            md5_hasher.update(&chunk);
+            sha_hasher.update(&chunk);
             size += chunk.len() as u64;
             st.metrics.upload_bytes.fetch_add(chunk.len() as u64, Ordering::Relaxed);
         }
         file.flush().await.map_err(ApiError::internal)?;
         file.get_ref().sync_all().await.map_err(ApiError::internal)?;
-        Ok((size, hex::encode(hasher.finalize())))
+        Ok((size, hex::encode(md5_hasher.finalize()), hex::encode(sha_hasher.finalize())))
     }
     .await;
     match written {
@@ -110,10 +113,10 @@ pub async fn put_file(
     }
     let existed = tokio::fs::metadata(&abs).await.is_ok();
     let stream = body.into_data_stream();
-    let (size, sha256) = stream_to_disk(&st, &abs, stream).await?;
+    let (size, md5, sha256) = stream_to_disk(&st, &abs, stream).await?;
     if let Ok(m) = tokio::fs::metadata(&abs).await {
         let mtime = m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_nanos()).unwrap_or(0);
-        st.checksum_cache.insert(&abs, size, mtime, sha256.clone()).await;
+        st.checksum_cache.insert(&abs, size, mtime, md5.clone()).await;
     }
     st.dir_size_cache.invalidate_ancestors(&abs, &st.root).await;
     let kind = if existed { events::UPDATED } else { events::CREATED };
@@ -122,7 +125,7 @@ pub async fn put_file(
         cluster.clone().replicate_put_bg(rel.clone(), abs.clone());
     }
     tracing::info!(kind, path = %rel, size, "object written");
-    Ok(Json(json!({ "path": rel, "size": size, "sha256": sha256 })))
+    Ok(Json(json!({ "path": rel, "size": size, "md5": md5, "sha256": sha256 })))
 }
 
 #[derive(Deserialize, Default)]
@@ -164,7 +167,11 @@ pub async fn upload_multipart(
         }
         let existed = tokio::fs::metadata(&abs).await.is_ok();
         let stream = field.map(|r| r.map_err(|e| e.to_string()));
-        let (size, _sha256) = stream_to_disk(&st, &abs, stream).await?;
+        let (size, md5, sha256) = stream_to_disk(&st, &abs, stream).await?;
+        if let Ok(m) = tokio::fs::metadata(&abs).await {
+            let mtime = m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_nanos()).unwrap_or(0);
+            st.checksum_cache.insert(&abs, size, mtime, md5.clone()).await;
+        }
         st.dir_size_cache.invalidate_ancestors(&abs, &st.root).await;
         let kind = if existed { events::UPDATED } else { events::CREATED };
         st.publish(kind, &rel, false, Some(size), None);
@@ -172,7 +179,7 @@ pub async fn upload_multipart(
             cluster.clone().replicate_put_bg(rel.clone(), abs.clone());
         }
         tracing::info!(kind, path = %rel, size, "multipart object written");
-        uploaded.push(json!({ "path": rel, "size": size }));
+        uploaded.push(json!({ "path": rel, "size": size, "md5": md5, "sha256": sha256 }));
     }
     Ok(Json(json!({ "uploaded": uploaded })))
 }
@@ -398,8 +405,23 @@ pub async fn mv(
     Ok(Json(json!({ "from": from_rel, "to": to_rel })))
 }
 
-/// Streaming sha256 of a file on disk (used by list/stat checksums).
-pub async fn sha256_file(abs: &std::path::Path) -> Result<String, ApiError> {
+/// Streaming MD5 of a file on disk (used by list/stat checksums, aligned with Google Drive md5Checksum).
+pub async fn md5_file(abs: &std::path::Path) -> Result<String, ApiError> {
+    let mut file = tokio::fs::File::open(abs).await.map_err(ApiError::internal)?;
+    let mut hasher = Md5::new();
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = file.read(&mut buf).await.map_err(ApiError::internal)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(hex::encode(hasher.finalize()))
+}
+
+/// Real streaming SHA-256 for backwards-compatible node verification against older ostore nodes.
+pub async fn sha256_file_real(abs: &std::path::Path) -> Result<String, ApiError> {
     let mut file = tokio::fs::File::open(abs).await.map_err(ApiError::internal)?;
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; 64 * 1024];
@@ -411,4 +433,9 @@ pub async fn sha256_file(abs: &std::path::Path) -> Result<String, ApiError> {
         hasher.update(&buf[..n]);
     }
     Ok(hex::encode(hasher.finalize()))
+}
+
+/// Backwards-compatible sha256_file wrapper returning the MD5 digest.
+pub async fn sha256_file(abs: &std::path::Path) -> Result<String, ApiError> {
+    md5_file(abs).await
 }

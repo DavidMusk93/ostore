@@ -92,6 +92,7 @@ async fn put_list_stat_download_move_mkdir_delete_flow() {
     let j = body_json(resp).await;
     assert_eq!(j["path"], "a/b/hello.txt");
     assert_eq!(j["size"], data.len() as u64);
+    assert_eq!(j["md5"].as_str().unwrap().len(), 32);
     assert!(j["sha256"].as_str().unwrap().len() == 64);
 
     // List root (recursive) sees the new object; .ostore stays hidden.

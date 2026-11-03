@@ -1851,7 +1851,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
             <button class="icon-btn" title="Copy Direct URL" onclick="copyURL('${dlUrl}')">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
             </button>
-            <button class="icon-btn" title="Copy SHA-256" onclick="copySHA('${item.sha256}')">
+            <button class="icon-btn" title="Copy MD5" onclick="copyMD5('${item.md5 || item.sha256 || ''}')">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
             </button>
             <button class="icon-btn btn-delete" title="Delete" onclick="deleteItem('${item.path}', false)">
@@ -2007,7 +2007,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
                 <span class="topo-card-badge">Main Node (Control Plane)</span>
               </div>
               <div style="font-size: 0.72rem; font-family: var(--font-mono); color: var(--ink-secondary); margin-top: 4px;">
-                ${mainNode.sha256 ? `SHA-256: ${mainNode.sha256.substring(0, 16)}...` : 'Status: Present on Main Local Disk'}
+                ${(mainNode.md5 || mainNode.sha256) ? `MD5: ${(mainNode.md5 || mainNode.sha256).substring(0, 16)}...` : 'Status: Present on Main Local Disk'}
               </div>
             </div>
             <div style="text-align: right; font-family: var(--font-mono); font-size: 0.78rem;">
@@ -2032,7 +2032,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
                 </div>
                 <div style="font-size: 0.72rem; font-family: var(--font-mono); color: var(--ink-secondary); margin-top: 4px;">
                   ${f.exists 
-                    ? (f.sha256 ? `SHA-256: ${f.sha256.substring(0, 16)}...` : 'Matched Size & ETag') 
+                    ? ((f.md5 || f.sha256) ? `MD5: ${(f.md5 || f.sha256).substring(0, 16)}...` : 'Matched Size & ETag') 
                     : '<strong style="color:var(--danger)">Missing on this node</strong>'}
                 </div>
               </div>
@@ -2344,11 +2344,12 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       showConsole();
     }
 
-    function copySHA(sha) {
-      if (!sha) return;
-      navigator.clipboard.writeText(sha);
-      showToast('SHA-256 copied to clipboard');
+    function copyMD5(md5) {
+      if (!md5) return;
+      navigator.clipboard.writeText(md5);
+      showToast('MD5 checksum copied to clipboard');
     }
+    const copySHA = copyMD5;
 
     async function deleteItem(path, isDir) {
       if (!confirm(`Delete ${isDir ? 'folder' : 'file'} "${path}"?`)) return;

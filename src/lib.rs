@@ -39,8 +39,8 @@ pub use routes::build_router;
 /// Marker embedded in in-flight upload temp file names.
 pub const TMP_MARKER: &str = ".ostore-tmp-";
 
-/// Fast in-memory cache of (size, mtime_nanos) -> sha256_hex to eliminate
-/// disk re-reads on /api/list and cluster syncs.
+/// Fast in-memory cache of (size, mtime_nanos) -> md5_hex to eliminate
+/// disk re-reads on /api/list and cluster syncs. Aligned with Google Drive md5Checksum.
 #[derive(Default)]
 pub struct ChecksumCache {
     cache: RwLock<HashMap<PathBuf, (u64, u128, String)>>,
@@ -62,23 +62,23 @@ impl ChecksumCache {
 
         {
             let lock = self.cache.read().await;
-            if let Some((c_size, c_mtime, sha)) = lock.get(abs) {
+            if let Some((c_size, c_mtime, md5)) = lock.get(abs) {
                 if *c_size == size && *c_mtime == mtime {
-                    return Ok(sha.clone());
+                    return Ok(md5.clone());
                 }
             }
         }
 
-        // Cache miss: compute from disk
-        let sha = crate::routes::files::sha256_file(abs).await?;
+        // Cache miss: compute MD5 from disk
+        let md5 = crate::routes::files::md5_file(abs).await?;
         let mut lock = self.cache.write().await;
-        lock.insert(abs.to_path_buf(), (size, mtime, sha.clone()));
-        Ok(sha)
+        lock.insert(abs.to_path_buf(), (size, mtime, md5.clone()));
+        Ok(md5)
     }
 
-    pub async fn insert(&self, abs: &Path, size: u64, mtime: u128, sha: String) {
+    pub async fn insert(&self, abs: &Path, size: u64, mtime: u128, md5: String) {
         let mut lock = self.cache.write().await;
-        lock.insert(abs.to_path_buf(), (size, mtime, sha));
+        lock.insert(abs.to_path_buf(), (size, mtime, md5));
     }
 
     pub async fn invalidate(&self, abs: &Path) {
