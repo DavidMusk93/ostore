@@ -15,6 +15,7 @@ use axum::middleware;
 use axum::routing::{any, delete, get, post, put};
 use axum::{Json, Router};
 use serde_json::json;
+use tower_http::compression::CompressionLayer;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
@@ -83,6 +84,7 @@ pub fn build_router(state: AppState) -> Router {
         .nest("/ostore/api", api)
         // S3 read surface (`/{bucket}/{key}`): static routes above win.
         .merge(s3::router())
+        .layer(CompressionLayer::new())
         .layer(middleware::from_fn_with_state(state.clone(), metrics::track))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())

@@ -10,10 +10,45 @@
 //! - Complete Folder Capabilities: Download directory as tar, rename/move, inspect, sync, upload folder tree.
 //! - Clean, popup-free login transition: zero unwanted OTP/token modals post-login.
 
-use axum::response::Html;
+use axum::http::{HeaderMap, StatusCode, header};
+use axum::response::{IntoResponse, Response};
 
-pub async fn handler() -> Html<&'static str> {
-    Html(UI_HTML)
+pub async fn handler(headers: HeaderMap) -> Response {
+    static ETAG: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+        use sha2::Digest;
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(UI_HTML.as_bytes());
+        format!("\"{:x}\"", hasher.finalize())
+    });
+
+    let etag = ETAG.as_str();
+
+    if let Some(if_none_match) = headers.get(header::IF_NONE_MATCH) {
+        if if_none_match
+            .to_str()
+            .map(|s| s.trim() == etag || s.trim() == "*")
+            .unwrap_or(false)
+        {
+            return (
+                StatusCode::NOT_MODIFIED,
+                [
+                    (header::ETAG, etag),
+                    (header::CACHE_CONTROL, "public, max-age=0, must-revalidate"),
+                ],
+            )
+                .into_response();
+        }
+    }
+
+    (
+        [
+            (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+            (header::ETAG, etag),
+            (header::CACHE_CONTROL, "public, max-age=0, must-revalidate"),
+        ],
+        UI_HTML,
+    )
+        .into_response()
 }
 
 const UI_HTML: &str = r##"<!DOCTYPE html>
@@ -1157,6 +1192,8 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
     let inspectingFolderPath = '';
     let totpSecretRaw = '';
     const replicaMapCache = new Map();
+    const dirCache = new Map(); // path -> { entries, totalCount, totalBytes, hasMore, offset, timestamp }
+    const DIR_CACHE_TTL_MS = 60000;
 
     let sessionToken = localStorage.getItem('ostore_sess') || localStorage.getItem('ostore_token') || '';
     let eventSource = null;
@@ -1492,6 +1529,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
     function onObjectEvent(data, kind) {
       const p = data.path;
       replicaMapCache.delete(p);
+      dirCache.clear();
       const cur = currentPath ? currentPath + '/' : '';
       if (!p.startsWith(cur)) return;
       const sub = p.substring(cur.length);
@@ -1636,7 +1674,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       `;
     }
 
-    // Object Explorer: True Lazy Load
+    // Object Explorer: True Lazy Load with SWR Client-Side Cache
     async function loadDirectory(path = currentPath, append = false) {
       if (isLoading) return;
       isLoading = true;
@@ -1644,13 +1682,31 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       if (!append) {
         currentPath = path;
         currentOffset = 0;
-        currentEntries = [];
         updateBreadcrumbs();
-        document.getElementById('fileTableBody').innerHTML = `
-          <tr><td colspan="5" style="text-align:center; padding: 24px; color: var(--ink-secondary); font-family:var(--font-mono);">
-            ⚡ Reading directory metadata...
-          </td></tr>
-        `;
+
+        const cached = dirCache.get(path);
+        if (cached && (Date.now() - cached.timestamp < DIR_CACHE_TTL_MS)) {
+          currentEntries = cached.entries;
+          currentOffset = cached.offset;
+          currentTotalCount = cached.totalCount;
+          currentTotalBytes = cached.totalBytes;
+          hasMore = cached.hasMore;
+          document.getElementById('folderStatBadge').textContent = 
+            `${currentTotalCount.toLocaleString()} items · Total ${formatBytes(currentTotalBytes)}`;
+          renderTable(currentEntries, false);
+          probeDirectoryReplicas(path);
+          if (Date.now() - cached.timestamp < 10000) {
+            isLoading = false;
+            return;
+          }
+        } else {
+          currentEntries = [];
+          document.getElementById('fileTableBody').innerHTML = `
+            <tr><td colspan="5" style="text-align:center; padding: 24px; color: var(--ink-secondary); font-family:var(--font-mono);">
+              ⚡ Reading directory metadata...
+            </td></tr>
+          `;
+        }
       }
 
       try {
@@ -1684,6 +1740,17 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
         currentOffset = currentEntries.length;
         renderTable(currentEntries, append);
         probeDirectoryReplicas(currentPath);
+
+        if (!append) {
+          dirCache.set(currentPath, {
+            entries: currentEntries,
+            totalCount: currentTotalCount,
+            totalBytes: currentTotalBytes,
+            hasMore,
+            offset: currentOffset,
+            timestamp: Date.now(),
+          });
+        }
 
         document.getElementById('scrollAnchor').textContent = hasMore 
           ? `Scroll down for more (${currentEntries.length}/${currentTotalCount})...` 
@@ -2287,6 +2354,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       if (!confirm(`Delete ${isDir ? 'folder' : 'file'} "${path}"?`)) return;
       const res = await api(`/api/files/${path}${isDir ? '?recursive=1' : ''}`, { method: 'DELETE' });
       if (res.ok) {
+        dirCache.clear();
         showToast('Deleted successfully');
         loadDirectory(currentPath, false);
       }
@@ -2302,6 +2370,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
         body: JSON.stringify({ path: target })
       });
       if (res.ok) {
+        dirCache.clear();
         showToast('Folder created');
         loadDirectory(currentPath, false);
       }
@@ -2315,6 +2384,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
         const dest = currentPath ? `${currentPath}/${f.name}` : f.name;
         await api(`/api/files/${dest}`, { method: 'PUT', body: f });
       }
+      dirCache.clear();
       showToast('Uploads completed');
       e.target.value = '';
       loadDirectory(currentPath, false);
@@ -2330,6 +2400,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
         const dest = currentPath ? `${currentPath}/${relPath}` : relPath;
         await api(`/api/files/${dest}`, { method: 'PUT', body: f });
       }
+      dirCache.clear();
       showToast('Folder tree uploaded successfully');
       e.target.value = '';
       loadDirectory(currentPath, false);
@@ -2520,23 +2591,16 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       }
     }
 
-    // Initial Gatekeeper: Check Authentication
+    // Initial Gatekeeper: Check Authentication & Instant Optimistic Boot
     async function checkAuthAndBoot() {
       if (!sessionToken) {
         showLogin();
         return;
       }
 
-      try {
-        const res = await api('/api/list?limit=1');
-        if (res.ok) {
-          showConsole();
-        } else {
-          showLogin();
-        }
-      } catch (e) {
-        showLogin();
-      }
+      // Optimistic instant boot: display console immediately without blocking on a preflight round-trip.
+      // If the session token is invalid or expired, loadDirectory will receive a 401 and redirect to login.
+      showConsole();
     }
 
     checkAuthAndBoot();

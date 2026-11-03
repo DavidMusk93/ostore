@@ -201,6 +201,7 @@ pub struct ClusterManager {
     client: reqwest::Client,
     statuses: Arc<RwLock<HashMap<String, NodeStatus>>>,
     last_sync_report: Arc<RwLock<Option<SyncReport>>>,
+    cached_topology: Arc<RwLock<Option<(Instant, ClusterTopology)>>>,
     is_syncing: Arc<AtomicBool>,
     root: PathBuf,
     cache: Arc<crate::ChecksumCache>,
@@ -241,6 +242,7 @@ impl ClusterManager {
             client,
             statuses: Arc::new(RwLock::new(initial_statuses)),
             last_sync_report: Arc::new(RwLock::new(None)),
+            cached_topology: Arc::new(RwLock::new(None)),
             is_syncing: Arc::new(AtomicBool::new(false)),
             root,
             cache,
@@ -365,6 +367,15 @@ impl ClusterManager {
     }
 
     pub async fn get_topology(&self) -> ClusterTopology {
+        {
+            let lock = self.cached_topology.read().await;
+            if let Some((ts, topo)) = &*lock {
+                if ts.elapsed() < Duration::from_secs(15) {
+                    return topo.clone();
+                }
+            }
+        }
+
         let lock = self.statuses.read().await;
         let mut control_plane = None;
         let mut workers = Vec::new();
@@ -410,14 +421,17 @@ impl ClusterManager {
         }
         distributions.sort_by(|a, b| b.total_bytes.cmp(&a.total_bytes));
 
-        ClusterTopology {
+        let topo = ClusterTopology {
             control_plane,
             workers,
             total_disk_bytes: total_disk,
             available_disk_bytes: avail_disk,
             distributions,
             replicate_prefixes: self.config.replicate_prefixes.clone(),
-        }
+        };
+
+        *self.cached_topology.write().await = Some((Instant::now(), topo.clone()));
+        topo
     }
 
     async fn scan_dir_summary(&self, dir: &Path) -> (usize, u64) {
