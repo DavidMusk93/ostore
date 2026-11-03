@@ -897,4 +897,30 @@ async fn caddyfile_and_timestamped_backup_content_type() {
     );
 }
 
+#[tokio::test]
+async fn cluster_sync_status_and_dir_status_standalone() {
+    let f = fixture();
+    put_file(&f.app, "doc.txt", b"hello").await;
+
+    let resp = f
+        .app
+        .clone()
+        .oneshot(req("GET", "/api/cluster/sync-status"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let v = body_json(resp).await;
+    assert_eq!(v["is_syncing"], false);
+
+    let resp = f
+        .app
+        .clone()
+        .oneshot(req("GET", "/api/cluster/dir-status?prefix="))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let v = body_json(resp).await;
+    assert_eq!(v["prefix"], "");
+}
+
 

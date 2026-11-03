@@ -743,6 +743,29 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       align-items: center;
     }
 
+    .cluster-sync-box { max-width: 540px; }
+    .fleet-nodes-strip {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+    .fleet-node-item {
+      padding: 10px 12px;
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius-sm);
+      background: #F9F9FB;
+    }
+    .sync-report-card {
+      background: #F9F9FB;
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius-sm);
+      padding: 12px 14px;
+      margin-bottom: 12px;
+    }
+    .mini-dot.probing { background: #D2D2D7; opacity: 0.6; }
+    .ratio-badge.probing { background: rgba(0, 0, 0, 0.05); color: var(--ink-secondary); }
+
     .media-box {
       max-width: 90vw;
       max-height: 85vh;
@@ -853,9 +876,9 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
         <button class="btn" onclick="signOut()" title="Sign out current session">
           <span>Sign Out</span>
         </button>
-        <button class="btn btn-primary" onclick="triggerSync()">
+        <button class="btn btn-primary" onclick="openClusterSyncModal()" title="View cluster synchronization status & run fleet replication">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
-          Sync Followers
+          Cluster Sync
         </button>
       </div>
     </header>
@@ -1001,6 +1024,62 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
         <div style="display: flex; gap: 8px;">
           <button class="btn" onclick="renameFolderPrompt()">Rename</button>
           <button class="btn btn-primary" onclick="syncFolderReplicas()">Sync Replicas</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Cluster Fleet Synchronization & Status Modal -->
+  <div class="backdrop" id="clusterSyncModal">
+    <div class="dialog-box cluster-sync-box">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+          <h3 style="margin: 0; font-size: 1.05rem;">Cluster Fleet Replication</h3>
+        </div>
+        <button class="icon-btn" onclick="closeClusterSyncModal()">✕</button>
+      </div>
+
+      <!-- Fleet Nodes Strip -->
+      <div class="fleet-nodes-strip" id="syncFleetNodes">
+        <div style="text-align: center; color: var(--ink-secondary); font-size: 0.8rem; padding: 8px;">Loading fleet nodes...</div>
+      </div>
+
+      <!-- Sync Status & Last Report Box -->
+      <div class="sync-report-card" id="syncReportCard">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+          <span style="font-weight: 600; font-size: 0.82rem; color: var(--ink);">Fleet Sync Status</span>
+          <span class="ratio-badge full" id="syncStatusBadge">Ready</span>
+        </div>
+        <div id="syncReportContent" style="font-size: 0.78rem; color: var(--ink-secondary); line-height: 1.5; font-family: var(--font-mono);">
+          Loading replication report...
+        </div>
+      </div>
+
+      <!-- Target Scope Selector -->
+      <div style="margin: 14px 0 16px 0;">
+        <label style="font-size: 0.78rem; font-weight: 600; color: var(--ink-secondary); margin-bottom: 6px; display: block;">Replication Scope:</label>
+        <div style="display: flex; gap: 14px; font-size: 0.82rem;">
+          <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+            <input type="radio" name="syncScope" value="all" checked>
+            <span>Entire Storage (Root Fleet)</span>
+          </label>
+          <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+            <input type="radio" name="syncScope" value="current">
+            <span id="syncCurrentFolderLabel">Current Folder</span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Action Buttons -->
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 18px;">
+        <span id="syncProgressTimer" style="font-family: var(--font-mono); font-size: 0.78rem; color: var(--ink-secondary);"></span>
+        <div style="display: flex; gap: 8px;">
+          <button class="btn" onclick="closeClusterSyncModal()">Close</button>
+          <button class="btn btn-primary" id="btnRunSync" onclick="runClusterSyncFromModal()">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+            <span id="btnRunSyncText">Run Sync Now</span>
+          </button>
         </div>
       </div>
     </div>
@@ -1604,6 +1683,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
 
         currentOffset = currentEntries.length;
         renderTable(currentEntries, append);
+        probeDirectoryReplicas(currentPath);
 
         document.getElementById('scrollAnchor').textContent = hasMore 
           ? `Scroll down for more (${currentEntries.length}/${currentTotalCount})...` 
@@ -1646,18 +1726,20 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
         const cached = replicaMapCache.get(item.path);
         const hasCc2 = cached ? cached.cc2 : null;
         const hasRn = cached ? cached.rn : null;
+        const isProbing = hasCc2 === null || hasRn === null;
 
-        const cc2DotClass = hasCc2 === true ? 'present' : 'missing';
-        const rnDotClass = hasRn === true ? 'present' : 'missing';
-        const count = (1 + (hasCc2 === true ? 1 : 0) + (hasRn === true ? 1 : 0));
-        const ratioClass = count === 3 ? 'full' : 'partial';
+        const cc2DotClass = hasCc2 === null ? 'probing' : (hasCc2 === true ? 'present' : 'missing');
+        const rnDotClass = hasRn === null ? 'probing' : (hasRn === true ? 'present' : 'missing');
+        const count = 1 + (hasCc2 === true ? 1 : 0) + (hasRn === true ? 1 : 0);
+        const ratioClass = isProbing ? 'probing' : (count === 3 ? 'full' : 'partial');
+        const ratioText = isProbing ? '...' : `${count}/3`;
 
         nodeMapHtml = `
-          <div class="node-badges-cluster" id="badge-${escapeId(item.path)}" onclick="inspectFileReplica('${item.path}')" title="Click to inspect and sync replicas across nodes">
+          <div class="node-badges-cluster" id="badge-${escapeId(item.path)}" onclick="inspectFileReplica('${item.path}')" title="Click to inspect replica details and individual file sync">
             <span class="node-dot-item present"><span class="mini-dot main"></span>cc</span>
             <span class="node-dot-item ${hasCc2 === true ? 'present' : ''}"><span class="mini-dot ${cc2DotClass}"></span>cc2</span>
             <span class="node-dot-item ${hasRn === true ? 'present' : ''}"><span class="mini-dot ${rnDotClass}"></span>rn</span>
-            <span class="ratio-badge ${ratioClass}">${count}/3</span>
+            <span class="ratio-badge ${ratioClass}">${ratioText}</span>
           </div>
         `;
       }
@@ -1821,7 +1903,8 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       const res = await api(`/api/cluster/sync?prefix=${encodeURIComponent(inspectingFolderPath)}`, { method: 'POST' });
       if (res.ok) {
         const r = await res.json();
-        showToast(`Folder synced in ${r.duration_ms}ms`);
+        const synced = r.total_synced !== undefined ? r.total_synced : (r.node_results || []).reduce((acc, n) => acc + (n.synced || 0), 0);
+        showToast(`Folder sync completed: ${synced} files updated (${r.duration_ms}ms)`);
         closeFolderDetailModal();
         loadDirectory(currentPath, false);
       }
@@ -1922,16 +2005,18 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
     function updateRowBadge(filePath, hasCc2, hasRn) {
       const badge = document.getElementById(`badge-${escapeId(filePath)}`);
       if (!badge) return;
-      const cc2DotClass = hasCc2 === true ? 'present' : 'missing';
-      const rnDotClass = hasRn === true ? 'present' : 'missing';
+      const isProbing = hasCc2 === null || hasRn === null;
+      const cc2DotClass = hasCc2 === null ? 'probing' : (hasCc2 === true ? 'present' : 'missing');
+      const rnDotClass = hasRn === null ? 'probing' : (hasRn === true ? 'present' : 'missing');
       const count = 1 + (hasCc2 === true ? 1 : 0) + (hasRn === true ? 1 : 0);
-      const ratioClass = count === 3 ? 'full' : 'partial';
+      const ratioClass = isProbing ? 'probing' : (count === 3 ? 'full' : 'partial');
+      const ratioText = isProbing ? '...' : `${count}/3`;
 
       badge.innerHTML = `
         <span class="node-dot-item present"><span class="mini-dot main"></span>cc</span>
         <span class="node-dot-item ${hasCc2 === true ? 'present' : ''}"><span class="mini-dot ${cc2DotClass}"></span>cc2</span>
         <span class="node-dot-item ${hasRn === true ? 'present' : ''}"><span class="mini-dot ${rnDotClass}"></span>rn</span>
-        <span class="ratio-badge ${ratioClass}">${count}/3</span>
+        <span class="ratio-badge ${ratioClass}">${ratioText}</span>
       `;
     }
 
@@ -1946,6 +2031,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       if (res.ok) {
         showToast('File replicated successfully');
         inspectFileReplica(inspectingFilePath, false);
+        probeDirectoryReplicas(currentPath);
       }
     }
 
@@ -2249,14 +2335,188 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       loadDirectory(currentPath, false);
     }
 
-    async function triggerSync() {
-      if (!confirm('Run cluster replication sync across all follower nodes?')) return;
-      showToast('Cluster synchronization started...');
-      const res = await api('/api/cluster/sync', { method: 'POST' });
-      if (res.ok) {
-        const r = await res.json();
-        showToast(`Sync finished in ${r.duration_ms}ms`);
-        loadTopology();
+    function timeAgo(date) {
+      if (!date) return '';
+      const seconds = Math.floor((new Date() - new Date(date)) / 1000);
+      if (seconds < 5) return 'just now';
+      if (seconds < 60) return `${seconds}s ago`;
+      const minutes = Math.floor(seconds / 60);
+      if (minutes < 60) return `${minutes}m ago`;
+      const hours = Math.floor(minutes / 60);
+      if (hours < 24) return `${hours}h ago`;
+      const days = Math.floor(hours / 24);
+      return `${days}d ago`;
+    }
+
+    async function probeDirectoryReplicas(dirPath) {
+      try {
+        const res = await api(`/api/cluster/dir-status?prefix=${encodeURIComponent(dirPath)}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!data.files) return;
+        for (const [filePath, info] of Object.entries(data.files)) {
+          replicaMapCache.set(filePath, { cc2: info.cc2, rn: info.rn });
+          updateRowBadge(filePath, info.cc2, info.rn);
+        }
+      } catch (e) {
+        console.warn('Directory replica probe error:', e);
+      }
+    }
+
+    let syncIntervalTimer = null;
+    let syncStartTime = 0;
+
+    async function openClusterSyncModal() {
+      const folderLabel = document.getElementById('syncCurrentFolderLabel');
+      if (folderLabel) {
+        folderLabel.textContent = `Current Folder (${currentPath ? '/' + currentPath : '/ (root)'})`;
+      }
+      document.getElementById('syncProgressTimer').textContent = '';
+      document.getElementById('clusterSyncModal').style.display = 'flex';
+      await refreshSyncStatus();
+    }
+
+    function closeClusterSyncModal() {
+      if (syncIntervalTimer) {
+        clearInterval(syncIntervalTimer);
+        syncIntervalTimer = null;
+      }
+      document.getElementById('clusterSyncModal').style.display = 'none';
+    }
+
+    async function refreshSyncStatus() {
+      try {
+        const res = await api('/api/cluster/sync-status');
+        if (!res.ok) return;
+        const data = await res.json();
+
+        // Render nodes
+        const nodesContainer = document.getElementById('syncFleetNodes');
+        if (nodesContainer && data.nodes) {
+          nodesContainer.innerHTML = data.nodes.map(n => `
+            <div class="fleet-node-item">
+              <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px;">
+                <span style="font-weight: 600; color: var(--ink);">${escapeHtml(n.name)}</span>
+                <span class="status-dot ${n.healthy ? '' : 'disconnected'}"></span>
+              </div>
+              <div style="color: var(--ink-secondary); font-size: 0.72rem; font-family: var(--font-mono);">
+                ${n.is_local ? 'Main (Control)' : `RTT: ${n.rtt_ms !== null ? n.rtt_ms + 'ms' : 'offline'}`}
+              </div>
+            </div>
+          `).join('');
+        }
+
+        // Render status & report
+        const badge = document.getElementById('syncStatusBadge');
+        const report = document.getElementById('syncReportContent');
+        const runBtn = document.getElementById('btnRunSync');
+        const runBtnText = document.getElementById('btnRunSyncText');
+
+        if (data.is_syncing) {
+          if (badge) {
+            badge.className = 'ratio-badge partial';
+            badge.textContent = 'Syncing...';
+          }
+          if (report) {
+            report.innerHTML = '<div style="color: var(--accent);">⚡ Fleet replication currently in progress across remote nodes...</div>';
+          }
+          if (runBtn) runBtn.disabled = true;
+          if (runBtnText) runBtnText.textContent = 'Syncing...';
+        } else {
+          if (runBtn) runBtn.disabled = false;
+          if (runBtnText) runBtnText.textContent = 'Run Sync Now';
+
+          const last = data.last_sync;
+          if (last) {
+            const hasUpdates = (last.total_synced || 0) > 0;
+            if (badge) {
+              badge.className = 'ratio-badge full';
+              badge.textContent = hasUpdates ? 'Updated' : 'Fleet in Sync';
+            }
+            const nodesHtml = (last.node_results || []).map(nr => `
+              <div style="display:flex; justify-content:space-between; margin-top:2px;">
+                <span>• Node <strong>${escapeHtml(nr.node_id)}</strong>:</span>
+                <span>${nr.synced} synced, ${nr.skipped} in-sync${nr.errors && nr.errors.length ? ` (<span style="color:var(--danger);">${nr.errors.length} err</span>)` : ''}</span>
+              </div>
+            `).join('');
+
+            if (report) {
+              report.innerHTML = `
+                <div style="display:flex; justify-content:space-between; margin-bottom: 4px;">
+                  <span>Last Sync: <strong>${formatDate(last.timestamp)}</strong></span>
+                  <span>${timeAgo(last.timestamp)}</span>
+                </div>
+                <div style="margin-bottom: 4px;">
+                  Scope: <code>${last.prefix ? '/' + escapeHtml(last.prefix) : '/ (entire fleet)'}</code> · Took: <strong>${last.duration_ms}ms</strong>
+                </div>
+                <div style="margin-bottom: 6px;">
+                  Checked: <strong>${(last.total_checked || 0).toLocaleString()}</strong> · Synced: <strong style="color:var(--accent);">${last.total_synced || 0}</strong> · In-sync: <strong>${(last.total_skipped || 0).toLocaleString()}</strong>
+                </div>
+                <div style="padding-top: 6px; border-top: 1px dashed var(--card-border);">
+                  ${nodesHtml}
+                </div>
+              `;
+            }
+          } else {
+            if (badge) {
+              badge.className = 'ratio-badge full';
+              badge.textContent = 'Ready';
+            }
+            if (report) {
+              report.innerHTML = `
+                <div>No manual sync triggered since daemon startup.</div>
+                <div style="margin-top: 4px; color: var(--ink-tertiary);">Objects are automatically synced to followers on upload. Click below to verify or force replication.</div>
+              `;
+            }
+          }
+        }
+      } catch (e) {
+        console.error('Failed to load sync status:', e);
+      }
+    }
+
+    async function runClusterSyncFromModal() {
+      const scopeRadio = document.querySelector('input[name="syncScope"]:checked');
+      const isCurrentFolder = scopeRadio && scopeRadio.value === 'current';
+      const prefix = isCurrentFolder ? currentPath : '';
+
+      const runBtn = document.getElementById('btnRunSync');
+      const runBtnText = document.getElementById('btnRunSyncText');
+      const timerSpan = document.getElementById('syncProgressTimer');
+
+      if (runBtn) runBtn.disabled = true;
+      if (runBtnText) runBtnText.textContent = 'Syncing Fleet...';
+
+      syncStartTime = Date.now();
+      if (timerSpan) timerSpan.textContent = 'Replicating: 0.0s';
+      syncIntervalTimer = setInterval(() => {
+        const elapsed = ((Date.now() - syncStartTime) / 1000).toFixed(1);
+        if (timerSpan) timerSpan.textContent = `Replicating: ${elapsed}s...`;
+      }, 200);
+
+      try {
+        showToast(`Starting cluster sync (${prefix ? '/' + prefix : 'entire storage'})...`);
+        const res = await api(`/api/cluster/sync?prefix=${encodeURIComponent(prefix)}`, { method: 'POST' });
+        if (res.ok) {
+          const data = await res.json();
+          const synced = data.total_synced !== undefined ? data.total_synced : (data.node_results || []).reduce((a, n) => a + (n.synced || 0), 0);
+          showToast(`Sync finished: ${synced} files updated (${data.duration_ms}ms)`);
+          await refreshSyncStatus();
+          loadDirectory(currentPath, false);
+          loadTopology();
+        } else {
+          showToast('Sync failed: HTTP ' + res.status);
+        }
+      } catch (e) {
+        showToast('Sync error: ' + e);
+      } finally {
+        if (syncIntervalTimer) {
+          clearInterval(syncIntervalTimer);
+          syncIntervalTimer = null;
+        }
+        if (timerSpan) timerSpan.textContent = '';
+        if (runBtn) runBtn.disabled = false;
+        if (runBtnText) runBtnText.textContent = 'Run Sync Now';
       }
     }
 

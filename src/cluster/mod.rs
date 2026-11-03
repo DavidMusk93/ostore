@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
@@ -153,7 +154,7 @@ pub struct ClusterTopology {
     pub replicate_prefixes: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct NodeSyncResult {
     pub node_id: String,
     pub total_checked: usize,
@@ -162,17 +163,45 @@ pub struct NodeSyncResult {
     pub errors: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SyncReport {
     pub prefix: String,
-    pub node_results: Vec<NodeSyncResult>,
+    pub total_checked: usize,
+    pub total_synced: usize,
+    pub total_skipped: usize,
+    pub synced: usize,
     pub duration_ms: u64,
+    pub timestamp: DateTime<Utc>,
+    pub node_results: Vec<NodeSyncResult>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ClusterSyncStatus {
+    pub is_syncing: bool,
+    pub last_sync: Option<SyncReport>,
+    pub nodes: Vec<NodeStatus>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct FileReplicaSummary {
+    pub cc2: bool,
+    pub rn: bool,
+    pub replica_count: usize,
+    pub expected_replicas: usize,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct DirReplicaStatus {
+    pub prefix: String,
+    pub files: HashMap<String, FileReplicaSummary>,
 }
 
 pub struct ClusterManager {
     pub config: ClusterConfig,
     client: reqwest::Client,
     statuses: Arc<RwLock<HashMap<String, NodeStatus>>>,
+    last_sync_report: Arc<RwLock<Option<SyncReport>>>,
+    is_syncing: Arc<AtomicBool>,
     root: PathBuf,
     cache: Arc<crate::ChecksumCache>,
 }
@@ -211,6 +240,8 @@ impl ClusterManager {
             config,
             client,
             statuses: Arc::new(RwLock::new(initial_statuses)),
+            last_sync_report: Arc::new(RwLock::new(None)),
+            is_syncing: Arc::new(AtomicBool::new(false)),
             root,
             cache,
         }
@@ -676,6 +707,7 @@ impl ClusterManager {
 
     /// Sync a directory prefix from local master to all remote worker nodes.
     pub async fn sync_prefix(&self, prefix: &str) -> SyncReport {
+        self.is_syncing.store(true, Ordering::SeqCst);
         let start = Instant::now();
         let prefix = prefix.trim_matches('/').to_string();
 
@@ -794,10 +826,160 @@ impl ClusterManager {
             node_results.push(res);
         }
 
-        SyncReport {
+        let total_checked = node_results.iter().map(|n| n.total_checked).max().unwrap_or(0);
+        let total_synced: usize = node_results.iter().map(|n| n.synced).sum();
+        let total_skipped: usize = node_results.iter().map(|n| n.skipped).sum();
+
+        let report = SyncReport {
             prefix,
-            node_results,
+            total_checked,
+            total_synced,
+            total_skipped,
+            synced: total_synced,
             duration_ms: start.elapsed().as_millis() as u64,
+            timestamp: Utc::now(),
+            node_results,
+        };
+        *self.last_sync_report.write().await = Some(report.clone());
+        self.is_syncing.store(false, Ordering::SeqCst);
+        report
+    }
+
+    pub async fn get_sync_status(&self) -> ClusterSyncStatus {
+        let is_syncing = self.is_syncing.load(Ordering::SeqCst);
+        let last_sync = self.last_sync_report.read().await.clone();
+        let nodes_map = self.statuses.read().await;
+        let mut nodes = Vec::new();
+        for n in &self.config.nodes {
+            if let Some(st) = nodes_map.get(&n.id) {
+                nodes.push(st.clone());
+            }
+        }
+        ClusterSyncStatus {
+            is_syncing,
+            last_sync,
+            nodes,
+        }
+    }
+
+    pub async fn check_dir_status(&self, prefix: &str) -> DirReplicaStatus {
+        let prefix = prefix.trim_matches('/').to_string();
+        let abs_dir = if prefix.is_empty() {
+            self.root.clone()
+        } else {
+            self.root.join(&prefix)
+        };
+
+        let mut local_files: HashMap<String, u64> = HashMap::new();
+        if let Ok(mut rd) = tokio::fs::read_dir(&abs_dir).await {
+            while let Ok(Some(entry)) = rd.next_entry().await {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if crate::routes::list::hidden(&name) {
+                    continue;
+                }
+                if let Ok(m) = entry.metadata().await {
+                    if m.is_file() {
+                        local_files.insert(name, m.len());
+                    }
+                }
+            }
+        }
+
+        let mut follower_nodes = Vec::new();
+        for node in &self.config.nodes {
+            if !node.is_local {
+                follower_nodes.push(node.clone());
+            }
+        }
+
+        let client = self.client.clone();
+        let prefix_clone = prefix.clone();
+        let fetches = futures::stream::iter(follower_nodes)
+            .map(|node| {
+                let client = client.clone();
+                let prefix = prefix_clone.clone();
+                async move {
+                    let base = node.url.trim_end_matches('/');
+                    let list_url = format!("{base}/api/list?path={}", urlencoding::encode(&prefix));
+                    let mut req = client.get(&list_url);
+                    if !node.token.is_empty() {
+                        req = req.header("Authorization", format!("Bearer {}", node.token));
+                    }
+                    let map = match req.send().await {
+                        Ok(resp) if resp.status().is_success() => {
+                            let val: serde_json::Value = resp.json().await.unwrap_or_default();
+                            let mut files = HashMap::new();
+                            if let Some(entries) = val.get("entries").and_then(|v| v.as_array()) {
+                                for e in entries {
+                                    if e.get("type").and_then(|v| v.as_str()) == Some("file") {
+                                        if let (Some(name), Some(size)) = (
+                                            e.get("name").and_then(|v| v.as_str()),
+                                            e.get("size").and_then(|v| v.as_u64()),
+                                        ) {
+                                            files.insert(name.to_string(), size);
+                                        }
+                                    }
+                                }
+                            }
+                            files
+                        }
+                        _ => HashMap::new(),
+                    };
+                    (node.id, map)
+                }
+            })
+            .buffer_unordered(8)
+            .collect::<Vec<_>>()
+            .await;
+
+        let mut follower_maps: HashMap<String, HashMap<String, u64>> = HashMap::new();
+        for (node_id, map) in fetches {
+            follower_maps.insert(node_id, map);
+        }
+
+        let expected_replicas = 1 + self.config.nodes.iter().filter(|n| !n.is_local).count();
+        let mut files_summary = HashMap::new();
+
+        for (fname, local_size) in local_files {
+            let rel_path = if prefix.is_empty() {
+                fname.clone()
+            } else {
+                format!("{prefix}/{fname}")
+            };
+            let cc2_match = follower_maps
+                .get("cc2")
+                .and_then(|m| m.get(&fname))
+                .map(|s| *s == local_size)
+                .unwrap_or(false);
+            let rn_match = follower_maps
+                .get("racknerd")
+                .and_then(|m| m.get(&fname))
+                .map(|s| *s == local_size)
+                .unwrap_or(false);
+
+            let mut count = 1;
+            for (_node_id, m) in &follower_maps {
+                if let Some(s) = m.get(&fname) {
+                    if *s == local_size {
+                        count += 1;
+                    }
+                }
+            }
+
+            files_summary.insert(
+                rel_path,
+                FileReplicaSummary {
+                    cc2: cc2_match,
+                    rn: rn_match,
+                    replica_count: count,
+                    expected_replicas,
+                },
+            );
+        }
+
+        DirReplicaStatus {
+            prefix,
+            files: files_summary,
         }
     }
 

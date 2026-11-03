@@ -58,6 +58,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/cluster/nodes", get(cluster::get_nodes))
         .route("/cluster/topology", get(cluster::get_topology))
         .route("/cluster/file-status", get(cluster::get_file_status))
+        .route("/cluster/dir-status", get(cluster::get_dir_status))
+        .route("/cluster/sync-status", get(cluster::get_sync_status))
         .route("/cluster/sync-file", post(cluster::sync_single_file))
         .route("/cluster/sync", post(cluster::trigger_sync))
         // Catch-all *inside* `/api` so unmatched API paths stay JSON and stay

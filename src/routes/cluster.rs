@@ -156,6 +156,41 @@ pub async fn get_topology(State(st): State<AppState>) -> Result<Json<Value>, Api
     }
 }
 
+/// GET /api/cluster/sync-status — return cluster sync in-progress state, last report and node health.
+pub async fn get_sync_status(State(st): State<AppState>) -> Result<Json<Value>, ApiError> {
+    match &st.cluster {
+        Some(cluster) => {
+            let status = cluster.get_sync_status().await;
+            Ok(Json(json!(status)))
+        }
+        None => Ok(Json(json!({
+            "is_syncing": false,
+            "last_sync": null,
+            "nodes": []
+        }))),
+    }
+}
+
+/// GET /api/cluster/dir-status?prefix=... — fast replica probe for all files in a single directory.
+pub async fn get_dir_status(
+    State(st): State<AppState>,
+    Query(q): Query<SyncQuery>,
+) -> Result<Json<Value>, ApiError> {
+    match &st.cluster {
+        Some(cluster) => {
+            let status = cluster.check_dir_status(&q.prefix).await;
+            Ok(Json(json!(status)))
+        }
+        None => {
+            let (_, rel) = crate::paths::resolve(&st.root, &q.prefix)?;
+            Ok(Json(json!({
+                "prefix": rel,
+                "files": {}
+            })))
+        }
+    }
+}
+
 /// POST /api/cluster/sync?prefix=... — trigger cluster self-healing and replication.
 pub async fn trigger_sync(
     State(st): State<AppState>,
