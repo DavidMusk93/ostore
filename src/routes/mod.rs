@@ -63,6 +63,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/cluster/sync-status", get(cluster::get_sync_status))
         .route("/cluster/sync-file", post(cluster::sync_single_file))
         .route("/cluster/sync", post(cluster::trigger_sync))
+        .route("/cluster/sync-diff", post(cluster::get_sync_diff))
+        .route("/cluster/sync/cancel", post(cluster::cancel_sync))
         .route("/cluster/gdrive/status", get(cluster::gdrive_status))
         .route("/cluster/gdrive/auth-url", post(cluster::gdrive_auth_url))
         .route("/cluster/gdrive/connect", post(cluster::gdrive_connect))

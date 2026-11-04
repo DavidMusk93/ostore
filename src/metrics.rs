@@ -9,7 +9,7 @@ use std::fmt::Write as _;
 use std::path::Path;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use axum::extract::{MatchedPath, Request, State};
 use axum::http::{HeaderValue, header};
@@ -20,6 +20,17 @@ use crate::AppState;
 use crate::events::ALL_KINDS;
 
 const BUCKETS: [f64; 12] = [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 10.0, 60.0, 300.0];
+
+#[derive(Clone, Copy)]
+struct CpuSample {
+    timestamp: Instant,
+    sys_total: u64,
+    sys_idle: u64,
+    proc_ticks: u64,
+    sys_ratio: f64,
+    proc_ratio: f64,
+}
+
 
 #[derive(Default)]
 struct Histogram {
@@ -71,6 +82,13 @@ pub struct Metrics {
     pub s3_lists: AtomicU64,
     pub s3_denied: AtomicU64,
     pub s3_bytes: AtomicU64,
+    cpu_sample: Mutex<Option<CpuSample>>,
+    pub sync_in_progress: AtomicI64,
+    pub sync_total_synced: AtomicU64,
+    pub sync_total_skipped: AtomicU64,
+    pub sync_total_failed: AtomicU64,
+    pub sync_last_duration_ms: AtomicU64,
+    pub sync_last_synced: AtomicU64,
 }
 
 impl Default for Metrics {
@@ -109,6 +127,13 @@ impl Metrics {
             s3_lists: AtomicU64::new(0),
             s3_denied: AtomicU64::new(0),
             s3_bytes: AtomicU64::new(0),
+            cpu_sample: Mutex::new(None),
+            sync_in_progress: AtomicI64::new(0),
+            sync_total_synced: AtomicU64::new(0),
+            sync_total_skipped: AtomicU64::new(0),
+            sync_total_failed: AtomicU64::new(0),
+            sync_last_duration_ms: AtomicU64::new(0),
+            sync_last_synced: AtomicU64::new(0),
         }
     }
 
@@ -123,6 +148,61 @@ impl Metrics {
         }
     }
 
+    pub fn sample_cpu(&self) -> (f64, f64) {
+        let now = Instant::now();
+        let (sys_total, sys_idle) = read_system_cpu_ticks().unwrap_or((0, 0));
+        let (_, _, proc_ticks) = read_process_stat().unwrap_or((0.0, 0.0, 0));
+
+        let mut lock = self.cpu_sample.lock().unwrap();
+        if let Some(prev) = *lock {
+            if now.duration_since(prev.timestamp) < Duration::from_millis(500) {
+                return (prev.proc_ratio, prev.sys_ratio);
+            }
+            let delta_sys_total = sys_total.saturating_sub(prev.sys_total);
+            let delta_sys_idle = sys_idle.saturating_sub(prev.sys_idle);
+            let delta_proc_ticks = proc_ticks.saturating_sub(prev.proc_ticks);
+
+            let sys_ratio = if delta_sys_total > 0 {
+                let non_idle = delta_sys_total.saturating_sub(delta_sys_idle);
+                ((non_idle as f64) / (delta_sys_total as f64)).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+
+            let proc_ratio = if delta_sys_total > 0 {
+                ((delta_proc_ticks as f64) / (delta_sys_total as f64)).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+
+            let new_sample = CpuSample {
+                timestamp: now,
+                sys_total,
+                sys_idle,
+                proc_ticks,
+                sys_ratio,
+                proc_ratio,
+            };
+            *lock = Some(new_sample);
+            (proc_ratio, sys_ratio)
+        } else {
+            let initial = CpuSample {
+                timestamp: now,
+                sys_total,
+                sys_idle,
+                proc_ticks,
+                sys_ratio: 0.0,
+                proc_ratio: 0.0,
+            };
+            *lock = Some(initial);
+            (0.0, 0.0)
+        }
+    }
+
+    pub fn current_system_cpu_ratio(&self) -> f64 {
+        self.sample_cpu().1
+    }
+
     fn record_request(&self, route: &str, method: &str, status: u16, secs: f64) {
         if let Ok(mut m) = self.requests.lock() {
             *m.entry((route.to_string(), method.to_string(), status)).or_insert(0) += 1;
@@ -133,7 +213,7 @@ impl Metrics {
     }
 
     /// Render the Prometheus text exposition.
-    pub fn render(&self, st: &AppState) -> String {
+    pub async fn render(&self, st: &AppState) -> String {
         let mut out = String::with_capacity(8 * 1024);
         let o = &mut out;
 
@@ -142,7 +222,54 @@ impl Metrics {
         let _ = writeln!(o, "ostore_build_info{{version=\"{}\"}} 1", env!("CARGO_PKG_VERSION"));
         gauge_f(o, "ostore_uptime_seconds", "Seconds since process start.", self.started.elapsed().as_secs_f64());
 
+        // Process & System CPU & Memory
+        let (proc_cpu_ratio, sys_cpu_ratio) = self.sample_cpu();
+        gauge_f(o, "ostore_process_cpu_usage_ratio", "Current CPU usage ratio of ostore process (0.0 to 1.0).", proc_cpu_ratio);
+        gauge_f(o, "ostore_system_cpu_usage_ratio", "Current host total CPU usage ratio (0.0 to 1.0).", sys_cpu_ratio);
+
+        if let Some((utime_sec, stime_sec, _)) = read_process_stat() {
+            gauge_f(o, "ostore_process_cpu_user_seconds_total", "Cumulative user CPU seconds spent by ostore.", utime_sec);
+            gauge_f(o, "ostore_process_cpu_system_seconds_total", "Cumulative system CPU seconds spent by ostore.", stime_sec);
+            gauge_f(o, "ostore_process_cpu_seconds_total", "Total CPU seconds spent by ostore.", utime_sec + stime_sec);
+        }
+
+        if let Some((rss, vms)) = read_process_mem() {
+            gauge(o, "ostore_process_resident_memory_bytes", "Resident memory (RSS) in bytes used by ostore.", rss as i64);
+            gauge(o, "ostore_process_virtual_memory_bytes", "Virtual memory size (VMS) in bytes used by ostore.", vms as i64);
+        }
+
+        if let Some((total, avail, used)) = read_system_mem() {
+            gauge(o, "ostore_system_memory_total_bytes", "Total host physical memory in bytes.", total as i64);
+            gauge(o, "ostore_system_memory_available_bytes", "Available host memory in bytes.", avail as i64);
+            gauge(o, "ostore_system_memory_used_bytes", "Used host memory in bytes.", used as i64);
+        }
+
+        // Cluster & Sync Telemetry
+        gauge(o, "ostore_sync_in_progress", "Whether cluster fleet synchronization is currently running (1 or 0).", self.sync_in_progress.load(Ordering::Relaxed));
+        counter(o, "ostore_sync_total_synced", "Total files successfully synchronized across fleet.", self.sync_total_synced.load(Ordering::Relaxed));
+        counter(o, "ostore_sync_total_skipped", "Total files skipped (already matching hash) during fleet sync.", self.sync_total_skipped.load(Ordering::Relaxed));
+        counter(o, "ostore_sync_total_failed", "Total files failed during fleet sync.", self.sync_total_failed.load(Ordering::Relaxed));
+        gauge_f(o, "ostore_sync_last_duration_seconds", "Duration of the last fleet sync in seconds.", (self.sync_last_duration_ms.load(Ordering::Relaxed) as f64) / 1000.0);
+        gauge(o, "ostore_sync_last_synced_files", "Number of files synced in the last fleet sync run.", self.sync_last_synced.load(Ordering::Relaxed) as i64);
+
+        if let Some(cluster) = &st.cluster {
+            let statuses = cluster.get_node_statuses().await;
+            let _ = writeln!(o, "# HELP ostore_cluster_node_healthy Health status of cluster node (1 = healthy, 0 = down).");
+            let _ = writeln!(o, "# TYPE ostore_cluster_node_healthy gauge");
+            for node in &statuses {
+                let _ = writeln!(o, "ostore_cluster_node_healthy{{node=\"{}\"}} {}", esc(&node.id), if node.healthy { 1 } else { 0 });
+            }
+
+            let _ = writeln!(o, "# HELP ostore_cluster_node_rtt_seconds Round-trip ping time to cluster node in seconds.");
+            let _ = writeln!(o, "# TYPE ostore_cluster_node_rtt_seconds gauge");
+            for node in &statuses {
+                let rtt_secs = node.rtt_ms.map(|ms| ms as f64 / 1000.0).unwrap_or(0.0);
+                let _ = writeln!(o, "ostore_cluster_node_rtt_seconds{{node=\"{}\"}} {}", esc(&node.id), rtt_secs);
+            }
+        }
+
         let _ = writeln!(o, "# HELP ostore_http_requests_total HTTP requests by matched route, method and status.");
+
         let _ = writeln!(o, "# TYPE ostore_http_requests_total counter");
         if let Ok(m) = self.requests.lock() {
             for ((route, method, status), n) in m.iter() {
@@ -279,10 +406,75 @@ pub async fn track(State(st): State<AppState>, req: Request, next: Next) -> Resp
     resp
 }
 
+pub fn read_process_stat() -> Option<(f64, f64, u64)> {
+    let stat = std::fs::read_to_string("/proc/self/stat").ok()?;
+    let rparen = stat.rfind(')')?;
+    let rest = &stat[rparen + 1..];
+    let mut parts = rest.split_whitespace();
+    let utime_str = parts.nth(11)?;
+    let stime_str = parts.next()?;
+    let utime: u64 = utime_str.parse().ok()?;
+    let stime: u64 = stime_str.parse().ok()?;
+    let clk_tck = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+    let tck = if clk_tck > 0 { clk_tck as f64 } else { 100.0 };
+    Some(((utime as f64) / tck, (stime as f64) / tck, utime + stime))
+}
+
+pub fn read_process_mem() -> Option<(u64, u64)> {
+    let statm = std::fs::read_to_string("/proc/self/statm").ok()?;
+    let mut parts = statm.split_whitespace();
+    let size_pages: u64 = parts.next()?.parse().ok()?;
+    let res_pages: u64 = parts.next()?.parse().ok()?;
+    let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    let ps = if page_size > 0 { page_size as u64 } else { 4096 };
+    Some((res_pages * ps, size_pages * ps))
+}
+
+pub fn read_system_mem() -> Option<(u64, u64, u64)> {
+    let content = std::fs::read_to_string("/proc/meminfo").ok()?;
+    let mut total_kb = 0u64;
+    let mut avail_kb = 0u64;
+    for line in content.lines() {
+        if let Some(rest) = line.strip_prefix("MemTotal:") {
+            total_kb = rest.trim().split_whitespace().next()?.parse().ok()?;
+        } else if let Some(rest) = line.strip_prefix("MemAvailable:") {
+            avail_kb = rest.trim().split_whitespace().next()?.parse().ok()?;
+        }
+    }
+    if total_kb == 0 {
+        return None;
+    }
+    let total = total_kb * 1024;
+    let avail = avail_kb * 1024;
+    let used = total.saturating_sub(avail);
+    Some((total, avail, used))
+}
+
+pub fn read_system_cpu_ticks() -> Option<(u64, u64)> {
+    let content = std::fs::read_to_string("/proc/stat").ok()?;
+    let line = content.lines().next()?;
+    if !line.starts_with("cpu ") {
+        return None;
+    }
+    let mut parts = line.split_whitespace();
+    parts.next(); // skip "cpu"
+    let user: u64 = parts.next()?.parse().ok()?;
+    let nice: u64 = parts.next()?.parse().ok()?;
+    let system: u64 = parts.next()?.parse().ok()?;
+    let idle: u64 = parts.next()?.parse().ok()?;
+    let iowait: u64 = parts.next()?.parse().ok()?;
+    let irq: u64 = parts.next()?.parse().ok()?;
+    let softirq: u64 = parts.next()?.parse().ok()?;
+    let steal: u64 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let total = user + nice + system + idle + iowait + irq + softirq + steal;
+    let idle_ticks = idle + iowait;
+    Some((total, idle_ticks))
+}
+
 /// GET /api/metrics
 pub async fn handler(State(st): State<AppState>) -> impl IntoResponse {
     (
         [(header::CONTENT_TYPE, HeaderValue::from_static("text/plain; version=0.0.4; charset=utf-8"))],
-        st.metrics.render(&st),
+        st.metrics.render(&st).await,
     )
 }

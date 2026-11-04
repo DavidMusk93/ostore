@@ -191,21 +191,89 @@ pub async fn get_dir_status(
     }
 }
 
-/// POST /api/cluster/sync?prefix=... — trigger cluster self-healing and replication.
+#[derive(Deserialize, Default)]
+pub struct DiffQuery {
+    #[serde(default)]
+    pub prefix: String,
+    #[serde(default)]
+    pub nodes: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+pub struct DiffRequest {
+    #[serde(default)]
+    pub prefix: Option<String>,
+    #[serde(default)]
+    pub paths: Option<Vec<String>>,
+    #[serde(default)]
+    pub target_nodes: Option<Vec<String>>,
+}
+
+/// POST /api/cluster/sync-diff — preview differences without modifying state
+pub async fn get_sync_diff(
+    State(st): State<AppState>,
+    Query(q): Query<DiffQuery>,
+    body: Option<Json<DiffRequest>>,
+) -> Result<Json<Value>, ApiError> {
+    let cluster = st.cluster.as_ref().ok_or_else(|| {
+        ApiError::bad_request("CLUSTER_DISABLED", "cluster mode is not enabled")
+    })?;
+
+    let (prefix, paths, target_nodes) = if let Some(Json(b)) = body {
+        (
+            b.prefix.unwrap_or(q.prefix),
+            b.paths,
+            b.target_nodes.or_else(|| {
+                q.nodes.map(|s| s.split(',').map(|p| p.trim().to_string()).filter(|s| !s.is_empty()).collect())
+            }),
+        )
+    } else {
+        (
+            q.prefix,
+            None,
+            q.nodes.map(|s| s.split(',').map(|p| p.trim().to_string()).filter(|s| !s.is_empty()).collect()),
+        )
+    };
+
+    match cluster.get_sync_diff(&prefix, paths.as_deref(), target_nodes.as_deref()).await {
+        Ok(diff) => Ok(Json(json!(diff))),
+        Err(e) => Err(ApiError::bad_request("DIFF_FAILED", e)),
+    }
+}
+
+/// POST /api/cluster/sync/cancel — cancel running sync
+pub async fn cancel_sync(State(st): State<AppState>) -> Result<Json<Value>, ApiError> {
+    let cluster = st.cluster.as_ref().ok_or_else(|| {
+        ApiError::bad_request("CLUSTER_DISABLED", "cluster mode is not enabled")
+    })?;
+    let cancelled = cluster.cancel_sync().await;
+    Ok(Json(json!({ "cancelled": cancelled })))
+}
+
+/// POST /api/cluster/sync — trigger cluster replication with options & metrics governor
 pub async fn trigger_sync(
     State(st): State<AppState>,
     Query(q): Query<SyncQuery>,
+    body: Option<Json<crate::cluster::CustomSyncOptions>>,
 ) -> Result<Json<Value>, ApiError> {
-    match &st.cluster {
-        Some(cluster) => {
-            let report = cluster.sync_prefix(&q.prefix).await;
-            Ok(Json(json!(report)))
+    let cluster = st.cluster.as_ref().ok_or_else(|| {
+        ApiError::bad_request("CLUSTER_DISABLED", "cluster mode is not enabled")
+    })?;
+
+    let opts = if let Some(Json(mut b)) = body {
+        if b.prefix.is_none() && !q.prefix.is_empty() {
+            b.prefix = Some(q.prefix.clone());
         }
-        None => Err(ApiError::bad_request(
-            "CLUSTER_DISABLED",
-            "cluster mode is not enabled",
-        )),
-    }
+        b
+    } else {
+        crate::cluster::CustomSyncOptions {
+            prefix: Some(q.prefix),
+            ..Default::default()
+        }
+    };
+
+    let report = cluster.sync_custom(opts, Some(&st.metrics)).await;
+    Ok(Json(json!(report)))
 }
 
 // ==========================================

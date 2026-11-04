@@ -778,10 +778,10 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       align-items: center;
     }
 
-    .cluster-sync-box { max-width: 540px; }
+    .cluster-sync-box { max-width: 640px; width: 95vw; }
     .fleet-nodes-strip {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
       gap: 8px;
       margin-bottom: 14px;
     }
@@ -790,6 +790,17 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       border: 1px solid var(--card-border);
       border-radius: var(--radius-sm);
       background: #F9F9FB;
+      cursor: pointer;
+      user-select: none;
+      transition: border-color 0.15s, background-color 0.15s;
+    }
+    .fleet-node-item:hover {
+      border-color: var(--accent);
+      background: #F4F6FC;
+    }
+    .fleet-node-item.selected {
+      border-color: var(--accent);
+      background: rgba(0, 102, 204, 0.05);
     }
     .sync-report-card {
       background: #F9F9FB;
@@ -797,6 +808,39 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       border-radius: var(--radius-sm);
       padding: 12px 14px;
       margin-bottom: 12px;
+    }
+    .sync-diff-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 4px;
+      border-bottom: 1px solid #F0F0F2;
+    }
+    .sync-diff-row:last-child {
+      border-bottom: none;
+    }
+    .sync-diff-row:hover {
+      background: #F8F9FA;
+    }
+    .diff-badge {
+      display: inline-flex;
+      align-items: center;
+      font-size: 0.68rem;
+      padding: 1px 6px;
+      border-radius: 4px;
+      font-weight: 600;
+    }
+    .diff-badge.missing {
+      background: #FEE2E2;
+      color: #DC2626;
+    }
+    .diff-badge.mismatch {
+      background: #FEF3C7;
+      color: #D97706;
+    }
+    .diff-badge.ok {
+      background: #D1FAE5;
+      color: #059669;
     }
     .mini-dot.probing { background: #D2D2D7; opacity: 0.6; }
     .ratio-badge.probing { background: rgba(0, 0, 0, 0.05); color: var(--ink-secondary); }
@@ -1086,9 +1130,30 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
         <button class="icon-btn" onclick="closeClusterSyncModal()">✕</button>
       </div>
 
-      <!-- Fleet Nodes Strip -->
-      <div class="fleet-nodes-strip" id="syncFleetNodes">
-        <div style="text-align: center; color: var(--ink-secondary); font-size: 0.8rem; padding: 8px;">Loading fleet nodes...</div>
+      <!-- Target Follower Nodes Selection -->
+      <div style="margin-bottom: 12px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 6px;">
+          <label style="font-size: 0.78rem; font-weight: 600; color: var(--ink-secondary);">Target Nodes (Selectable Replicas):</label>
+          <span style="font-size:0.72rem; color:var(--ink-tertiary);">Click node to toggle</span>
+        </div>
+        <div class="fleet-nodes-strip" id="syncFleetNodes">
+          <div style="text-align: center; color: var(--ink-secondary); font-size: 0.8rem; padding: 8px;">Loading fleet nodes...</div>
+        </div>
+      </div>
+
+      <!-- Target Scope Selector -->
+      <div style="margin-bottom: 12px;">
+        <label style="font-size: 0.78rem; font-weight: 600; color: var(--ink-secondary); margin-bottom: 6px; display: block;">Replication Scope:</label>
+        <div style="display: flex; gap: 14px; font-size: 0.82rem; flex-wrap: wrap;">
+          <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+            <input type="radio" name="syncScope" value="all" checked onchange="onSyncScopeChanged()">
+            <span>Entire Storage (Root /)</span>
+          </label>
+          <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+            <input type="radio" name="syncScope" value="current" onchange="onSyncScopeChanged()">
+            <span id="syncCurrentFolderLabel">Current Folder</span>
+          </label>
+        </div>
       </div>
 
       <!-- Sync Status & Last Report Box -->
@@ -1102,26 +1167,40 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
         </div>
       </div>
 
-      <!-- Target Scope Selector -->
-      <div style="margin: 14px 0 16px 0;">
-        <label style="font-size: 0.78rem; font-weight: 600; color: var(--ink-secondary); margin-bottom: 6px; display: block;">Replication Scope:</label>
-        <div style="display: flex; gap: 14px; font-size: 0.82rem;">
-          <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
-            <input type="radio" name="syncScope" value="all" checked>
-            <span>Entire Storage (Root Fleet)</span>
-          </label>
-          <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
-            <input type="radio" name="syncScope" value="current">
-            <span id="syncCurrentFolderLabel">Current Folder</span>
-          </label>
+      <!-- Interactive Differences Panel (Checklist) -->
+      <div id="syncDiffPanel" style="display: none; margin-bottom: 14px; border: 1px solid var(--card-border); border-radius: var(--radius-sm); padding: 10px; background: #FFFFFF;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+          <span style="font-weight: 600; font-size: 0.82rem; color: var(--ink);">Detected Differences (<span id="syncDiffCount">0</span>)</span>
+          <div style="display: flex; gap: 10px; font-size: 0.78rem;">
+            <a href="javascript:void(0)" onclick="selectAllDiffs(true)" style="color:var(--accent); text-decoration:none;">Select All</a>
+            <a href="javascript:void(0)" onclick="selectAllDiffs(false)" style="color:var(--ink-secondary); text-decoration:none;">Deselect All</a>
+          </div>
         </div>
+        <div id="syncDiffList" style="max-height: 160px; overflow-y: auto; font-size: 0.76rem; font-family: var(--font-mono);"></div>
+      </div>
+
+      <!-- Live Replication Progress Bar -->
+      <div id="syncLiveProgressContainer" style="display: none; margin-bottom: 14px;">
+        <div style="display: flex; justify-content: space-between; font-size: 0.78rem; margin-bottom: 4px; font-family: var(--font-mono);">
+          <span id="syncLiveStatusText" style="color: var(--ink); font-weight: 600;">Replicating...</span>
+          <span id="syncLivePercentText" style="color: var(--accent); font-weight: 600;">0%</span>
+        </div>
+        <div style="width: 100%; height: 8px; background: #E5E5EA; border-radius: 4px; overflow: hidden;">
+          <div id="syncLiveProgressBar" style="width: 0%; height: 100%; background: var(--accent); transition: width 0.25s ease;"></div>
+        </div>
+        <div id="syncLiveSubText" style="font-size: 0.72rem; color: var(--ink-secondary); margin-top: 4px; font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"></div>
       </div>
 
       <!-- Action Buttons -->
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 18px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 14px;">
+        <button class="btn" id="btnCancelSync" onclick="cancelRunningSync()" style="display: none; color: var(--danger); border-color: rgba(255, 59, 48, 0.25);">Cancel Sync</button>
         <span id="syncProgressTimer" style="font-family: var(--font-mono); font-size: 0.78rem; color: var(--ink-secondary);"></span>
-        <div style="display: flex; gap: 8px;">
+        <div style="display: flex; gap: 8px; margin-left: auto;">
           <button class="btn" onclick="closeClusterSyncModal()">Close</button>
+          <button class="btn" id="btnScanDiff" onclick="scanSyncDiff()" title="Scan and preview mismatched files without altering remote storage">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+            <span>Scan Differences</span>
+          </button>
           <button class="btn btn-primary" id="btnRunSync" onclick="runClusterSyncFromModal()">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
             <span id="btnRunSyncText">Run Sync Now</span>
@@ -2693,6 +2772,33 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
 
     let syncIntervalTimer = null;
     let syncStartTime = 0;
+    let selectedSyncNodes = new Set();
+    let cachedDiffList = [];
+
+    function onSyncScopeChanged() {
+      const panel = document.getElementById('syncDiffPanel');
+      if (panel) panel.style.display = 'none';
+      cachedDiffList = [];
+      const runBtnText = document.getElementById('btnRunSyncText');
+      if (runBtnText) runBtnText.textContent = 'Run Sync Now';
+    }
+
+    function toggleNodeSelect(nodeId) {
+      if (selectedSyncNodes.has(nodeId)) {
+        selectedSyncNodes.delete(nodeId);
+      } else {
+        selectedSyncNodes.add(nodeId);
+      }
+      document.querySelectorAll('.fleet-node-item').forEach(el => {
+        const id = el.getAttribute('data-node-id');
+        if (id && selectedSyncNodes.has(id)) {
+          el.classList.add('selected');
+        } else if (id) {
+          el.classList.remove('selected');
+        }
+      });
+      refreshSyncStatus();
+    }
 
     async function openClusterSyncModal() {
       const folderLabel = document.getElementById('syncCurrentFolderLabel');
@@ -2700,6 +2806,13 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
         folderLabel.textContent = `Current Folder (${currentPath ? '/' + currentPath : '/ (root)'})`;
       }
       document.getElementById('syncProgressTimer').textContent = '';
+      const diffPanel = document.getElementById('syncDiffPanel');
+      if (diffPanel) diffPanel.style.display = 'none';
+      const liveContainer = document.getElementById('syncLiveProgressContainer');
+      if (liveContainer) liveContainer.style.display = 'none';
+      const cancelBtn = document.getElementById('btnCancelSync');
+      if (cancelBtn) cancelBtn.style.display = 'none';
+
       document.getElementById('clusterSyncModal').style.display = 'flex';
       await refreshSyncStatus();
     }
@@ -2721,14 +2834,17 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
         // Render nodes
         const nodesContainer = document.getElementById('syncFleetNodes');
         if (nodesContainer && data.nodes) {
+          if (selectedSyncNodes.size === 0) {
+            data.nodes.filter(n => !n.is_local).forEach(n => selectedSyncNodes.add(n.id));
+          }
           nodesContainer.innerHTML = data.nodes.map(n => `
-            <div class="fleet-node-item">
+            <div class="fleet-node-item ${selectedSyncNodes.has(n.id) ? 'selected' : ''}" data-node-id="${escapeHtml(n.id)}" onclick="${n.is_local ? '' : `toggleNodeSelect('${n.id}')`}">
               <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px;">
-                <span style="font-weight: 600; color: var(--ink);">${escapeHtml(n.name)}</span>
+                <span style="font-weight: 600; font-size: 0.82rem; color: var(--ink);">${escapeHtml(n.name)}</span>
                 <span class="status-dot ${n.healthy ? '' : 'disconnected'}"></span>
               </div>
               <div style="color: var(--ink-secondary); font-size: 0.72rem; font-family: var(--font-mono);">
-                ${n.is_local ? 'Main (Control)' : `RTT: ${n.rtt_ms !== null ? n.rtt_ms + 'ms' : 'offline'}`}
+                ${n.is_local ? 'Main (Leader)' : `${selectedSyncNodes.has(n.id) ? '✓ Target' : '○ Excluded'} · ${n.rtt_ms !== null ? n.rtt_ms + 'ms' : 'offline'}`}
               </div>
             </div>
           `).join('');
@@ -2739,20 +2855,33 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
         const report = document.getElementById('syncReportContent');
         const runBtn = document.getElementById('btnRunSync');
         const runBtnText = document.getElementById('btnRunSyncText');
+        const cancelBtn = document.getElementById('btnCancelSync');
+        const liveContainer = document.getElementById('syncLiveProgressContainer');
 
         if (data.is_syncing) {
           if (badge) {
             badge.className = 'ratio-badge partial';
             badge.textContent = 'Syncing...';
           }
-          if (report) {
-            report.innerHTML = '<div style="color: var(--accent);">⚡ Fleet replication currently in progress across remote nodes...</div>';
-          }
+          if (cancelBtn) cancelBtn.style.display = 'inline-flex';
           if (runBtn) runBtn.disabled = true;
-          if (runBtnText) runBtnText.textContent = 'Syncing...';
+          if (runBtnText) runBtnText.textContent = 'Replicating...';
+
+          if (liveContainer && data.progress) {
+            liveContainer.style.display = 'block';
+            const p = data.progress;
+            document.getElementById('syncLiveProgressBar').style.width = `${Math.min(100, Math.max(0, p.percent || 0))}%`;
+            document.getElementById('syncLivePercentText').textContent = `${(p.percent || 0).toFixed(1)}%`;
+            document.getElementById('syncLiveStatusText').textContent = `Replicating ${p.synced_count} of ${p.total_to_sync}...`;
+            document.getElementById('syncLiveSubText').textContent = p.current_file ? `${p.current_file} -> [${p.current_node}]` : '';
+          }
         } else {
+          if (cancelBtn) cancelBtn.style.display = 'none';
           if (runBtn) runBtn.disabled = false;
-          if (runBtnText) runBtnText.textContent = 'Run Sync Now';
+          if (runBtnText && !syncIntervalTimer) {
+            runBtnText.textContent = cachedDiffList.length > 0 ? `Sync Selected (${cachedDiffList.length})` : 'Run Sync Now';
+          }
+          if (liveContainer && !syncIntervalTimer) liveContainer.style.display = 'none';
 
           const last = data.last_sync;
           if (last) {
@@ -2803,32 +2932,141 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       }
     }
 
+    async function scanSyncDiff() {
+      const scopeRadio = document.querySelector('input[name="syncScope"]:checked');
+      const isCurrentFolder = scopeRadio && scopeRadio.value === 'current';
+      const prefix = isCurrentFolder ? currentPath : '';
+      const targetNodes = Array.from(selectedSyncNodes);
+
+      const btn = document.getElementById('btnScanDiff');
+      if (btn) btn.disabled = true;
+      showToast('Scanning fleet differences...');
+
+      try {
+        const payload = {
+          prefix,
+          target_nodes: targetNodes.length > 0 ? targetNodes : undefined,
+        };
+        const res = await api('/api/cluster/sync-diff', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+
+        const diffPanel = document.getElementById('syncDiffPanel');
+        const diffList = document.getElementById('syncDiffList');
+        const countSpan = document.getElementById('syncDiffCount');
+        const runBtnText = document.getElementById('btnRunSyncText');
+
+        cachedDiffList = data.differences || [];
+        countSpan.textContent = cachedDiffList.length;
+
+        if (cachedDiffList.length === 0) {
+          diffPanel.style.display = 'block';
+          diffList.innerHTML = `<div style="padding: 12px; text-align: center; color: var(--success); font-weight: 500;">✓ All ${data.total_scanned} files are fully synchronized across selected nodes!</div>`;
+          showToast('Fleet is fully in sync!');
+          if (runBtnText) runBtnText.textContent = 'Run Sync Now';
+        } else {
+          diffPanel.style.display = 'block';
+          diffList.innerHTML = cachedDiffList.map((d, idx) => {
+            const badges = [
+              ...d.missing_on.map(n => `<span class="diff-badge missing">${n}: Missing</span>`),
+              ...d.mismatch_on.map(n => `<span class="diff-badge mismatch">${n}: Mismatch</span>`),
+              ...d.in_sync_on.map(n => `<span class="diff-badge ok">${n}: OK</span>`),
+            ].join(' ');
+            return `
+              <div class="sync-diff-row">
+                <input type="checkbox" class="diff-file-cb" data-path="${escapeHtml(d.path)}" checked id="diff-cb-${idx}">
+                <label for="diff-cb-${idx}" style="cursor:pointer; display:flex; justify-content:space-between; align-items:center; width:100%; min-width:0;">
+                  <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; margin-right:8px;" title="${escapeHtml(d.path)}">${escapeHtml(d.path)}</span>
+                  <div style="display:flex; align-items:center; gap:6px; flex-shrink:0;">
+                    <span style="color:var(--ink-secondary); font-size:0.7rem;">${formatBytes(d.size)}</span>
+                    ${badges}
+                  </div>
+                </label>
+              </div>
+            `;
+          }).join('');
+          if (runBtnText) runBtnText.textContent = `Sync Selected (${cachedDiffList.length})`;
+          showToast(`Found ${cachedDiffList.length} files needing synchronization`);
+        }
+      } catch (e) {
+        showToast('Scan diff failed: ' + e);
+      } finally {
+        if (btn) btn.disabled = false;
+      }
+    }
+
+    function selectAllDiffs(select) {
+      document.querySelectorAll('.diff-file-cb').forEach(cb => cb.checked = select);
+      const selectedCount = document.querySelectorAll('.diff-file-cb:checked').length;
+      const runBtnText = document.getElementById('btnRunSyncText');
+      if (runBtnText) runBtnText.textContent = selectedCount > 0 ? `Sync Selected (${selectedCount})` : 'Run Sync Now';
+    }
+
+    async function cancelRunningSync() {
+      const cancelBtn = document.getElementById('btnCancelSync');
+      if (cancelBtn) cancelBtn.disabled = true;
+      showToast('Aborting fleet sync...');
+      try {
+        const res = await api('/api/cluster/sync/cancel', { method: 'POST' });
+        if (res.ok) {
+          showToast('Sync cancelled gracefully');
+        }
+      } catch (e) {
+        showToast('Cancel error: ' + e);
+      } finally {
+        if (cancelBtn) cancelBtn.disabled = false;
+      }
+    }
+
     async function runClusterSyncFromModal() {
       const scopeRadio = document.querySelector('input[name="syncScope"]:checked');
       const isCurrentFolder = scopeRadio && scopeRadio.value === 'current';
       const prefix = isCurrentFolder ? currentPath : '';
+      const targetNodes = Array.from(selectedSyncNodes);
+
+      const checkedFiles = Array.from(document.querySelectorAll('.diff-file-cb:checked')).map(cb => cb.getAttribute('data-path'));
+      const hasSpecificFiles = document.getElementById('syncDiffPanel') && document.getElementById('syncDiffPanel').style.display !== 'none' && checkedFiles.length > 0;
 
       const runBtn = document.getElementById('btnRunSync');
       const runBtnText = document.getElementById('btnRunSyncText');
-      const timerSpan = document.getElementById('syncProgressTimer');
+      const cancelBtn = document.getElementById('btnCancelSync');
+      const liveContainer = document.getElementById('syncLiveProgressContainer');
 
       if (runBtn) runBtn.disabled = true;
-      if (runBtnText) runBtnText.textContent = 'Syncing Fleet...';
+      if (runBtnText) runBtnText.textContent = 'Syncing...';
+      if (cancelBtn) cancelBtn.style.display = 'inline-flex';
+      if (liveContainer) liveContainer.style.display = 'block';
 
       syncStartTime = Date.now();
-      if (timerSpan) timerSpan.textContent = 'Replicating: 0.0s';
-      syncIntervalTimer = setInterval(() => {
-        const elapsed = ((Date.now() - syncStartTime) / 1000).toFixed(1);
-        if (timerSpan) timerSpan.textContent = `Replicating: ${elapsed}s...`;
-      }, 200);
+      syncIntervalTimer = setInterval(async () => {
+        await refreshSyncStatus();
+      }, 400);
+
+      const payload = {
+        prefix: hasSpecificFiles ? undefined : prefix,
+        paths: hasSpecificFiles ? checkedFiles : undefined,
+        target_nodes: targetNodes.length > 0 ? targetNodes : undefined,
+        concurrency: 3,
+      };
 
       try {
-        showToast(`Starting cluster sync (${prefix ? '/' + prefix : 'entire storage'})...`);
-        const res = await api(`/api/cluster/sync?prefix=${encodeURIComponent(prefix)}`, { method: 'POST' });
+        showToast(`Starting fleet sync (${hasSpecificFiles ? checkedFiles.length + ' selected files' : (prefix ? '/' + prefix : 'entire storage')})...`);
+        const res = await api('/api/cluster/sync', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
         if (res.ok) {
           const data = await res.json();
           const synced = data.total_synced !== undefined ? data.total_synced : (data.node_results || []).reduce((a, n) => a + (n.synced || 0), 0);
           showToast(`Sync finished: ${synced} files updated (${data.duration_ms}ms)`);
+          const diffPanel = document.getElementById('syncDiffPanel');
+          if (diffPanel) diffPanel.style.display = 'none';
+          cachedDiffList = [];
           await refreshSyncStatus();
           loadDirectory(currentPath, false);
           loadTopology();
@@ -2842,9 +3080,10 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
           clearInterval(syncIntervalTimer);
           syncIntervalTimer = null;
         }
-        if (timerSpan) timerSpan.textContent = '';
         if (runBtn) runBtn.disabled = false;
         if (runBtnText) runBtnText.textContent = 'Run Sync Now';
+        if (cancelBtn) cancelBtn.style.display = 'none';
+        if (liveContainer) liveContainer.style.display = 'none';
       }
     }
 
