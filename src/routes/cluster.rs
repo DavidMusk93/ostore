@@ -47,9 +47,35 @@ pub async fn get_nodes(State(st): State<AppState>) -> Result<Json<Value>, ApiErr
     }
 }
 
+fn deserialize_bool_flexible<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum BoolOrString {
+        Bool(bool),
+        Number(i64),
+        String(String),
+    }
+
+    let opt: Option<BoolOrString> = Option::deserialize(deserializer)?;
+    Ok(match opt {
+        Some(BoolOrString::Bool(b)) => Some(b),
+        Some(BoolOrString::Number(n)) => Some(n != 0),
+        Some(BoolOrString::String(s)) => match s.to_ascii_lowercase().as_str() {
+            "true" | "1" | "yes" | "on" => Some(true),
+            "false" | "0" | "no" | "off" => Some(false),
+            _ => None,
+        },
+        None => None,
+    })
+}
+
 #[derive(Deserialize)]
 pub struct FileStatusQuery {
     pub path: String,
+    #[serde(default, deserialize_with = "deserialize_bool_flexible")]
     pub verify_hash: Option<bool>,
 }
 

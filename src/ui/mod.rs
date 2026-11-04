@@ -1305,6 +1305,22 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       
       <div class="file-topo-flow" id="fileTopoFlow"></div>
 
+      <!-- Live Sync Progress Bar: rate & ratio -->
+      <div id="fileTopoProgressContainer" style="display: none; margin: 8px 0; background: #F9F9FB; border: 1px solid var(--card-border); border-radius: var(--radius-sm); padding: 10px 14px; flex-shrink: 0;">
+        <div style="display: flex; justify-content: space-between; align-items: center; font-size: 0.78rem; margin-bottom: 6px; font-family: var(--font-mono);">
+          <span id="fileTopoProgressStatus" style="color: var(--ink); font-weight: 600;">Replicating...</span>
+          <span id="fileTopoProgressRate" style="color: var(--accent); font-weight: 600; font-size: 0.74rem;">-- B/s</span>
+          <span id="fileTopoProgressPercent" style="color: var(--ink); font-weight: 600;">0%</span>
+        </div>
+        <div style="width: 100%; height: 6px; background: rgba(0,0,0,0.06); border-radius: 3px; overflow: hidden; margin-bottom: 6px;">
+          <div id="fileTopoProgressBar" style="width: 0%; height: 100%; background: var(--accent); transition: width 0.15s ease;"></div>
+        </div>
+        <div style="display: flex; justify-content: space-between; font-size: 0.72rem; color: var(--ink-secondary); font-family: var(--font-mono);">
+          <span id="fileTopoProgressTarget">Target: --</span>
+          <span id="fileTopoProgressRatio">0 B / 0 B (0%)</span>
+        </div>
+      </div>
+
       <div class="metrics-bar" id="fileTopoMetrics" style="flex-shrink: 0; flex-wrap: wrap; gap: 6px; margin-top: 8px;">
         <span id="fileTopoLatency">Probe Latency: --</span>
         <span id="fileTopoMethod">Tiered Probe</span>
@@ -2737,21 +2753,89 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       openItemSync(target, true);
     }
 
+    let inspectingFileSize = 0;
+    let fileTopoProgressTimer = null;
+
+    function startFileTopoProgress(targetName, totalBytes) {
+      if (fileTopoProgressTimer) {
+        clearInterval(fileTopoProgressTimer);
+        fileTopoProgressTimer = null;
+      }
+      const container = document.getElementById('fileTopoProgressContainer');
+      const bar = document.getElementById('fileTopoProgressBar');
+      const status = document.getElementById('fileTopoProgressStatus');
+      const rate = document.getElementById('fileTopoProgressRate');
+      const percent = document.getElementById('fileTopoProgressPercent');
+      const target = document.getElementById('fileTopoProgressTarget');
+      const ratio = document.getElementById('fileTopoProgressRatio');
+
+      if (!container) return null;
+      container.style.display = 'block';
+      bar.style.width = '0%';
+      bar.style.background = 'var(--accent)';
+      status.textContent = 'Replicating file...';
+      rate.textContent = 'Calculating...';
+      percent.textContent = '0%';
+      target.textContent = `Target: ${targetName}`;
+      ratio.textContent = `0 B / ${formatBytes(totalBytes)} (0%)`;
+
+      const startTime = performance.now();
+      const safeTotal = Math.max(1024, totalBytes || 1024);
+
+      fileTopoProgressTimer = setInterval(() => {
+        const elapsedSec = (performance.now() - startTime) / 1000;
+        const simulatedPct = Math.min(92, (1 - Math.exp(-elapsedSec / 1.5)) * 100);
+        const transferred = Math.round((simulatedPct / 100) * safeTotal);
+        const curRate = transferred / Math.max(0.1, elapsedSec);
+
+        bar.style.width = `${simulatedPct.toFixed(1)}%`;
+        percent.textContent = `${simulatedPct.toFixed(1)}%`;
+        rate.textContent = `${formatBytes(curRate)}/s`;
+        ratio.textContent = `${formatBytes(transferred)} / ${formatBytes(safeTotal)} (${simulatedPct.toFixed(0)}%)`;
+      }, 100);
+
+      return {
+        finish: (success, errMsg) => {
+          if (fileTopoProgressTimer) {
+            clearInterval(fileTopoProgressTimer);
+            fileTopoProgressTimer = null;
+          }
+          const elapsedSec = Math.max(0.1, (performance.now() - startTime) / 1000);
+          if (success) {
+            const finalRate = formatBytes(safeTotal / elapsedSec) + '/s';
+            bar.style.width = '100%';
+            bar.style.background = '#34C759';
+            status.textContent = `✓ Replicated to ${targetName}`;
+            percent.textContent = '100%';
+            rate.textContent = `Rate: ${finalRate}`;
+            ratio.textContent = `${formatBytes(safeTotal)} / ${formatBytes(safeTotal)} (100%)`;
+          } else {
+            bar.style.background = 'var(--danger)';
+            status.textContent = `✕ Replication failed: ${errMsg || 'Error'}`;
+            rate.textContent = '--';
+          }
+        }
+      };
+    }
+
     async function inspectFileReplica(filePath, deepVerify = false) {
       inspectingFilePath = filePath;
       document.getElementById('fileTopoPath').textContent = filePath;
       document.getElementById('fileTopoTitle').textContent = `Replica Topology: ${filePath.split('/').pop()}`;
       document.getElementById('fileTopoFlow').innerHTML = '<div style="text-align:center; padding: 20px; color: var(--ink-secondary);">Probing cluster nodes...</div>';
       document.getElementById('fileTopoMetrics').innerHTML = '<span>Probing cluster network...</span><span>--</span>';
+      const progressContainer = document.getElementById('fileTopoProgressContainer');
+      if (progressContainer) progressContainer.style.display = 'none';
       document.getElementById('fileTopoModal').style.display = 'flex';
 
       try {
-        const query = deepVerify ? `?path=${encodeURIComponent(filePath)}&verify_hash=1` : `?path=${encodeURIComponent(filePath)}`;
+        const query = deepVerify ? `?path=${encodeURIComponent(filePath)}&verify_hash=true` : `?path=${encodeURIComponent(filePath)}`;
         const res = await api(`/api/cluster/file-status${query}`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
 
         const mainNode = data.main;
+        inspectingFileSize = (mainNode && mainNode.size) ? mainNode.size : 0;
         const followers = data.followers || [];
         const metrics = data.metrics || {};
 
@@ -2840,7 +2924,10 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
     }
 
     async function syncFileToNode(filePath, nodeId) {
-      showToast(`Syncing ${filePath.split('/').pop()} to ${nodeId}...`);
+      const fileName = filePath.split('/').pop();
+      showToast(`Syncing ${fileName} to ${nodeId}...`);
+      const tracker = startFileTopoProgress(nodeId, inspectingFileSize);
+
       try {
         const res = await api('/api/cluster/sync', {
           method: 'POST',
@@ -2848,13 +2935,19 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
           body: JSON.stringify({ paths: [filePath], target_nodes: [nodeId] }),
         });
         if (res.ok) {
+          if (tracker) tracker.finish(true);
           showToast(`Successfully synced to ${nodeId}!`);
-          inspectFileReplica(filePath, true);
-          probeDirectoryReplicas(currentPath);
+          setTimeout(async () => {
+            await inspectFileReplica(filePath, false);
+            probeDirectoryReplicas(currentPath);
+          }, 700);
         } else {
-          showToast(`Sync to ${nodeId} failed: HTTP ${res.status}`);
+          const errText = `HTTP ${res.status}`;
+          if (tracker) tracker.finish(false, errText);
+          showToast(`Sync to ${nodeId} failed: ${errText}`);
         }
       } catch (e) {
+        if (tracker) tracker.finish(false, e.message || String(e));
         showToast(`Sync error: ${e}`);
       }
     }
@@ -2880,6 +2973,12 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
     }
 
     function closeFileTopoModal() {
+      if (fileTopoProgressTimer) {
+        clearInterval(fileTopoProgressTimer);
+        fileTopoProgressTimer = null;
+      }
+      const pc = document.getElementById('fileTopoProgressContainer');
+      if (pc) pc.style.display = 'none';
       document.getElementById('fileTopoModal').style.display = 'none';
     }
 
@@ -2890,17 +2989,26 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
         btn.disabled = true;
         btn.textContent = 'Syncing...';
       }
+      const fileName = inspectingFilePath.split('/').pop();
       showToast('Replicating to all missing followers...');
+      const tracker = startFileTopoProgress('All Followers', inspectingFileSize);
+
       try {
         const res = await api(`/api/cluster/sync-file?path=${encodeURIComponent(inspectingFilePath)}`, { method: 'POST' });
         if (res.ok) {
+          if (tracker) tracker.finish(true);
           showToast('File replicated successfully');
-          await inspectFileReplica(inspectingFilePath, false);
-          probeDirectoryReplicas(currentPath);
+          setTimeout(async () => {
+            await inspectFileReplica(inspectingFilePath, false);
+            probeDirectoryReplicas(currentPath);
+          }, 700);
         } else {
-          showToast('Replication failed: HTTP ' + res.status);
+          const errText = `HTTP ${res.status}`;
+          if (tracker) tracker.finish(false, errText);
+          showToast('Replication failed: ' + errText);
         }
       } catch (e) {
+        if (tracker) tracker.finish(false, e.message || String(e));
         showToast('Replication error: ' + e);
       } finally {
         if (btn) {

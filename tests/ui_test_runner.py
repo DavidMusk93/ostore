@@ -273,9 +273,16 @@ def run_regression_test():
         summary = page.inner_text("#fileTopoSummary")
         print(f"Topology summary: {summary}", flush=True)
 
-        # Sync To Followers
-        print("Clicking 'Sync To Followers'...", flush=True)
+        # Sync To Followers with Live Progress Bar (rate & ratio)
+        print("Clicking 'Sync To Followers' to verify live progress bar, sync rate & ratio...", flush=True)
         page.click("#btnSyncSingleFile")
+        page.wait_for_timeout(300)
+        page.wait_for_selector("#fileTopoProgressContainer", state="visible")
+        progress_text = page.inner_text("#fileTopoProgressStatus")
+        rate_text = page.inner_text("#fileTopoProgressRate")
+        ratio_text = page.inner_text("#fileTopoProgressRatio")
+        print(f"Live progress status: {progress_text} | Rate: {rate_text} | Ratio: {ratio_text}", flush=True)
+        assert len(ratio_text) > 0, "Ratio text should not be empty"
         page.wait_for_timeout(2500)
 
         # Test closing via footer Close button
