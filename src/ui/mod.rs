@@ -732,13 +732,15 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
     .backdrop {
       position: fixed;
       inset: 0;
-      background: rgba(0, 0, 0, 0.35);
+      background: rgba(0, 0, 0, 0.4);
       backdrop-filter: blur(8px);
       z-index: 3000;
       display: none;
       align-items: center;
       justify-content: center;
       padding: 16px;
+      overflow-y: auto;
+      box-sizing: border-box;
     }
 
     .dialog-box {
@@ -748,13 +750,32 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       padding: 24px;
       width: 100%;
       max-width: 480px;
+      max-height: calc(100vh - 32px);
       box-shadow: var(--shadow-md);
+      display: flex;
+      flex-direction: column;
+      box-sizing: border-box;
+      margin: auto;
+      overflow: hidden;
     }
 
     .dialog-box h3 { font-size: 1.05rem; font-weight: 600; margin-bottom: 12px; }
 
-    .file-topo-box { max-width: 640px; }
-    .file-topo-flow { display: flex; flex-direction: column; gap: 10px; margin: 16px 0; }
+    .file-topo-box {
+      max-width: 640px;
+      width: 100%;
+      max-height: min(90vh, 760px);
+    }
+    .file-topo-flow {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin: 14px 0;
+      overflow-y: auto;
+      flex: 1;
+      min-height: 0;
+      padding-right: 4px;
+    }
     .file-node-row {
       display: flex;
       justify-content: space-between;
@@ -763,6 +784,8 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       border-radius: var(--radius-sm);
       border: 1px solid var(--card-border);
       background: #F9F9FB;
+      gap: 12px;
+      flex-wrap: wrap;
     }
 
     .metrics-bar {
@@ -1094,7 +1117,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
   </div>
 
   <!-- Authenticator Setup Modal -->
-  <div class="backdrop" id="totpSetupModal">
+  <div class="backdrop" id="totpSetupModal" onclick="if(event.target === this) closeTotpSetupModal()">
     <div class="dialog-box">
       <div style="display: flex; justify-content: space-between; align-items: center;">
         <h3>Set Up Authenticator</h3>
@@ -1116,13 +1139,14 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       </div>
 
       <div style="display: flex; justify-content: flex-end; gap: 8px;">
+        <button class="btn" onclick="closeTotpSetupModal()">Close</button>
         <button class="btn btn-primary" onclick="copyTotpSecret()">Copy Secret</button>
       </div>
     </div>
   </div>
 
   <!-- Token Modal (Fallback) -->
-  <div class="backdrop" id="tokenModal">
+  <div class="backdrop" id="tokenModal" onclick="if(event.target === this) closeTokenModal()">
     <div class="dialog-box">
       <h3>Developer Token</h3>
       <p style="font-size: 0.82rem; color: var(--ink-secondary); margin-bottom: 12px;">Manual OSTORE_TOKEN override:</p>
@@ -1135,13 +1159,13 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
   </div>
 
   <!-- Folder Details Modal -->
-  <div class="backdrop" id="folderDetailModal">
+  <div class="backdrop" id="folderDetailModal" onclick="if(event.target === this) closeFolderDetailModal()">
     <div class="dialog-box">
       <div style="display: flex; justify-content: space-between; align-items: center;">
         <h3 id="folderDetailTitle">Folder Details</h3>
         <button class="icon-btn" onclick="closeFolderDetailModal()">✕</button>
       </div>
-      <p style="font-size: 0.78rem; color: var(--ink-secondary); font-family: var(--font-mono); margin-bottom: 16px;" id="folderDetailPath"></p>
+      <p style="font-size: 0.78rem; color: var(--ink-secondary); font-family: var(--font-mono); margin-bottom: 16px; word-break: break-all;" id="folderDetailPath"></p>
 
       <div style="display: flex; flex-direction: column; gap: 10px; background: #F9F9FB; padding: 14px; border-radius: var(--radius-sm); border: 1px solid var(--card-border); font-family: var(--font-mono); font-size: 0.8rem;">
         <div style="display: flex; justify-content: space-between;">
@@ -1164,6 +1188,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
           Download Tar
         </a>
         <div style="display: flex; gap: 8px;">
+          <button class="btn" onclick="closeFolderDetailModal()">Close</button>
           <button class="btn" onclick="renameFolderPrompt()">Rename</button>
           <button class="btn btn-primary" onclick="syncFolderReplicas()">Sync Replicas</button>
         </div>
@@ -1172,9 +1197,9 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
   </div>
 
   <!-- Cluster Fleet Synchronization & Status Modal -->
-  <div class="backdrop" id="clusterSyncModal">
+  <div class="backdrop" id="clusterSyncModal" onclick="if(event.target === this) closeClusterSyncModal()">
     <div class="dialog-box cluster-sync-box">
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-shrink: 0;">
         <div style="display: flex; align-items: center; gap: 8px;">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
           <h3 style="margin: 0; font-size: 1.05rem;">Cluster Fleet Replication</h3>
@@ -1182,74 +1207,76 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
         <button class="icon-btn" onclick="closeClusterSyncModal()">✕</button>
       </div>
 
-      <!-- Target Follower Nodes Selection -->
-      <div style="margin-bottom: 12px;">
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 6px;">
-          <label style="font-size: 0.78rem; font-weight: 600; color: var(--ink-secondary);">Target Nodes (Selectable Replicas):</label>
-          <span style="font-size:0.72rem; color:var(--ink-tertiary);">Click node to toggle</span>
-        </div>
-        <div class="fleet-nodes-strip" id="syncFleetNodes">
-          <div style="text-align: center; color: var(--ink-secondary); font-size: 0.8rem; padding: 8px;">Loading fleet nodes...</div>
-        </div>
-      </div>
-
-      <!-- Target Scope Selector -->
-      <div style="margin-bottom: 12px;">
-        <label style="font-size: 0.78rem; font-weight: 600; color: var(--ink-secondary); margin-bottom: 6px; display: block;">Replication Scope:</label>
-        <div style="display: flex; gap: 14px; font-size: 0.82rem; flex-wrap: wrap; align-items: center;">
-          <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
-            <input type="radio" name="syncScope" value="all" id="syncScopeAll" checked onchange="onSyncScopeChanged()">
-            <span>Entire Storage (Root /)</span>
-          </label>
-          <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
-            <input type="radio" name="syncScope" value="current" id="syncScopeCurrent" onchange="onSyncScopeChanged()">
-            <span id="syncCurrentFolderLabel">Current Folder</span>
-          </label>
-          <label style="display: none; align-items: center; gap: 6px; cursor: pointer;" id="syncItemScopeWrapper">
-            <input type="radio" name="syncScope" value="item" id="syncScopeItem" onchange="onSyncScopeChanged()">
-            <span id="syncItemScopeLabel" style="font-weight: 600; color: var(--accent);">Target Item</span>
-          </label>
-        </div>
-        <div id="syncTargetBadge" style="display: none; margin-top: 6px; font-size: 0.74rem; font-family: var(--font-mono); color: var(--accent); background: rgba(0, 113, 227, 0.08); padding: 4px 8px; border-radius: 4px; word-break: break-all;"></div>
-      </div>
-
-      <!-- Sync Status & Last Report Box -->
-      <div class="sync-report-card" id="syncReportCard">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-          <span style="font-weight: 600; font-size: 0.82rem; color: var(--ink);">Fleet Sync Status</span>
-          <span class="ratio-badge full" id="syncStatusBadge">Ready</span>
-        </div>
-        <div id="syncReportContent" style="font-size: 0.78rem; color: var(--ink-secondary); line-height: 1.5; font-family: var(--font-mono);">
-          Loading replication report...
-        </div>
-      </div>
-
-      <!-- Interactive Differences Panel (Checklist) -->
-      <div id="syncDiffPanel" style="display: none; margin-bottom: 14px; border: 1px solid var(--card-border); border-radius: var(--radius-sm); padding: 10px; background: #FFFFFF;">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-          <span style="font-weight: 600; font-size: 0.82rem; color: var(--ink);">Detected Differences (<span id="syncDiffCount">0</span>)</span>
-          <div style="display: flex; gap: 10px; font-size: 0.78rem;">
-            <a href="javascript:void(0)" onclick="selectAllDiffs(true)" style="color:var(--accent); text-decoration:none;">Select All</a>
-            <a href="javascript:void(0)" onclick="selectAllDiffs(false)" style="color:var(--ink-secondary); text-decoration:none;">Deselect All</a>
+      <div style="overflow-y: auto; flex: 1; min-height: 0; padding-right: 4px;">
+        <!-- Target Follower Nodes Selection -->
+        <div style="margin-bottom: 12px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 6px;">
+            <label style="font-size: 0.78rem; font-weight: 600; color: var(--ink-secondary);">Target Nodes (Selectable Replicas):</label>
+            <span style="font-size:0.72rem; color:var(--ink-tertiary);">Click node to toggle</span>
+          </div>
+          <div class="fleet-nodes-strip" id="syncFleetNodes">
+            <div style="text-align: center; color: var(--ink-secondary); font-size: 0.8rem; padding: 8px;">Loading fleet nodes...</div>
           </div>
         </div>
-        <div id="syncDiffList" style="max-height: 160px; overflow-y: auto; font-size: 0.76rem; font-family: var(--font-mono);"></div>
-      </div>
 
-      <!-- Live Replication Progress Bar -->
-      <div id="syncLiveProgressContainer" style="display: none; margin-bottom: 14px;">
-        <div style="display: flex; justify-content: space-between; font-size: 0.78rem; margin-bottom: 4px; font-family: var(--font-mono);">
-          <span id="syncLiveStatusText" style="color: var(--ink); font-weight: 600;">Replicating...</span>
-          <span id="syncLivePercentText" style="color: var(--accent); font-weight: 600;">0%</span>
+        <!-- Target Scope Selector -->
+        <div style="margin-bottom: 12px;">
+          <label style="font-size: 0.78rem; font-weight: 600; color: var(--ink-secondary); margin-bottom: 6px; display: block;">Replication Scope:</label>
+          <div style="display: flex; gap: 14px; font-size: 0.82rem; flex-wrap: wrap; align-items: center;">
+            <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+              <input type="radio" name="syncScope" value="all" id="syncScopeAll" checked onchange="onSyncScopeChanged()">
+              <span>Entire Storage (Root /)</span>
+            </label>
+            <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+              <input type="radio" name="syncScope" value="current" id="syncScopeCurrent" onchange="onSyncScopeChanged()">
+              <span id="syncCurrentFolderLabel">Current Folder</span>
+            </label>
+            <label style="display: none; align-items: center; gap: 6px; cursor: pointer;" id="syncItemScopeWrapper">
+              <input type="radio" name="syncScope" value="item" id="syncScopeItem" onchange="onSyncScopeChanged()">
+              <span id="syncItemScopeLabel" style="font-weight: 600; color: var(--accent);">Target Item</span>
+            </label>
+          </div>
+          <div id="syncTargetBadge" style="display: none; margin-top: 6px; font-size: 0.74rem; font-family: var(--font-mono); color: var(--accent); background: rgba(0, 113, 227, 0.08); padding: 4px 8px; border-radius: 4px; word-break: break-all;"></div>
         </div>
-        <div style="width: 100%; height: 8px; background: #E5E5EA; border-radius: 4px; overflow: hidden;">
-          <div id="syncLiveProgressBar" style="width: 0%; height: 100%; background: var(--accent); transition: width 0.25s ease;"></div>
+
+        <!-- Sync Status & Last Report Box -->
+        <div class="sync-report-card" id="syncReportCard">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+            <span style="font-weight: 600; font-size: 0.82rem; color: var(--ink);">Fleet Sync Status</span>
+            <span class="ratio-badge full" id="syncStatusBadge">Ready</span>
+          </div>
+          <div id="syncReportContent" style="font-size: 0.78rem; color: var(--ink-secondary); line-height: 1.5; font-family: var(--font-mono);">
+            Loading replication report...
+          </div>
         </div>
-        <div id="syncLiveSubText" style="font-size: 0.72rem; color: var(--ink-secondary); margin-top: 4px; font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"></div>
+
+        <!-- Interactive Differences Panel (Checklist) -->
+        <div id="syncDiffPanel" style="display: none; margin-bottom: 14px; border: 1px solid var(--card-border); border-radius: var(--radius-sm); padding: 10px; background: #FFFFFF;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+            <span style="font-weight: 600; font-size: 0.82rem; color: var(--ink);">Detected Differences (<span id="syncDiffCount">0</span>)</span>
+            <div style="display: flex; gap: 10px; font-size: 0.78rem;">
+              <a href="javascript:void(0)" onclick="selectAllDiffs(true)" style="color:var(--accent); text-decoration:none;">Select All</a>
+              <a href="javascript:void(0)" onclick="selectAllDiffs(false)" style="color:var(--ink-secondary); text-decoration:none;">Deselect All</a>
+            </div>
+          </div>
+          <div id="syncDiffList" style="max-height: 160px; overflow-y: auto; font-size: 0.76rem; font-family: var(--font-mono);"></div>
+        </div>
+
+        <!-- Live Replication Progress Bar -->
+        <div id="syncLiveProgressContainer" style="display: none; margin-bottom: 14px;">
+          <div style="display: flex; justify-content: space-between; font-size: 0.78rem; margin-bottom: 4px; font-family: var(--font-mono);">
+            <span id="syncLiveStatusText" style="color: var(--ink); font-weight: 600;">Replicating...</span>
+            <span id="syncLivePercentText" style="color: var(--accent); font-weight: 600;">0%</span>
+          </div>
+          <div style="width: 100%; height: 8px; background: #E5E5EA; border-radius: 4px; overflow: hidden;">
+            <div id="syncLiveProgressBar" style="width: 0%; height: 100%; background: var(--accent); transition: width 0.25s ease;"></div>
+          </div>
+          <div id="syncLiveSubText" style="font-size: 0.72rem; color: var(--ink-secondary); margin-top: 4px; font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"></div>
+        </div>
       </div>
 
       <!-- Action Buttons -->
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 14px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 14px; flex-shrink: 0;">
         <button class="btn" id="btnCancelSync" onclick="cancelRunningSync()" style="display: none; color: var(--danger); border-color: rgba(255, 59, 48, 0.25);">Cancel Sync</button>
         <span id="syncProgressTimer" style="font-family: var(--font-mono); font-size: 0.78rem; color: var(--ink-secondary);"></span>
         <div style="display: flex; gap: 8px; margin-left: auto;">
@@ -1268,24 +1295,25 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
   </div>
 
   <!-- Per-file Topology Modal -->
-  <div class="backdrop" id="fileTopoModal">
+  <div class="backdrop" id="fileTopoModal" onclick="if(event.target === this) closeFileTopoModal()">
     <div class="dialog-box file-topo-box">
-      <div style="display: flex; justify-content: space-between; align-items: center;">
-        <h3 id="fileTopoTitle">File Replica Topology</h3>
-        <button class="icon-btn" onclick="closeFileTopoModal()">✕</button>
+      <div style="display: flex; justify-content: space-between; align-items: center; flex-shrink: 0; margin-bottom: 6px;">
+        <h3 id="fileTopoTitle" style="margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-right: 8px;">File Replica Topology</h3>
+        <button class="icon-btn" onclick="closeFileTopoModal()" title="Close (Esc)">✕</button>
       </div>
-      <p style="font-size: 0.78rem; color: var(--ink-secondary); font-family: var(--font-mono); margin-bottom: 12px;" id="fileTopoPath"></p>
+      <p style="font-size: 0.78rem; color: var(--ink-secondary); font-family: var(--font-mono); margin: 0 0 10px 0; word-break: break-all; overflow-wrap: anywhere; flex-shrink: 0;" id="fileTopoPath"></p>
       
       <div class="file-topo-flow" id="fileTopoFlow"></div>
 
-      <div class="metrics-bar" id="fileTopoMetrics">
+      <div class="metrics-bar" id="fileTopoMetrics" style="flex-shrink: 0; flex-wrap: wrap; gap: 6px; margin-top: 8px;">
         <span id="fileTopoLatency">Probe Latency: --</span>
         <span id="fileTopoMethod">Tiered Probe</span>
       </div>
 
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 16px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 14px; flex-shrink: 0; gap: 8px; flex-wrap: wrap;">
         <span id="fileTopoSummary" style="font-size: 0.78rem; color: var(--ink-secondary); font-family: var(--font-mono);"></span>
-        <div style="display: flex; gap: 8px;">
+        <div style="display: flex; gap: 8px; align-items: center;">
+          <button class="btn" onclick="closeFileTopoModal()">Close</button>
           <button class="btn" id="btnDeepCheck" onclick="inspectFileReplica(inspectingFilePath, true)">Deep Hash Check</button>
           <button class="btn btn-primary" id="btnSyncSingleFile" onclick="syncCurrentFile()">Sync To Followers</button>
         </div>
@@ -1294,7 +1322,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
   </div>
 
   <!-- Media Preview Modal -->
-  <div class="backdrop" id="mediaModal">
+  <div class="backdrop" id="mediaModal" onclick="if(event.target === this) closeMediaModal()">
     <div class="dialog-box media-box">
       <div class="media-header">
         <div style="display:flex; align-items:center; gap:8px; min-width:0; overflow:hidden;">
@@ -1321,9 +1349,9 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
   </div>
 
   <!-- Google Drive Cloud Storage Modal -->
-  <div class="backdrop" id="gdriveModal">
-    <div class="dialog-box" style="max-width: 520px;">
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
+  <div class="backdrop" id="gdriveModal" onclick="if(event.target === this) closeGDriveModal()">
+    <div class="dialog-box" style="max-width: 520px; max-height: min(90vh, 760px); overflow-y: auto;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; flex-shrink: 0;">
         <div style="display: flex; align-items: center; gap: 8px;">
           <svg width="20" height="20" viewBox="0 0 87.3 78">
             <path d="m6.6 66.85 3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3l13.75-23.8h-27.5c0 1.55.4 3.1 1.2 4.5z" fill="#0066da"/>
@@ -2249,6 +2277,33 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
         syncCurBtn.title = `Sync current folder (/${currentPath || 'root'}) to cluster nodes`;
       }
     }
+
+    function closeTopModal() {
+      const modals = [
+        { id: 'mediaModal', close: typeof closeMediaModal === 'function' ? closeMediaModal : null },
+        { id: 'fileTopoModal', close: typeof closeFileTopoModal === 'function' ? closeFileTopoModal : null },
+        { id: 'clusterSyncModal', close: typeof closeClusterSyncModal === 'function' ? closeClusterSyncModal : null },
+        { id: 'folderDetailModal', close: typeof closeFolderDetailModal === 'function' ? closeFolderDetailModal : null },
+        { id: 'gdriveModal', close: typeof closeGDriveModal === 'function' ? closeGDriveModal : null },
+        { id: 'totpSetupModal', close: typeof closeTotpSetupModal === 'function' ? closeTotpSetupModal : null },
+        { id: 'tokenModal', close: typeof closeTokenModal === 'function' ? closeTokenModal : null },
+      ];
+      for (const m of modals) {
+        if (!m.close) continue;
+        const el = document.getElementById(m.id);
+        if (el && (el.style.display === 'flex' || el.style.display === 'block')) {
+          m.close();
+          return true;
+        }
+      }
+      return false;
+    }
+
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        closeTopModal();
+      }
+    });
 
     window.addEventListener('popstate', (e) => {
       let targetPath = '';

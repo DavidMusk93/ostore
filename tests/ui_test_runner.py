@@ -259,6 +259,13 @@ def run_regression_test():
         page.wait_for_timeout(1500)
         page.wait_for_selector("#fileTopoModal", state="visible")
         
+        # Verify no overflow beyond viewport
+        box = page.locator("#fileTopoModal .file-topo-box").bounding_box()
+        vp = page.viewport_size
+        print(f"Modal bounding box: y={box['y']}, height={box['height']} (Viewport: {vp['height']}h)", flush=True)
+        assert box['y'] >= 0, f"Modal top was pushed off-screen: y={box['y']}"
+        assert box['y'] + box['height'] <= vp['height'] + 10, f"Modal bottom overflowed viewport: {box['y'] + box['height']} > {vp['height']}"
+
         # Deep Hash Check
         print("Clicking 'Deep Hash Check' in File Replica Topology...", flush=True)
         page.click("#btnDeepCheck")
@@ -270,8 +277,32 @@ def run_regression_test():
         print("Clicking 'Sync To Followers'...", flush=True)
         page.click("#btnSyncSingleFile")
         page.wait_for_timeout(2500)
-        page.click('#fileTopoModal button.icon-btn:has-text("✕")')
+
+        # Test closing via footer Close button
+        print("Testing closing File Replica Topology via footer Close button...", flush=True)
+        page.click('#fileTopoModal button:has-text("Close")')
         page.wait_for_timeout(600)
+        assert not page.is_visible("#fileTopoModal"), "File topo modal should be closed by footer button"
+
+        # Re-open and test closing via Escape key
+        print("Re-opening File Replica Topology to test Escape key dismissal...", flush=True)
+        file_badge.click()
+        page.wait_for_timeout(1000)
+        page.wait_for_selector("#fileTopoModal", state="visible")
+        print("Pressing Escape key...", flush=True)
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(600)
+        assert not page.is_visible("#fileTopoModal"), "File topo modal should be closed by Escape key"
+
+        # Re-open and test closing via Backdrop click
+        print("Re-opening File Replica Topology to test Backdrop click dismissal...", flush=True)
+        file_badge.click()
+        page.wait_for_timeout(1000)
+        page.wait_for_selector("#fileTopoModal", state="visible")
+        print("Clicking on backdrop outside dialog box...", flush=True)
+        page.click("#fileTopoModal", position={"x": 10, "y": 10})
+        page.wait_for_timeout(600)
+        assert not page.is_visible("#fileTopoModal"), "File topo modal should be closed by Backdrop click"
 
         # 6b. Click File Name to open Media Preview Modal
         print("Clicking file name to open Media Preview modal...", flush=True)
