@@ -366,8 +366,16 @@ def run_regression_test():
             page.click("#btnScanDiff")
             page.wait_for_timeout(2500)
 
+            # If a prior background sync is active, cancel it cleanly to test batch sync
+            cancel_btn = page.query_selector("#btnCancelSync")
+            if cancel_btn and cancel_btn.is_visible():
+                print("Prior fleet sync was active, cancelling to test batch sync...", flush=True)
+                cancel_btn.click()
+                page.wait_for_timeout(1500)
+
             # Run Sync
             print("Clicking 'Run Sync Now' / 'Sync Selected'...", flush=True)
+            page.wait_for_selector("#btnRunSync:not([disabled])", state="visible", timeout=10000)
             page.click("#btnRunSync")
             page.wait_for_timeout(3500)
             print("Batch replication executed cleanly!", flush=True)
