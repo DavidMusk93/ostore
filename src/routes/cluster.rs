@@ -316,7 +316,7 @@ fn html_message(title: &str, msg: &str, success: bool) -> axum::response::Respon
     <div style="font-size: 40px;">{icon}</div>
     <h2>{title}</h2>
     <p>{msg}</p>
-    <a href="/ostore">返回 ostore 控制台</a>
+    <a href="/ostore">Return to ostore console</a>
   </div>
 </body>
 </html>"#,
@@ -436,15 +436,15 @@ pub async fn gdrive_callback(
 
     if let Some(err) = q.error {
         tracing::warn!(error = %err, "google oauth callback returned error");
-        return html_message("Google 授权失败", &format!("Google 返回错误: {err}"), false);
+        return html_message("Google Authorization Failed", &format!("Google returned error: {err}"), false);
     }
     let Some(code) = q.code else {
         tracing::warn!("google oauth callback missing code");
-        return html_message("授权错误", "缺少 authorization code", false);
+        return html_message("Authorization Error", "Missing authorization code", false);
     };
     let Some(state_key) = q.state else {
         tracing::warn!("google oauth callback missing state");
-        return html_message("授权错误", "缺少 state 参数", false);
+        return html_message("Authorization Error", "Missing state parameter", false);
     };
 
     let pending = {
@@ -453,7 +453,7 @@ pub async fn gdrive_callback(
     };
     let Some((client_id, client_secret, redirect_uri, _)) = pending else {
         tracing::warn!(state = %state_key, "gdrive oauth session expired or unknown state");
-        return html_message("授权超时", "授权会话已过期（或服务曾重启），请返回控制台重新点击授权", false);
+        return html_message("Authorization Timeout", "Authorization session has expired (or the service restarted). Please return to the console and try again.", false);
     };
 
     let params = [
@@ -474,7 +474,7 @@ pub async fn gdrive_callback(
         Ok(r) => r,
         Err(e) => {
             tracing::error!(error = %e, "gdrive token exchange network error");
-            return html_message("Token 交换失败", &format!("网络请求失败: {e}"), false);
+            return html_message("Token Exchange Failed", &format!("Network request failed: {e}"), false);
         }
     };
 
@@ -482,22 +482,22 @@ pub async fn gdrive_callback(
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
         tracing::error!(status = %status, body = %text, "gdrive token exchange failed");
-        return html_message("Token 交换失败", &format!("Google 响应异常 ({status}): {text}"), false);
+        return html_message("Token Exchange Failed", &format!("Google returned error status ({status}): {text}"), false);
     }
 
     let val: serde_json::Value = match resp.json().await {
         Ok(v) => v,
         Err(e) => {
             tracing::error!(error = %e, "gdrive token json decode error");
-            return html_message("Token 解析失败", &format!("无法解析 JSON: {e}"), false);
+            return html_message("Token Parsing Failed", &format!("Failed to parse response JSON: {e}"), false);
         }
     };
 
     let Some(refresh_token) = val.get("refresh_token").and_then(|v| v.as_str()) else {
         tracing::warn!("google oauth did not return refresh_token");
         return html_message(
-            "缺少 Refresh Token",
-            "Google 未返回 refresh_token（可能此前已对本应用授权）。请访问 Google 账号连接管理 (https://myaccount.google.com/connections) 取消对本应用的访问权限后重新授权，或在控制台手动填入已有 Refresh Token。",
+            "Missing Refresh Token",
+            "Google did not return a refresh_token (access may have already been granted previously). Please visit Google Account Permissions (https://myaccount.google.com/connections) to revoke access for this app and re-authorize, or enter your Refresh Token manually in the console.",
             false,
         );
     };
@@ -511,14 +511,14 @@ pub async fn gdrive_callback(
         };
         if let Err(e) = cluster.update_and_persist_gdrive(cfg).await {
             tracing::error!(error = %e, "update_and_persist_gdrive failed");
-            return html_message("保存失败", &format!("保存 Google Drive 配置失败: {e}"), false);
+            return html_message("Save Failed", &format!("Failed to save Google Drive configuration: {e}"), false);
         }
     }
 
     tracing::info!("gdrive oauth successful and cluster updated");
     html_message(
-        "Google Drive 接入成功",
-        "已成功绑定您的 Google 账号，云端存储配额已激活！正在跳转回控制台...",
+        "Google Drive Connected Successfully",
+        "Successfully linked your Google account. Cloud storage quota is now active! Redirecting to console...",
         true,
     )
 }
@@ -554,7 +554,7 @@ pub async fn gdrive_connect(
         .await
         .map_err(|e| {
             tracing::warn!(error = %e, "manual gdrive validation failed");
-            ApiError::bad_request("GDRIVE_AUTH_FAILED", format!("Google Drive 验证失败: {e}"))
+            ApiError::bad_request("GDRIVE_AUTH_FAILED", format!("Google Drive authentication failed: {e}"))
         })?;
 
     cluster.update_and_persist_gdrive(cfg).await.map_err(|e| {

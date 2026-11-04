@@ -1,23 +1,23 @@
-# ClipVault → ostore 备份方案
+# ClipVault → ostore Backup Strategy
 
-> 依据 nmem 中的 ClipVault 决策整理：`per-host trx/`、**`backup/hosts/{hostId}/latest`**、
-> **eventual consistency**、**never whole-db replace**；备份只做 hydrate/repair，**不当同步总线**。
-> ostore 在本机（cc.guohuasun.com）作为 **第三地对象冷备**，不替代 iCloud/GDrive/夸克。
+> Based on ClipVault architecture decisions in nmem: `per-host trx/`, **`backup/hosts/{hostId}/latest`**,
+> **eventual consistency**, **never whole-db replace**; backups are strictly for hydrate/repair, **never as a sync bus**.
+> ostore on this server (cc.guohuasun.com) acts as a **third-site cold object storage tier**, not replacing iCloud/GDrive/Quark.
 
-## 1. 角色划分
+## 1. Role Division
 
-| 层级 | 位置 | 作用 |
+| Layer | Location | Purpose |
 |------|------|------|
-| 主库 | 各 Mac `KEEPSAKE_HOME` | 日常读写 |
-| 同步 | `sync/v1/trx/{hostId}/` + 云传输 | 多机 eventual consistency |
-| 本地灾备 | iCloud / GDrive `cvbak` / 夸克 staging | 单机恢复、blob hydrate |
-| **远程冷备（新增）** | **ostore** 键 `backup/hosts/{hostId}/latest/`（bucket 名 `clipvault`） | 跨机、跨云集中保留；**只镜像，不参与 sync** |
+| Primary Database | Each Mac `KEEPSAKE_HOME` | Daily read/write operations |
+| Sync | `sync/v1/trx/{hostId}/` + cloud transport | Multi-machine eventual consistency |
+| Local Disaster Recovery | iCloud / GDrive `cvbak` / Quark staging | Single-machine recovery, blob hydration |
+| **Remote Cold Backup (New)** | **ostore** key `backup/hosts/{hostId}/latest/` (bucket `clipvault`) | Cross-machine, cross-cloud centralized retention; **mirror only, no sync participation** |
 
-本机 `clipvault-session`（Postgres replica）**不是** Keepsake 文件库，**不能**直接 `pg_dump` 代替 Mac 上的 `backup/latest`。冷备数据源仍是 **Mac 上 ClipFlow 跑完 `POST /api/backup/run` 后的目录树**。
+The local `clipvault-session` (Postgres replica) is **not** the Keepsake file store and **cannot** use `pg_dump` to substitute the Mac's `backup/latest`. The cold backup source is always the **directory tree generated on Mac after ClipFlow runs `POST /api/backup/run`**.
 
-## 2. ostore 侧准备
+## 2. Server-side Setup (ostore)
 
-在 `/etc/ostore.env` 启用 S3 面（与 JSON `/api` 的 `OSTORE_TOKEN` 分离）：
+Enable S3 interface in `/etc/ostore.env` (isolated from JSON `/api`'s `OSTORE_TOKEN`):
 
 ```bash
 OSTORE_S3_ACCESS_KEY=clipvault-backup
@@ -26,30 +26,30 @@ OSTORE_S3_REGION=us-east-1
 OSTORE_S3_BUCKET=clipvault
 ```
 
-建议 **单独根目录**，避免与 xstream 视频网盘混用：
+A **dedicated root directory** is recommended to isolate from media files:
 
 ```bash
-# 可选：专用实例或专用 OSTORE_ROOT
+# Optional: dedicated instance or dedicated OSTORE_ROOT
 OSTORE_ROOT=/srv/ostore-clipvault
 ```
 
-`systemctl restart ostore` 后验证：
+Verify after `systemctl restart ostore`:
 
 ```bash
-python3 scripts/s3_smoke.py http://127.0.0.1:8781   # 需 boto3；或通过 Caddy /ostore 前缀
+python3 scripts/s3_smoke.py http://127.0.0.1:8781   # requires boto3; or via Caddy /ostore prefix
 ```
 
-对外暴露时：Caddy `handle /ostore/*` 反代 + TLS；**仅备份脚本持有 S3 密钥**，不下发到浏览器。
+When exposing externally: Caddy reverse-proxy with TLS via `handle /ostore/*`; **only the backup script holds the S3 credentials**, never exposed to browsers.
 
-## 3. Mac 侧推送（推荐：S3 sync）
+## 3. Mac-side Push (Recommended: S3 sync)
 
-在 **每台** 已配置本地备份的 Mac 上，备份成功后再推送到 ostore：
+On **each** Mac configured with local backups, push to ostore after local backup succeeds:
 
 ```bash
 export AWS_ACCESS_KEY_ID=clipvault-backup
-export AWS_SECRET_ACCESS_KEY=<与 OSTORE_S3_SECRET_KEY 相同>
+export AWS_SECRET_ACCESS_KEY=<same as OSTORE_S3_SECRET_KEY>
 export AWS_DEFAULT_REGION=us-east-1
-export AWS_ENDPOINT_URL=https://cc.guohuasun.com/ostore   # 按实际 Caddy 前缀调整
+export AWS_ENDPOINT_URL=https://cc.guohuasun.com/ostore   # adjust according to Caddy prefix
 
 HOST_ID=$(defaults read com.davidmusk.clipflow hostId 2>/dev/null || hostname -s)
 SRC="$HOME/Library/Application Support/Keepsake/backup/hosts/$HOST_ID/latest"
@@ -59,19 +59,18 @@ aws s3 sync "$SRC" "s3://clipvault/backup/hosts/$HOST_ID/latest/" \
   --no-progress
 ```
 
-说明：
+Notes:
+- S3 keys are relative paths in ostore: `backup/hosts/{hostId}/latest/...` (path-style, `clipvault` is virtual bucket).
+- **`aws s3 sync`** relies on ostore's **ListObjectsV2 + PutObject + DeleteObject + HeadObject**; do not use whole-database destructive rsync to incorrect paths.
+- **Do not** treat ostore as the "latest truth" before sync completes; Mac local storage + iCloud/GDrive remain the primary recovery tier.
 
-- S3 键即 ostore 相对路径：`backup/hosts/{hostId}/latest/...`（path-style，`clipvault` 为虚拟 bucket 名）。
-- 使用 **`aws s3 sync`** 依赖 ostore 的 **ListObjectsV2 + PutObject + DeleteObject + HeadObject**；不要用整库覆盖式 rsync 到错误路径。
-- **不要**在 sync 完成前把 ostore 当作「最新真相」；Mac 本地 + iCloud/GDrive 仍是第一恢复源。
+### Hook into ClipFlow Backup Pipeline
 
-### 挂到 ClipFlow 备份流水线
+Trigger the sync above after `POST /api/backup/run` succeeds (`lastPhase=ok`) via LaunchAgent, `backup.json` hook, or shell script. Failures trigger alerts only and **never** roll back local backups.
 
-在 `POST /api/backup/run` 成功（`lastPhase=ok`）后触发上述 sync（LaunchAgent、`backup.json` 钩子或短 shell）。失败只告警，**不**回滚本地备份。
+## 4. Alternative: JSON API Mirror (Without AWS CLI)
 
-## 4. 备选：JSON API 镜像（无 AWS CLI）
-
-与 README「mirror-up」相同语义，适合只有 `OSTORE_TOKEN`、不开 S3 的场景：
+Same semantics as "mirror-up" in README, suitable when only `OSTORE_TOKEN` is available without S3 enabled:
 
 ```bash
 T=https://cc.guohuasun.com/ostore
@@ -80,40 +79,40 @@ PREFIX="backup/hosts/$HOST_ID/latest"
 
 curl -sf -H "$AUTH" "$T/api/list?path=$PREFIX&recursive=1&checksums=1" \
   | jq -r '.entries[] | select(.type=="file") | [.path,.sha256] | @tsv' | sort > /tmp/remote.tsv
-# 本地对账后 PUT 变更、DELETE 多余（见 README Backup semantics）
+# Reconcile locally, PUT changed files, DELETE stale files (see README Backup semantics)
 ```
 
-S3 面更适合 **大 blob 目录** 与 **cron 增量**。
+The S3 interface is preferred for **large blob directories** and **incremental cron sync**.
 
-## 5. 恢复流程
+## 5. Restoration Process
 
-1. **单机丢失**：先从 iCloud/GDrive `cvbak` 或夸克 staging 恢复 `latest/` + blobs。
-2. **Mac 全灭、云盘不可用**：从 ostore 拉取对应 host 前缀：
+1. **Single machine loss**: First recover `latest/` + blobs from iCloud/GDrive `cvbak` or Quark staging.
+2. **Mac loss & cloud drives unavailable**: Pull corresponding host prefix from ostore:
    ```bash
    aws s3 sync "s3://clipvault/backup/hosts/$HOST_ID/latest/" "$RESTORE_DIR/"
    ```
-3. 按 ClipVault 既有流程把 `latest` 挂回 `KEEPSAKE_HOME`，跑 verify / hydrate（`live/attach` 仍靠 trx 与 repair，**不要用 ostore 替代 sync**）。
+3. Attach `latest` back to `KEEPSAKE_HOME` per standard ClipVault procedure, run verify / hydrate (`live/attach` still relies on trx and repair; **never replace sync with ostore**).
 
-## 6. 策略与禁忌（来自 nmem）
+## 6. Policies & Constraints (from nmem)
 
-- **Write-once 键**：备份树内文件名以 CAS/hash 为主，避免同 key 覆盖导致前置 cache（若将来挂 cachey）Serving stale；ClipVault blobs 本身内容寻址，契合 ostore。
-- **禁止**用 ostore 上的 `backup/latest` 做 **多机 sync 总线**（共享 `latest/` 已废弃，仅 per-host）。
-- **禁止**「整库替换」式恢复；只恢复 **单个 `hostId` 的 `latest` 树**。
-- **web_archive** 必须带 **文档闭包**（`blob_keys`）；冷备只是复制已闭包后的 `latest`，不在 ostore 上补归档逻辑。
-- 密钥轮换：更新 `OSTORE_S3_*` 与 Mac 上 `AWS_*` 同步，JSON `OSTORE_TOKEN` 与 S3 密钥分开轮换。
+- **Write-once keys**: Filenames in backup trees primarily use CAS/hashes, avoiding same-key overwrites causing stale cache serving; ClipVault blobs are inherently content-addressed, matching ostore cleanly.
+- **Forbidden**: Do not use `backup/latest` on ostore as a **multi-machine sync bus** (shared `latest/` is deprecated, only per-host allowed).
+- **Forbidden**: No "whole-database replacement" restorations; only restore the **`latest` tree for a single `hostId`**.
+- **web_archive** must include **document closure** (`blob_keys`); cold backup only copies the closed `latest`, without synthesizing archive logic on ostore.
+- Credential rotation: Update `OSTORE_S3_*` concurrently with `AWS_*` on Macs. Rotate JSON `OSTORE_TOKEN` and S3 credentials independently.
 
-## 7. 监控
+## 7. Monitoring
 
 ```bash
 curl -s -H "Authorization: Bearer $OSTORE_TOKEN" http://127.0.0.1:8781/api/metrics \
   | grep ostore_s3_
 ```
 
-Mac 侧：备份 API 的 `lastPhase` + sync 退出码；可选 cron 每周 `aws s3 ls` 抽查 key 数量与本地 blobs 计数。
+Mac side: Backup API `lastPhase` + sync exit code; optional weekly cron `aws s3 ls` spot-checks comparing key count against local blobs count.
 
-## 8. 与 xstream 网盘共存
+## 8. Coexistence with Media Storage
 
-当前生产 `OSTORE_ROOT=/root/xstream/data/videos` 面向 xstream `/files`。ClipVault 冷备建议：
+Current production `OSTORE_ROOT=/root/xstream/data/videos` serves xstream `/files`. For ClipVault cold backup:
 
-- **方案 A（推荐）**：第二套 `ostore` 实例 + `/srv/ostore-clipvault` + 独立端口/env。
-- **方案 B**：同一实例，键前缀 `clipvault/...` 与 `videos/...` 隔离；列表/权限仍共享一个 root，适合个人站、需自律前缀。
+- **Option A (Recommended)**: Second `ostore` instance + `/srv/ostore-clipvault` + isolated port/environment.
+- **Option B**: Single instance with prefix isolation (`clipvault/...` vs `videos/...`); shares single root, suitable for personal servers with strict path discipline.

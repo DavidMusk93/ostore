@@ -1039,9 +1039,9 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
     <section class="panel">
       <div class="explorer-bar">
         <div class="breadcrumbs-wrap">
-          <button class="btn" id="btnNavBack" onclick="navigateUp()" style="display: none; padding: 4px 9px; font-size: 0.78rem; align-items: center; gap: 4px;" title="返回上一级目录">
+          <button class="btn" id="btnNavBack" onclick="navigateUp()" style="display: none; padding: 4px 9px; font-size: 0.78rem; align-items: center; gap: 4px;" title="Go to parent directory">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"></polyline></svg>
-            <span>上一级</span>
+            <span>Up</span>
           </button>
           <div class="breadcrumbs" id="breadcrumbs">
             <span class="crumb-link" onclick="navigate('')">root</span>
@@ -1050,9 +1050,9 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
         </div>
         <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
           <input type="text" class="search-input" id="searchBox" placeholder="Filter objects..." oninput="onFilter()">
-          <button class="btn" id="btnSyncFolder" onclick="openCurrentFolderSync()" title="同步当前目录下的所有文件到指定节点">
+          <button class="btn" id="btnSyncFolder" onclick="openCurrentFolderSync()" title="Sync all files in current folder to cluster nodes">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
-            <span>同步当前目录</span>
+            <span>Sync Current Directory</span>
           </button>
           <button class="btn" onclick="openMkdir()">New Folder</button>
           <button class="btn" onclick="triggerFolderUploadInput()" title="Upload entire folder tree">Upload Folder</button>
@@ -1067,7 +1067,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
           <thead>
             <tr>
               <th style="width: 38px; text-align: center;">
-                <input type="checkbox" id="selectAllCb" class="row-select-cb" onchange="toggleSelectAllRows(this.checked)" title="全选当前列表项">
+                <input type="checkbox" id="selectAllCb" class="row-select-cb" onchange="toggleSelectAllRows(this.checked)" title="Select all items">
               </th>
               <th style="width: 38%;">Name</th>
               <th style="width: 15%;">Size & Total Items</th>
@@ -1083,12 +1083,12 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
 
       <!-- Floating Batch Action Bar -->
       <div class="batch-action-bar" id="batchActionBar">
-        <span style="font-size: 0.82rem; font-weight: 600; color: var(--ink);" id="batchSelectedLabel">已选择 0 项</span>
+        <span style="font-size: 0.82rem; font-weight: 600; color: var(--ink);" id="batchSelectedLabel">0 items selected</span>
         <button class="btn btn-primary" onclick="openBatchSync()" style="padding: 4px 12px; font-size: 0.78rem;">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
-          批量同步到节点
+          Batch Sync to Cluster
         </button>
-        <button class="btn" onclick="clearRowSelection()" style="padding: 4px 10px; font-size: 0.78rem;">取消选择</button>
+        <button class="btn" onclick="clearRowSelection()" style="padding: 4px 10px; font-size: 0.78rem;">Deselect All</button>
       </div>
     </section>
   </div>
@@ -1333,7 +1333,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
             <path d="m59.8 53h-32.3l-13.75 23.8c1.35.8 2.9 1.2 4.5 1.2h50.8c1.6 0 3.15-.45 4.5-1.2z" fill="#2684fc"/>
             <path d="m73.4 26.5-12.7-22c-.8-1.4-1.95-2.5-3.3-3.3l-13.75 23.8 16.15 28h27.45c0-1.55-.4-3.1-1.2-4.5z" fill="#ffba00"/>
           </svg>
-          <h3 style="margin: 0; font-size: 1.05rem;">Google Drive 云存储节点</h3>
+          <h3 style="margin: 0; font-size: 1.05rem;">Google Drive Cloud Storage</h3>
         </div>
         <button class="icon-btn" onclick="closeGDriveModal()">✕</button>
       </div>
@@ -1343,7 +1343,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
         <div style="display: flex; justify-content: space-between; align-items: center;">
           <div style="display: flex; align-items: center; gap: 8px;">
             <span class="status-dot"></span>
-            <strong style="font-size: 0.88rem; color: #1D1D1F;">已连接 Google Drive</strong>
+            <strong style="font-size: 0.88rem; color: #1D1D1F;">Connected to Google Drive</strong>
           </div>
           <span class="ratio-badge full" id="gdriveQuotaText">-- GB / -- GB</span>
         </div>
@@ -1351,7 +1351,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
           Client ID: --
         </div>
         <div style="margin-top: 10px; display: flex; justify-content: flex-end;">
-          <button class="btn btn-delete" style="font-size: 0.76rem; height: 26px; padding: 0 10px;" onclick="disconnectGDrive()">断开连接</button>
+          <button class="btn btn-delete" style="font-size: 0.76rem; height: 26px; padding: 0 10px;" onclick="disconnectGDrive()">Disconnect</button>
         </div>
       </div>
 
@@ -1359,17 +1359,17 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       <div id="gdriveConnectTabs">
         <div style="display: flex; border-bottom: 1px solid var(--card-border); margin-bottom: 16px; gap: 16px;">
           <button id="tabOAuthBtn" onclick="switchGDriveTab('oauth')" style="border:none; background:none; padding: 6px 0; font-size: 0.82rem; font-weight:600; color: var(--accent); border-bottom: 2px solid var(--accent); cursor: pointer;">
-            网页一键授权 (OAuth)
+            Web Authorization (OAuth)
           </button>
           <button id="tabManualBtn" onclick="switchGDriveTab('manual')" style="border:none; background:none; padding: 6px 0; font-size: 0.82rem; font-weight:500; color: var(--ink-secondary); border-bottom: 2px solid transparent; cursor: pointer;">
-            填入凭据 (Credentials)
+            Enter Credentials Manually
           </button>
         </div>
 
         <!-- OAuth Tab Pane -->
         <div id="paneOAuth">
           <p style="font-size: 0.78rem; color: var(--ink-secondary); line-height: 1.5; margin-bottom: 12px;">
-            填入您在 Google Cloud 创建的 OAuth Client ID 与 Client Secret，点击下方按钮将自动唤起 Google 授权页。
+            Enter your OAuth Client ID and Client Secret created in Google Cloud Console. Click the button below to launch the Google authorization consent page.
           </p>
           <div style="display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px;">
             <div>
@@ -1383,14 +1383,14 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
           </div>
           <button class="btn btn-primary" style="width: 100%; height: 36px; justify-content: center;" onclick="startGDriveOAuth()">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
-            前往 Google 授权登录
+            Sign in with Google
           </button>
         </div>
 
         <!-- Manual Tab Pane -->
         <div id="paneManual" style="display: none;">
           <p style="font-size: 0.78rem; color: var(--ink-secondary); line-height: 1.5; margin-bottom: 12px;">
-            如果您已有包含 Refresh Token 的凭据（如使用 Rclone authorize 生成）：
+            If you already have credentials with a Refresh Token (e.g. generated via Rclone authorize):
           </p>
           <div style="display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px;">
             <div>
@@ -1407,50 +1407,50 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
             </div>
           </div>
           <button class="btn btn-primary" style="width: 100%; height: 36px; justify-content: center;" onclick="submitManualGDrive()">
-            验证凭据并保存
+            Validate & Save Credentials
           </button>
         </div>
 
         <!-- Google Guide Details Accordion -->
         <details style="margin-top: 14px; font-size: 0.75rem; color: var(--ink-secondary); border-top: 1px solid var(--card-border); padding-top: 10px;">
-          <summary style="cursor: pointer; font-weight: 600; color: var(--accent);">如何获取 Google Client ID & Secret？（3步教程）</summary>
+          <summary style="cursor: pointer; font-weight: 600; color: var(--accent);">How to obtain Google Client ID & Secret (Guide)</summary>
           <div style="line-height: 1.6; margin-top: 8px;">
-            1. 登录 <a href="https://console.cloud.google.com/" target="_blank" style="color:var(--accent);">Google Cloud Console</a> 新建一个项目。<br>
-            2. 在「API 和服务」→「库」中搜索 <strong>Google Drive API</strong> 并点击启用。<br>
-            3. 在「OAuth 同意屏幕」将类型选为外部，填写应用名并添加自己的 Google 邮箱为测试用户。<br>
-            4. 在「凭据」→「创建凭据」选择 <strong>OAuth 客户端 ID</strong>，应用类型选「Web 应用」。<br>
-            5. 在「已获授权的重定向 URI」中添加（必须与当前访问域名 100% 一致）：<br>
+            1. Log in to <a href="https://console.cloud.google.com/" target="_blank" style="color:var(--accent);">Google Cloud Console</a> and create a new project.<br>
+            2. Under "APIs & Services" &rarr; "Library", search for <strong>Google Drive API</strong> and click Enable.<br>
+            3. In "OAuth consent screen", choose External type, enter app name, and add your Google email under Test users.<br>
+            4. In "Credentials" &rarr; "Create Credentials", select <strong>OAuth client ID</strong>, Application type "Web application".<br>
+            5. In "Authorized redirect URIs", add the following URI (must match your access domain 100%):<br>
             <div style="display:flex; align-items:center; gap:6px; margin: 6px 0;">
               <code id="gdriveCallbackUriCode" style="flex:1; background:rgba(0,0,0,0.05); padding: 5px 8px; border-radius: 4px; word-break: break-all; font-size: 0.72rem; font-family: var(--font-mono);">https://xyz69.top/ostore/api/cluster/gdrive/callback</code>
-              <button type="button" class="btn" style="height:26px; font-size:0.7rem; padding: 0 8px;" onclick="copyGDriveCallbackUri()">复制</button>
+              <button type="button" class="btn" style="height:26px; font-size:0.7rem; padding: 0 8px;" onclick="copyGDriveCallbackUri()">Copy</button>
             </div>
-            6. 复制生成的 Client ID 与 Client Secret 粘贴至上方即可。
+            6. Copy the generated Client ID and Client Secret, and paste them into the form above.
           </div>
         </details>
 
         <!-- Troubleshooting FAQ -->
         <details style="margin-top: 10px; font-size: 0.75rem; color: var(--ink-secondary); border-top: 1px solid var(--card-border); padding-top: 10px;">
-          <summary style="cursor: pointer; font-weight: 600; color: #FF3B30;">⚠️ 连接常见报错与排查解决 (点击展开)</summary>
+          <summary style="cursor: pointer; font-weight: 600; color: #FF3B30;">⚠️ Common Connection Errors & Troubleshooting (Click to expand)</summary>
           <div style="line-height: 1.6; margin-top: 8px;">
             <div style="margin-bottom: 8px;">
               <strong style="color:var(--ink);">1. Error 400: redirect_uri_mismatch</strong><br>
-              说明 Google Cloud 控制台填写的重定向 URI 与当前访问地址不匹配。点击上方「复制」按钮获取准确的重定向 URI，填入 Google 控制台「已获授权的重定向 URI」中。
+              The redirect URI configured in Google Cloud Console does not match your current access URL. Click the "Copy" button above to get the exact URI and paste it into "Authorized redirect URIs" in Google Console.
             </div>
             <div style="margin-bottom: 8px;">
               <strong style="color:var(--ink);">2. Access blocked / Error 403: access_denied</strong><br>
-              说明应用处于测试中，未添加授权账号。请在 Google Cloud Console →「OAuth 同意屏幕」→「测试用户 (Test users)」中添加您正在登录的 Google 邮箱。
+              The OAuth app is in testing mode and your account has not been added as a test user. In Google Cloud Console &rarr; "OAuth consent screen" &rarr; "Test users", add the Google email you are signing in with.
             </div>
             <div style="margin-bottom: 8px;">
-              <strong style="color:var(--ink);">3. Google 提示「Google 尚未验证此应用」</strong><br>
-              自建 OAuth 应用的标准安全提示，并非报错。点击左下角「高级 (Advanced)」→「前往...（不安全）」→ 勾选 Drive 权限后继续。
+              <strong style="color:var(--ink);">3. "Google hasn't verified this app" warning</strong><br>
+              This is a standard security prompt for unverified custom OAuth apps, not an error. Click "Advanced" on the lower left &rarr; "Go to ... (unsafe)" &rarr; check Google Drive permissions and proceed.
             </div>
             <div style="margin-bottom: 8px;">
               <strong style="color:var(--ink);">4. Google Drive API 403 (API not enabled)</strong><br>
-              请在 Google Cloud Console →「API 和服务」→「库」中搜索启用 <strong>Google Drive API</strong>。
+              Please search for and enable <strong>Google Drive API</strong> in Google Cloud Console &rarr; "APIs & Services" &rarr; "Library".
             </div>
             <div>
-              <strong style="color:var(--ink);">5. 缺少 Refresh Token</strong><br>
-              该账号此前已对本应用授权过。前往 <a href="https://myaccount.google.com/connections" target="_blank" style="color:var(--accent);">Google 账号关联应用</a> 解除授权后重新点击授权，或在「手动填入凭据」标签页输入已有 Refresh Token。
+              <strong style="color:var(--ink);">5. Missing Refresh Token</strong><br>
+              This Google account has already granted authorization previously. Visit <a href="https://myaccount.google.com/connections" target="_blank" style="color:var(--accent);">Google Connected Apps</a> to revoke access and re-authorize, or enter your Refresh Token under "Enter Credentials Manually".
             </div>
           </div>
         </details>
@@ -1882,7 +1882,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
 
     function copyGDriveCallbackUri() {
       const uri = window.location.origin + getBasePath() + '/api/cluster/gdrive/callback';
-      copyToClipboard(uri, '回调地址已复制到剪贴板');
+      copyToClipboard(uri, 'Redirect URI copied to clipboard');
     }
 
     function closeGDriveModal() {
@@ -1930,7 +1930,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
           if (btn) {
             btn.style.background = 'rgba(52, 199, 89, 0.12)';
             btn.style.borderColor = 'rgba(52, 199, 89, 0.35)';
-            btn.title = `Google Drive 云盘已就绪 (${total} 总量，${formatBytes(data.disk_available_bytes)} 可用)`;
+            btn.title = `Google Drive ready (${total} total, ${formatBytes(data.disk_available_bytes)} available)`;
           }
           if (headerLabel) {
             headerLabel.innerHTML = `<span class="status-dot" style="margin-right:4px;"></span>GDrive (${total})`;
@@ -1959,7 +1959,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       const clientId = document.getElementById('gdOAuthClientId').value.trim();
       const clientSecret = document.getElementById('gdOAuthClientSecret').value.trim();
       if (!clientId || !clientSecret) {
-        showToast('请完整输入 Client ID 与 Client Secret');
+        showToast('Please enter both Client ID and Client Secret');
         return;
       }
       try {
@@ -1971,13 +1971,13 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
         });
         const data = await res.json();
         if (data && data.auth_url) {
-          showToast('正在前往 Google 授权页面...');
+          showToast('Redirecting to Google authorization page...');
           window.location.href = data.auth_url;
         } else {
-          showToast('获取授权链接失败: ' + (data.error || '未知错误'));
+          showToast('Failed to obtain authorization URL: ' + (data.error || 'Unknown error'));
         }
       } catch (e) {
-        showToast('获取授权链接失败: ' + (e.error || e.message));
+        showToast('Failed to obtain authorization URL: ' + (e.error || e.message));
       }
     }
 
@@ -1986,7 +1986,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       const clientSecret = document.getElementById('gdManualClientSecret').value.trim();
       const refreshToken = document.getElementById('gdManualRefreshToken').value.trim();
       if (!clientId || !clientSecret || !refreshToken) {
-        showToast('请完整输入 Client ID, Client Secret 和 Refresh Token');
+        showToast('Please enter Client ID, Client Secret, and Refresh Token');
         return;
       }
       try {
@@ -1997,28 +1997,28 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
         });
         const data = await res.json();
         if (res.ok) {
-          showToast('Google Drive 接入成功！');
+          showToast('Google Drive connected successfully!');
           checkGDriveStatus();
           loadTopology();
         } else {
-          showToast('接入失败: ' + (data.error || '凭据无效'));
+          showToast('Connection failed: ' + (data.error || 'Invalid credentials'));
         }
       } catch (e) {
-        showToast('接入失败: ' + (e.error || e.message));
+        showToast('Connection failed: ' + (e.error || e.message));
       }
     }
 
     async function disconnectGDrive() {
-      if (!confirm('确定断开与 Google Drive 的连接吗？')) return;
+      if (!confirm('Are you sure you want to disconnect Google Drive?')) return;
       try {
         const res = await api('/api/cluster/gdrive/disconnect', { method: 'POST' });
         if (res.ok) {
-          showToast('已断开 Google Drive 连接');
+          showToast('Google Drive disconnected');
           checkGDriveStatus();
           loadTopology();
         }
       } catch (e) {
-        showToast('断开失败: ' + (e.error || e.message));
+        showToast('Failed to disconnect: ' + (e.error || e.message));
       }
     }
 
@@ -2246,7 +2246,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       }
       const syncCurBtn = document.getElementById('btnSyncFolder');
       if (syncCurBtn) {
-        syncCurBtn.title = `同步当前目录 (/${currentPath || 'root'}) 到指定节点`;
+        syncCurBtn.title = `Sync current folder (/${currentPath || 'root'}) to cluster nodes`;
       }
     }
 
@@ -2313,7 +2313,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       if (!bar) return;
       if (selectedRowPaths.size > 0) {
         bar.style.display = 'flex';
-        if (lbl) lbl.textContent = `已选择 ${selectedRowPaths.size} 项`;
+        if (lbl) lbl.textContent = `${selectedRowPaths.size} item${selectedRowPaths.size === 1 ? '' : 's'} selected`;
       } else {
         bar.style.display = 'none';
       }
@@ -2450,11 +2450,11 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
               <td colspan="4">
                 <div class="name-cell" style="color: var(--accent); font-weight: 600;">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="16" height="16"><polyline points="15 18 9 12 15 6"></polyline></svg>
-                  <span>.. (返回上一级目录)</span>
+                  <span>.. (Parent Directory)</span>
                 </div>
               </td>
               <td style="text-align: right;">
-                <button class="btn btn-sm" onclick="event.stopPropagation(); navigateUp()" style="padding: 2px 10px; font-size: 0.72rem;">返回上一级</button>
+                <button class="btn btn-sm" onclick="event.stopPropagation(); navigateUp()" style="padding: 2px 10px; font-size: 0.72rem;">Up</button>
               </td>
             </tr>
           `;
@@ -2497,7 +2497,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
         const ratioText = isProbing ? '...' : `${count}/4`;
 
         nodeMapHtml = `
-          <div class="node-badges-cluster" id="badge-${escapeId(item.path)}" onclick="inspectFileReplica('${escapeJs(item.path)}')" title="查看副本拓扑详情与单文件同步">
+          <div class="node-badges-cluster" id="badge-${escapeId(item.path)}" onclick="inspectFileReplica('${escapeJs(item.path)}')" title="Inspect replica topology and sync file">
             <span class="node-dot-item present"><span class="mini-dot main"></span>cc</span>
             <span class="node-dot-item ${hasCc2 === true ? 'present' : ''}"><span class="mini-dot ${cc2DotClass}"></span>cc2</span>
             <span class="node-dot-item ${hasRn === true ? 'present' : ''}"><span class="mini-dot ${rnDotClass}"></span>rn</span>
@@ -2507,7 +2507,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
         `;
       } else {
         nodeMapHtml = `
-          <div class="node-badges-cluster dir-replica-cell" onclick="event.stopPropagation(); openItemSync('${escapeJs(item.path)}', true, event)" title="点击查看并同步此文件夹到集群节点">
+          <div class="node-badges-cluster dir-replica-cell" onclick="event.stopPropagation(); openItemSync('${escapeJs(item.path)}', true, event)" title="Click to sync folder to cluster nodes">
             <span class="ratio-badge full" style="font-size:0.72rem; cursor:pointer; display:inline-flex; align-items:center; gap:5px; padding: 2px 8px;">
               <span class="mini-dot main"></span>Cluster Replicas
             </span>
@@ -2532,7 +2532,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       if (isDir) {
         actionsHtml = `
           <div class="row-actions">
-            <button class="icon-btn" title="同步此文件夹到指定节点" onclick="openItemSync('${escapeJs(item.path)}', true, event)">
+            <button class="icon-btn" title="Sync folder to cluster nodes" onclick="openItemSync('${escapeJs(item.path)}', true, event)">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
             </button>
             <a class="icon-btn" href="${dlUrl}" download="${escapeHtml(item.name)}.tar" title="Download folder as tar archive">
@@ -2552,7 +2552,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       } else {
         actionsHtml = `
           <div class="row-actions">
-            <button class="icon-btn" title="同步此文件到指定节点" onclick="openItemSync('${escapeJs(item.path)}', false, event)">
+            <button class="icon-btn" title="Sync file to cluster nodes" onclick="openItemSync('${escapeJs(item.path)}', false, event)">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
             </button>
             <a class="icon-btn" href="${dlUrl}?download=1" download="${escapeHtml(item.name)}" title="Download">
@@ -2732,7 +2732,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
           const actionBtn = isMatched ? '' : `
             <button class="btn btn-primary" onclick="syncFileToNode('${escapeJs(filePath)}', '${escapeJs(f.id)}')" style="margin-top: 6px; padding: 2px 8px; font-size: 0.72rem; align-self: flex-end;">
               <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
-              同步到此节点
+              Sync to this node
             </button>
           `;
 
@@ -2785,7 +2785,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
     }
 
     async function syncFileToNode(filePath, nodeId) {
-      showToast(`正在同步 ${filePath.split('/').pop()} 到 ${nodeId}...`);
+      showToast(`Syncing ${filePath.split('/').pop()} to ${nodeId}...`);
       try {
         const res = await api('/api/cluster/sync', {
           method: 'POST',
@@ -2793,14 +2793,14 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
           body: JSON.stringify({ paths: [filePath], target_nodes: [nodeId] }),
         });
         if (res.ok) {
-          showToast(`已成功同步到 ${nodeId}!`);
+          showToast(`Successfully synced to ${nodeId}!`);
           inspectFileReplica(filePath, true);
           probeDirectoryReplicas(currentPath);
         } else {
-          showToast(`同步到 ${nodeId} 失败: HTTP ${res.status}`);
+          showToast(`Sync to ${nodeId} failed: HTTP ${res.status}`);
         }
       } catch (e) {
-        showToast(`同步异常: ${e}`);
+        showToast(`Sync error: ${e}`);
       }
     }
 
@@ -3223,7 +3223,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
         type: isDir ? 'dir' : 'file',
         paths: isDir ? [] : [targetPath],
         prefix: isDir ? targetPath : '',
-        label: `${isDir ? '文件夹' : '文件'}: ${targetPath.split('/').pop()}`,
+        label: `${isDir ? 'Folder' : 'File'}: ${targetPath.split('/').pop()}`,
       };
       setupSyncModalWithTarget();
     }
@@ -3231,14 +3231,14 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
     function openBatchSync() {
       const selected = Array.from(selectedRowPaths);
       if (selected.length === 0) {
-        showToast('请先选择要同步的文件或文件夹');
+        showToast('Please select files or folders to sync first');
         return;
       }
       activeSyncTarget = {
         type: 'batch',
         paths: selected,
         prefix: '',
-        label: `已选中 ${selected.length} 个项目`,
+        label: `${selected.length} item${selected.length === 1 ? '' : 's'} selected`,
       };
       setupSyncModalWithTarget();
     }
@@ -3248,7 +3248,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
         type: 'current',
         paths: [],
         prefix: currentPath,
-        label: `当前目录: /${currentPath || ' (root)'}`,
+        label: `Current folder: /${currentPath || ' (root)'}`,
       };
       setupSyncModalWithTarget();
     }
@@ -3265,12 +3265,12 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
         itemWrapper.style.display = 'inline-flex';
         itemLabel.textContent = activeSyncTarget.label;
         scopeItemRadio.checked = true;
-        badge.textContent = `🎯 同步目标: ${activeSyncTarget.label} (${activeSyncTarget.type === 'batch' ? activeSyncTarget.paths.length + ' 项' : (activeSyncTarget.prefix || activeSyncTarget.paths[0])})`;
+        badge.textContent = `🎯 Target: ${activeSyncTarget.label} (${activeSyncTarget.type === 'batch' ? activeSyncTarget.paths.length + ' items' : (activeSyncTarget.prefix || activeSyncTarget.paths[0])})`;
         badge.style.display = 'block';
       } else if (activeSyncTarget && activeSyncTarget.type === 'current') {
         itemWrapper.style.display = 'none';
         scopeCurrentRadio.checked = true;
-        badge.textContent = `🎯 同步目标: 当前目录 (/${currentPath || 'root'})`;
+        badge.textContent = `🎯 Target: Current folder (/${currentPath || 'root'})`;
         badge.style.display = 'block';
       } else {
         itemWrapper.style.display = 'none';

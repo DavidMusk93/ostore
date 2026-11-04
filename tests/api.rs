@@ -721,17 +721,17 @@ async fn cluster_file_status_endpoint_standalone() {
 }
 
 #[tokio::test]
-async fn chinese_utf8_content_type_preserved() {
+async fn utf8_multilingual_content_type_preserved() {
     let f = fixture();
-    let chinese_text = "分布式存储 中文测试 内容完整性 2026";
-    put_file(&f.app, "chinese.txt", chinese_text.as_bytes()).await;
-    let resp = f.app.clone().oneshot(req("GET", "/api/files/chinese.txt")).await.unwrap();
+    let utf8_text = "Distributed storage UTF-8 test — International Characters: café, naïve, résumé, Straße, fête, smörgåsbord 2026";
+    put_file(&f.app, "utf8.txt", utf8_text.as_bytes()).await;
+    let resp = f.app.clone().oneshot(req("GET", "/api/files/utf8.txt")).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let ct = resp.headers()[header::CONTENT_TYPE].to_str().unwrap();
     assert!(ct.contains("charset=utf-8"));
     let bytes = body_bytes(resp).await;
     let s = String::from_utf8(bytes.to_vec()).unwrap();
-    assert_eq!(s, chinese_text);
+    assert_eq!(s, utf8_text);
 }
 
 #[tokio::test]

@@ -228,7 +228,7 @@ def run_regression_test():
 
         # 5c. Click Folder Sync action icon
         print("Clicking Folder Sync action button in row...", flush=True)
-        folder_sync_btn = page.wait_for_selector('button[title="同步此文件夹到指定节点"]', state="visible")
+        folder_sync_btn = page.wait_for_selector('button[title="Sync folder to cluster nodes"]', state="visible")
         folder_sync_btn.click()
         page.wait_for_timeout(1200)
         page.wait_for_selector("#clusterSyncModal", state="visible")
@@ -299,7 +299,7 @@ def run_regression_test():
             page.wait_for_timeout(300)
 
         # 6d. Single File Sync Action Icon
-        file_sync_btn = page.query_selector('button[title="同步此文件到指定节点"]')
+        file_sync_btn = page.query_selector('button[title="Sync file to cluster nodes"]')
         if file_sync_btn:
             file_sync_btn.click()
             page.wait_for_timeout(1000)
@@ -317,9 +317,9 @@ def run_regression_test():
             page.wait_for_timeout(500)
             page.wait_for_selector("#batchActionBar", state="visible")
             
-            # Click 批量同步
-            print("Clicking '批量同步' button in batch bar...", flush=True)
-            page.click('button:has-text("批量同步")')
+            # Click Batch Sync
+            print("Clicking 'Batch Sync' button in batch bar...", flush=True)
+            page.click('button:has-text("Batch Sync")')
             page.wait_for_timeout(1200)
             page.wait_for_selector("#clusterSyncModal", state="visible")
             

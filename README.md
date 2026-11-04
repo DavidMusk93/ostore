@@ -320,7 +320,7 @@ Set `OSTORE_CLUSTER_CONFIG` to a JSON path (or JSON string). Default:
 
 Key capabilities:
 - **Fleet health & capacity monitoring**: background task probes worker
-  `/healthz` and scrapes `/api/metrics` every 15s, tracking RTT and storage水位.
+  `/healthz` and scrapes `/api/metrics` every 15s, tracking RTT and storage watermarks.
 - **Write-time replication**: writes to paths matching `replicate_prefixes`
   are automatically replicated to all healthy worker nodes.
 - **On-demand self-healing sync**: `POST /api/cluster/sync?prefix=clipvault`
@@ -342,7 +342,7 @@ ostore embeds a modern zero-dependency responsive SPA at `/` and `/ostore`:
 Setting `OSTORE_S3_ACCESS_KEY` and `OSTORE_S3_SECRET_KEY` exposes an
 S3-shaped API at the server root so `aws s3 sync`, rclone, and [cachey](https://github.com/s2-streamstore/cachey)
 can talk to ostore without a shim. This is **not** full S3 (no multipart,
-ACL, versioning, CopyObject, presigned URLs). See [ClipVault 冷备](deploy/clipvault-backup.md).
+ACL, versioning, CopyObject, presigned URLs). See [ClipVault backup](deploy/clipvault-backup.md).
 
 ```bash
 export OSTORE_S3_ACCESS_KEY=ostore

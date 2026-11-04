@@ -429,9 +429,9 @@ async fn whole_object_range_is_206_with_content_range() {
 #[tokio::test]
 async fn percent_encoded_key_round_trips() {
     let f = fixture();
-    let key = "videos/2026 春节 clip (final)~v2.mp4";
+    let key = "videos/2026 café résumé clip (final)~v2.mp4";
     seed(&f.app, key, b"unicode key").await;
-    let encoded = "/videos/2026%20%E6%98%A5%E8%8A%82%20clip%20(final)~v2.mp4";
+    let encoded = "/videos/2026%20caf%C3%A9%20r%C3%A9sum%C3%A9%20clip%20(final)~v2.mp4";
     let resp = f
         .app
         .clone()
