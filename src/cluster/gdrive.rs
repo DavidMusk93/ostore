@@ -457,9 +457,10 @@ impl GDriveClient {
 
         let token = self.get_access_token().await?;
 
+        let actual_size = file_bytes.len() as u64;
         let meta = if let Some(exist) = existing {
             // Update file content via PATCH
-            let url = format!("{GDRIVE_UPLOAD_BASE}/files/{}?uploadType=media", exist.id);
+            let url = format!("{GDRIVE_UPLOAD_BASE}/files/{}?uploadType=media&fields=id,name,mimeType,size,md5Checksum,modifiedTime", exist.id);
             let resp = self
                 .client
                 .patch(&url)
@@ -479,7 +480,7 @@ impl GDriveClient {
                 id: item.id,
                 name: item.name,
                 mime_type: item.mime_type.unwrap_or(mime),
-                size: item.size.and_then(|s| s.parse().ok()).unwrap_or(0),
+                size: item.size.and_then(|s| s.parse().ok()).unwrap_or(actual_size),
                 md5: item.md5_checksum.or_else(|| Some(expected_md5.to_string())),
                 modified_time: item.modified_time.and_then(|t| t.parse().ok()),
                 is_dir: false,
@@ -507,7 +508,7 @@ impl GDriveClient {
 
             body.extend_from_slice(close_delim.as_bytes());
 
-            let url = format!("{GDRIVE_UPLOAD_BASE}/files?uploadType=multipart");
+            let url = format!("{GDRIVE_UPLOAD_BASE}/files?uploadType=multipart&fields=id,name,mimeType,size,md5Checksum,modifiedTime");
             let resp = self
                 .client
                 .post(&url)
@@ -530,7 +531,7 @@ impl GDriveClient {
                 id: item.id,
                 name: item.name,
                 mime_type: item.mime_type.unwrap_or(mime),
-                size: item.size.and_then(|s| s.parse().ok()).unwrap_or(0),
+                size: item.size.and_then(|s| s.parse().ok()).unwrap_or(actual_size),
                 md5: item.md5_checksum.or_else(|| Some(expected_md5.to_string())),
                 modified_time: item.modified_time.and_then(|t| t.parse().ok()),
                 is_dir: false,

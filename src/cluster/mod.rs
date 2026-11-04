@@ -1065,6 +1065,13 @@ impl ClusterManager {
                         if let Ok(hash) = self.cache.get_or_compute(&abs, &meta).await {
                             list.push((rel, hash, meta.len()));
                         }
+                    } else if meta.is_dir() {
+                        let sub_entries = self.list_local_files_recursive(&rel).await;
+                        for (sub_rel, hash) in sub_entries {
+                            let sub_abs = self.root.join(&sub_rel);
+                            let size = tokio::fs::metadata(&sub_abs).await.map(|m| m.len()).unwrap_or(0);
+                            list.push((sub_rel, hash, size));
+                        }
                     }
                 }
             }
@@ -1098,53 +1105,84 @@ impl ClusterManager {
         for node in &nodes_to_check {
             if node.node_type.as_deref() == Some("gdrive") || node.id == "gdrive" {
                 if let Some(gdrive) = self.gdrive.read().await.clone() {
-                    if let Ok(gdrive_items) = gdrive.list_dir(&prefix).await {
-                        let mut map = HashMap::new();
-                        for item in gdrive_items {
-                            if !item.is_dir {
-                                let item_rel = if prefix.is_empty() {
-                                    item.name.clone()
-                                } else {
-                                    format!("{prefix}/{}", item.name)
-                                };
-                                if let Some(md5) = item.md5 {
-                                    map.insert(item_rel, md5);
-                                }
-                            }
-                        }
-                        remote_maps.insert(node.id.clone(), map);
+                    let mut parent_dirs: std::collections::HashSet<String> = std::collections::HashSet::new();
+                    if !prefix.is_empty() {
+                        parent_dirs.insert(prefix.clone());
                     }
-                }
-                continue;
-            }
-
-            let base = node.url.trim_end_matches('/');
-            let list_url = format!("{base}/api/list?path={prefix}&recursive=1&checksums=1");
-            let mut req = self.client.get(&list_url);
-            if !node.token.is_empty() {
-                req = req.header("Authorization", format!("Bearer {}", node.token));
-            }
-            if let Ok(resp) = req.send().await {
-                if resp.status().is_success() {
-                    let val: serde_json::Value = resp.json().await.unwrap_or_default();
+                    for (rel, _, _) in &local_files {
+                        let p = rel.rsplit_once('/').map(|(dir, _)| dir).unwrap_or("");
+                        parent_dirs.insert(p.to_string());
+                    }
                     let mut map = HashMap::new();
-                    if let Some(entries) = val.get("entries").and_then(|v| v.as_array()) {
-                        for e in entries {
-                            if e.get("type").and_then(|v| v.as_str()) == Some("file") {
-                                if let (Some(path), Some(hash)) = (
-                                    e.get("path").and_then(|v| v.as_str()),
-                                    e.get("md5").or_else(|| e.get("sha256")).and_then(|v| v.as_str()),
-                                ) {
-                                    map.insert(path.to_string(), hash.to_string());
+                    for p in parent_dirs {
+                        if let Ok(gdrive_items) = gdrive.list_dir(&p).await {
+                            for item in gdrive_items {
+                                if !item.is_dir {
+                                    let item_rel = if p.is_empty() {
+                                        item.name.clone()
+                                    } else {
+                                        format!("{p}/{}", item.name)
+                                    };
+                                    if let Some(md5) = item.md5 {
+                                        map.insert(item_rel, md5);
+                                    }
                                 }
                             }
                         }
                     }
                     remote_maps.insert(node.id.clone(), map);
-                } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
-                    remote_maps.insert(node.id.clone(), HashMap::new());
                 }
+                continue;
             }
+
+            let base = node.url.trim_end_matches('/');
+            let map = if local_files.len() <= 10 {
+                let mut m = HashMap::new();
+                for (rel, _, _) in &local_files {
+                    let stat_url = format!("{base}/api/stat?path={}&checksums=1", urlencoding::encode(rel));
+                    let mut req = self.client.get(&stat_url);
+                    if !node.token.is_empty() {
+                        req = req.header("Authorization", format!("Bearer {}", node.token));
+                    }
+                    if let Ok(resp) = req.send().await {
+                        if resp.status().is_success() {
+                            if let Ok(val) = resp.json::<serde_json::Value>().await {
+                                if let Some(hash) = val.get("md5").or_else(|| val.get("sha256")).and_then(|v| v.as_str()) {
+                                    m.insert(rel.clone(), hash.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+                m
+            } else {
+                let list_url = format!("{base}/api/list?path={prefix}&recursive=1&checksums=1");
+                let mut req = self.client.get(&list_url);
+                if !node.token.is_empty() {
+                    req = req.header("Authorization", format!("Bearer {}", node.token));
+                }
+                match req.send().await {
+                    Ok(resp) if resp.status().is_success() => {
+                        let val: serde_json::Value = resp.json().await.unwrap_or_default();
+                        let mut m = HashMap::new();
+                        if let Some(entries) = val.get("entries").and_then(|v| v.as_array()) {
+                            for e in entries {
+                                if e.get("type").and_then(|v| v.as_str()) == Some("file") {
+                                    if let (Some(path), Some(hash)) = (
+                                        e.get("path").and_then(|v| v.as_str()),
+                                        e.get("md5").or_else(|| e.get("sha256")).and_then(|v| v.as_str()),
+                                    ) {
+                                        m.insert(path.to_string(), hash.to_string());
+                                    }
+                                }
+                            }
+                        }
+                        m
+                    }
+                    _ => HashMap::new(),
+                }
+            };
+            remote_maps.insert(node.id.clone(), map);
         }
 
         let mut differences = Vec::new();
@@ -1228,6 +1266,9 @@ impl ClusterManager {
                         if let Ok(hash) = self.cache.get_or_compute(&abs, &meta).await {
                             list.push((rel, hash));
                         }
+                    } else if meta.is_dir() {
+                        let sub_entries = self.list_local_files_recursive(&rel).await;
+                        list.extend(sub_entries);
                     }
                 }
             }
@@ -1283,70 +1324,75 @@ impl ClusterManager {
 
             if node.node_type.as_deref() == Some("gdrive") || node.id == "gdrive" {
                 if let Some(gdrive) = self.gdrive.read().await.clone() {
-                    match gdrive.list_dir(&prefix).await {
-                        Ok(gdrive_items) => {
-                            let mut remote_map = HashMap::new();
+                    let mut parent_dirs: std::collections::HashSet<String> = std::collections::HashSet::new();
+                    if !prefix.is_empty() {
+                        parent_dirs.insert(prefix.clone());
+                    }
+                    for (rel, _) in &local_files {
+                        let p = rel.rsplit_once('/').map(|(dir, _)| dir).unwrap_or("");
+                        parent_dirs.insert(p.to_string());
+                    }
+                    let mut remote_map = HashMap::new();
+                    for p in parent_dirs {
+                        if let Ok(gdrive_items) = gdrive.list_dir(&p).await {
                             for item in gdrive_items {
                                 if !item.is_dir {
-                                    let item_rel = if prefix.is_empty() {
+                                    let item_rel = if p.is_empty() {
                                         item.name.clone()
                                     } else {
-                                        format!("{prefix}/{}", item.name)
+                                        format!("{p}/{}", item.name)
                                     };
                                     if let Some(md5) = item.md5 {
                                         remote_map.insert(item_rel, md5);
                                     }
                                 }
                             }
+                        }
+                    }
 
-                            for (rel_path, md5) in &local_files {
-                                if cancel.is_cancelled() {
-                                    break;
-                                }
+                    for (rel_path, md5) in &local_files {
+                        if cancel.is_cancelled() {
+                            break;
+                        }
 
-                                // CPU safety governor & cooperative yield
-                                if let Some(m) = metrics {
-                                    if m.current_system_cpu_ratio() > 0.75 {
-                                        tokio::time::sleep(Duration::from_millis(50)).await;
-                                    }
-                                }
-                                tokio::task::yield_now().await;
-                                tokio::time::sleep(Duration::from_millis(5)).await;
-
-                                if let Some(r_md5) = remote_map.get(rel_path) {
-                                    if r_md5 == md5 {
-                                        res.skipped += 1;
-                                        continue;
-                                    }
-                                }
-                                let abs_path = self.root.join(rel_path);
-
-                                {
-                                    let mut p = self.live_progress.write().await;
-                                    p.current_file = rel_path.clone();
-                                    p.current_node = node.id.clone();
-                                    p.elapsed_ms = start.elapsed().as_millis() as u64;
-                                }
-
-                                match gdrive.upload_file(rel_path, &abs_path, md5).await {
-                                    Ok(_) => {
-                                        res.synced += 1;
-                                        let mut p = self.live_progress.write().await;
-                                        p.synced_count += 1;
-                                        if p.total_to_sync > 0 {
-                                            p.percent = (p.synced_count as f64 / p.total_to_sync as f64) * 100.0;
-                                        }
-                                    }
-                                    Err(e) => {
-                                        res.errors.push(format!("gdrive sync {rel_path} error: {e}"));
-                                        let mut p = self.live_progress.write().await;
-                                        p.failed_count += 1;
-                                    }
-                                }
+                        // CPU safety governor & cooperative yield
+                        if let Some(m) = metrics {
+                            if m.current_system_cpu_ratio() > 0.75 {
+                                tokio::time::sleep(Duration::from_millis(50)).await;
                             }
                         }
-                        Err(e) => {
-                            res.errors.push(format!("failed to list gdrive dir {prefix}: {e}"));
+                        tokio::task::yield_now().await;
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+
+                        if let Some(r_md5) = remote_map.get(rel_path) {
+                            if r_md5 == md5 {
+                                res.skipped += 1;
+                                continue;
+                            }
+                        }
+                        let abs_path = self.root.join(rel_path);
+
+                        {
+                            let mut p = self.live_progress.write().await;
+                            p.current_file = rel_path.clone();
+                            p.current_node = node.id.clone();
+                            p.elapsed_ms = start.elapsed().as_millis() as u64;
+                        }
+
+                        match gdrive.upload_file(rel_path, &abs_path, md5).await {
+                            Ok(_) => {
+                                res.synced += 1;
+                                let mut p = self.live_progress.write().await;
+                                p.synced_count += 1;
+                                if p.total_to_sync > 0 {
+                                    p.percent = (p.synced_count as f64 / p.total_to_sync as f64) * 100.0;
+                                }
+                            }
+                            Err(e) => {
+                                res.errors.push(format!("gdrive sync {rel_path} error: {e}"));
+                                let mut p = self.live_progress.write().await;
+                                p.failed_count += 1;
+                            }
                         }
                     }
                     node_results.push(res);
@@ -1356,40 +1402,60 @@ impl ClusterManager {
 
             // Remote ostore node
             let base = node.url.trim_end_matches('/');
-            let list_url = format!("{base}/api/list?path={prefix}&recursive=1&checksums=1");
-            let mut req = self.client.get(&list_url);
-            if !node.token.is_empty() {
-                req = req.header("Authorization", format!("Bearer {}", node.token));
-            }
-
-            let remote_map = match req.send().await {
-                Ok(resp) if resp.status().is_success() => {
-                    let val: serde_json::Value = resp.json().await.unwrap_or_default();
-                    let mut map = HashMap::new();
-                    if let Some(entries) = val.get("entries").and_then(|v| v.as_array()) {
-                        for e in entries {
-                            if e.get("type").and_then(|v| v.as_str()) == Some("file") {
-                                if let (Some(path), Some(hash)) = (
-                                    e.get("path").and_then(|v| v.as_str()),
-                                    e.get("md5").or_else(|| e.get("sha256")).and_then(|v| v.as_str()),
-                                ) {
-                                    map.insert(path.to_string(), hash.to_string());
+            let remote_map = if local_files.len() <= 10 {
+                let mut m = HashMap::new();
+                for (rel_path, _) in &local_files {
+                    let stat_url = format!("{base}/api/stat?path={}&checksums=1", urlencoding::encode(rel_path));
+                    let mut req = self.client.get(&stat_url);
+                    if !node.token.is_empty() {
+                        req = req.header("Authorization", format!("Bearer {}", node.token));
+                    }
+                    if let Ok(resp) = req.send().await {
+                        if resp.status().is_success() {
+                            if let Ok(val) = resp.json::<serde_json::Value>().await {
+                                if let Some(hash) = val.get("md5").or_else(|| val.get("sha256")).and_then(|v| v.as_str()) {
+                                    m.insert(rel_path.clone(), hash.to_string());
                                 }
                             }
                         }
                     }
-                    map
                 }
-                Ok(resp) if resp.status() == reqwest::StatusCode::NOT_FOUND => HashMap::new(),
-                Ok(resp) => {
-                    res.errors.push(format!("failed to fetch remote list: HTTP {}", resp.status()));
-                    node_results.push(res);
-                    continue;
+                m
+            } else {
+                let list_url = format!("{base}/api/list?path={prefix}&recursive=1&checksums=1");
+                let mut req = self.client.get(&list_url);
+                if !node.token.is_empty() {
+                    req = req.header("Authorization", format!("Bearer {}", node.token));
                 }
-                Err(e) => {
-                    res.errors.push(format!("failed to connect to remote node: {e}"));
-                    node_results.push(res);
-                    continue;
+                match req.send().await {
+                    Ok(resp) if resp.status().is_success() => {
+                        let val: serde_json::Value = resp.json().await.unwrap_or_default();
+                        let mut map = HashMap::new();
+                        if let Some(entries) = val.get("entries").and_then(|v| v.as_array()) {
+                            for e in entries {
+                                if e.get("type").and_then(|v| v.as_str()) == Some("file") {
+                                    if let (Some(path), Some(hash)) = (
+                                        e.get("path").and_then(|v| v.as_str()),
+                                        e.get("md5").or_else(|| e.get("sha256")).and_then(|v| v.as_str()),
+                                    ) {
+                                        map.insert(path.to_string(), hash.to_string());
+                                    }
+                                }
+                            }
+                        }
+                        map
+                    }
+                    Ok(resp) if resp.status() == reqwest::StatusCode::NOT_FOUND => HashMap::new(),
+                    Ok(resp) => {
+                        res.errors.push(format!("failed to fetch remote list: HTTP {}", resp.status()));
+                        node_results.push(res);
+                        continue;
+                    }
+                    Err(e) => {
+                        res.errors.push(format!("failed to connect to remote node: {e}"));
+                        node_results.push(res);
+                        continue;
+                    }
                 }
             };
 

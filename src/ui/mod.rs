@@ -734,7 +734,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       inset: 0;
       background: rgba(0, 0, 0, 0.35);
       backdrop-filter: blur(8px);
-      z-index: 500;
+      z-index: 3000;
       display: none;
       align-items: center;
       justify-content: center;
@@ -931,7 +931,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       font-size: 0.82rem;
       box-shadow: var(--shadow-md);
       display: none;
-      z-index: 1000;
+      z-index: 9999;
       align-items: center;
       gap: 8px;
     }
@@ -1536,10 +1536,37 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       return String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
     }
 
+    function copyToClipboard(text, successMsg = 'Copied to clipboard') {
+      if (!text) return;
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(() => {
+          showToast(successMsg);
+        }).catch(() => {
+          fallbackCopy(text, successMsg);
+        });
+      } else {
+        fallbackCopy(text, successMsg);
+      }
+    }
+    function fallbackCopy(text, successMsg) {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        document.execCommand('copy');
+        showToast(successMsg);
+      } catch (e) {
+        showToast('Copy failed');
+      }
+      document.body.removeChild(ta);
+    }
+
     function copyCurrentPreviewText() {
       if (!currentPreviewText) return;
-      navigator.clipboard.writeText(currentPreviewText);
-      showToast('Object content copied');
+      copyToClipboard(currentPreviewText, 'Object content copied');
     }
 
     function stripBackupSuffix(name) {
@@ -1788,9 +1815,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
     }
 
     function copyTotpSecret() {
-      navigator.clipboard.writeText(totpSecretRaw).then(() => {
-        showToast('Secret copied to clipboard');
-      });
+      copyToClipboard(totpSecretRaw, 'Secret copied to clipboard');
     }
 
     async function signOut() {
@@ -1857,11 +1882,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
 
     function copyGDriveCallbackUri() {
       const uri = window.location.origin + getBasePath() + '/api/cluster/gdrive/callback';
-      navigator.clipboard.writeText(uri).then(() => {
-        showToast('回调地址已复制到剪贴板');
-      }).catch(() => {
-        showToast('复制失败，请手动长按复制');
-      });
+      copyToClipboard(uri, '回调地址已复制到剪贴板');
     }
 
     function closeGDriveModal() {
@@ -2780,12 +2801,28 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
 
     async function syncCurrentFile() {
       if (!inspectingFilePath) return;
+      const btn = document.getElementById('btnSyncSingleFile');
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = 'Syncing...';
+      }
       showToast('Replicating to all missing followers...');
-      const res = await api(`/api/cluster/sync-file?path=${encodeURIComponent(inspectingFilePath)}`, { method: 'POST' });
-      if (res.ok) {
-        showToast('File replicated successfully');
-        inspectFileReplica(inspectingFilePath, false);
-        probeDirectoryReplicas(currentPath);
+      try {
+        const res = await api(`/api/cluster/sync-file?path=${encodeURIComponent(inspectingFilePath)}`, { method: 'POST' });
+        if (res.ok) {
+          showToast('File replicated successfully');
+          await inspectFileReplica(inspectingFilePath, false);
+          probeDirectoryReplicas(currentPath);
+        } else {
+          showToast('Replication failed: HTTP ' + res.status);
+        }
+      } catch (e) {
+        showToast('Replication error: ' + e);
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = 'Sync To Followers';
+        }
       }
     }
 
@@ -3015,8 +3052,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
     }
 
     function copyURL(path) {
-      navigator.clipboard.writeText(window.location.origin + path);
-      showToast('Object link copied');
+      copyToClipboard(window.location.origin + path, 'Object link copied');
     }
 
     function openTokenModal() {
@@ -3033,8 +3069,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
 
     function copyMD5(md5) {
       if (!md5) return;
-      navigator.clipboard.writeText(md5);
-      showToast('MD5 checksum copied to clipboard');
+      copyToClipboard(md5, 'MD5 checksum copied to clipboard');
     }
     const copySHA = copyMD5;
 
@@ -3203,24 +3238,35 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
         scopeItemRadio.checked = true;
         badge.textContent = `🎯 同步目标: ${activeSyncTarget.label} (${activeSyncTarget.type === 'batch' ? activeSyncTarget.paths.length + ' 项' : (activeSyncTarget.prefix || activeSyncTarget.paths[0])})`;
         badge.style.display = 'block';
+      } else if (activeSyncTarget && activeSyncTarget.type === 'current') {
+        itemWrapper.style.display = 'none';
+        scopeCurrentRadio.checked = true;
+        badge.textContent = `🎯 同步目标: 当前目录 (/${currentPath || 'root'})`;
+        badge.style.display = 'block';
       } else {
         itemWrapper.style.display = 'none';
         badge.style.display = 'none';
-        if (activeSyncTarget && activeSyncTarget.type === 'current') {
-          scopeCurrentRadio.checked = true;
-        } else {
-          scopeAllRadio.checked = true;
-        }
+        scopeAllRadio.checked = true;
       }
-      openClusterSyncModal();
+      openClusterSyncModal(true);
     }
 
-    async function openClusterSyncModal() {
+    async function openClusterSyncModal(preserveTarget = false) {
+      if (!preserveTarget) {
+        activeSyncTarget = null;
+        const itemWrapper = document.getElementById('syncItemScopeWrapper');
+        if (itemWrapper) itemWrapper.style.display = 'none';
+        const badge = document.getElementById('syncTargetBadge');
+        if (badge) badge.style.display = 'none';
+        const scopeAllRadio = document.getElementById('syncScopeAll');
+        if (scopeAllRadio) scopeAllRadio.checked = true;
+      }
       const folderLabel = document.getElementById('syncCurrentFolderLabel');
       if (folderLabel) {
         folderLabel.textContent = `Current Folder (${currentPath ? '/' + currentPath : '/ (root)'})`;
       }
-      document.getElementById('syncProgressTimer').textContent = '';
+      const timer = document.getElementById('syncProgressTimer');
+      if (timer) timer.textContent = '';
       const diffPanel = document.getElementById('syncDiffPanel');
       if (diffPanel) diffPanel.style.display = 'none';
       const liveContainer = document.getElementById('syncLiveProgressContainer');
