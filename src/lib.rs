@@ -218,7 +218,7 @@ impl AppState {
         std::fs::create_dir_all(root.join(".ostore"))?;
         let metrics = Arc::new(Metrics::new());
         let totp = Arc::new(auth_otp::TotpAuth::load_or_generate(&root)?);
-        let sessions = Arc::new(auth_otp::SessionStore::default());
+        let sessions = Arc::new(auth_otp::SessionStore::load_or_create(&root));
         Ok(Self {
             webhooks: Arc::new(WebhookStore::load(&root, metrics.clone())),
             root,

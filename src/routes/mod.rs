@@ -79,6 +79,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/auth/login", post(auth_routes::login))
         .route("/auth/logout", post(auth_routes::logout))
         .route("/auth/setup", get(auth_routes::setup_info))
+        .route("/auth/verify", get(auth_routes::verify))
         .route("/cluster/gdrive/callback", get(cluster::gdrive_callback))
         .merge(protected_api);
 

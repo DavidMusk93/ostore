@@ -84,3 +84,34 @@ pub async fn setup_info(State(st): State<AppState>) -> Json<serde_json::Value> {
         "instructions": "Enter this secret or scan QR code in Apple Passwords, Google Authenticator, or 1Password."
     }))
 }
+
+/// GET /api/auth/verify — check whether current Bearer token or session cookie is valid.
+pub async fn verify(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+) -> Json<serde_json::Value> {
+    // 1. Check Bearer token
+    if let Some(bearer) = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+    {
+        if bearer == st.token.as_ref() || st.sessions.verify_session(bearer).await {
+            return Json(json!({ "authenticated": true, "type": "bearer" }));
+        }
+    }
+
+    // 2. Check Cookie (ostore_sess=...)
+    if let Some(cookie_hdr) = headers.get(header::COOKIE).and_then(|v| v.to_str().ok()) {
+        for cookie in cookie_hdr.split(';') {
+            let trimmed = cookie.trim();
+            if let Some(sess) = trimmed.strip_prefix("ostore_sess=") {
+                if st.sessions.verify_session(sess).await {
+                    return Json(json!({ "authenticated": true, "type": "cookie" }));
+                }
+            }
+        }
+    }
+
+    Json(json!({ "authenticated": false }))
+}

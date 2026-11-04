@@ -917,12 +917,12 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       <p>Enter the 6-digit verification code from your Authenticator app (Apple Passwords, Google Authenticator, etc.)</p>
 
       <div class="otp-input-group">
-        <input type="text" class="otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]*" autofocus>
-        <input type="text" class="otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]*">
-        <input type="text" class="otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]*">
-        <input type="text" class="otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]*">
-        <input type="text" class="otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]*">
-        <input type="text" class="otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]*">
+        <input type="text" class="otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code" autofocus>
+        <input type="text" class="otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code">
+        <input type="text" class="otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code">
+        <input type="text" class="otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code">
+        <input type="text" class="otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code">
+        <input type="text" class="otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code">
       </div>
 
       <button class="login-btn" id="loginBtn" onclick="submitOtpLogin()">Sign In</button>
@@ -1561,24 +1561,51 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
     async function api(path, opts = {}) {
       const url = `${getBasePath()}${path}`;
       opts.headers = opts.headers || {};
-      if (sessionToken) opts.headers['Authorization'] = `Bearer ${sessionToken}`;
-      return fetch(url, opts);
+      const tokenUsed = sessionToken;
+      if (tokenUsed) opts.headers['Authorization'] = `Bearer ${tokenUsed}`;
+      const res = await fetch(url, opts);
+      if (res.status === 401) {
+        // Only trigger logout if the 401 corresponds to our current active token
+        if (tokenUsed && tokenUsed === sessionToken) {
+          sessionToken = '';
+          localStorage.removeItem('ostore_sess');
+          showLogin();
+        }
+      }
+      return res;
     }
 
     // Authenticator OTP UI & Flow
+    let isSubmittingOtp = false;
     const otpInputs = document.querySelectorAll('.otp-digit');
     otpInputs.forEach((input, index) => {
       input.addEventListener('input', (e) => {
-        const val = e.target.value;
-        if (val.length === 1 && index < otpInputs.length - 1) {
+        const raw = e.target.value.replace(/\D/g, '');
+        if (raw.length > 1) {
+          // Multi-character input (e.g. browser autofill, SMS/Authenticator suggestion, or paste)
+          const digits = raw.slice(0, 6);
+          digits.split('').forEach((d, i) => {
+            if (otpInputs[i]) otpInputs[i].value = d;
+          });
+          const nextIndex = Math.min(digits.length, otpInputs.length - 1);
+          otpInputs[nextIndex].focus();
+          checkAutoSubmit();
+          return;
+        }
+
+        e.target.value = raw;
+        if (raw.length === 1 && index < otpInputs.length - 1) {
           otpInputs[index + 1].focus();
         }
         checkAutoSubmit();
       });
 
       input.addEventListener('keydown', (e) => {
-        if (e.key === 'Backspace' && !e.target.value && index > 0) {
-          otpInputs[index - 1].focus();
+        if (e.key === 'Backspace') {
+          if (!e.target.value && index > 0) {
+            otpInputs[index - 1].focus();
+            otpInputs[index - 1].value = '';
+          }
         } else if (e.key === 'Enter') {
           submitOtpLogin();
         }
@@ -1586,31 +1613,38 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
 
       input.addEventListener('paste', (e) => {
         e.preventDefault();
-        const text = (e.clipboardData || window.clipboardData).getData('text').trim();
-        if (/^\d{6}$/.test(text)) {
-          text.split('').forEach((digit, i) => {
+        const text = (e.clipboardData || window.clipboardData).getData('text') || '';
+        const digits = text.replace(/\D/g, '').slice(0, 6);
+        if (digits.length > 0) {
+          digits.split('').forEach((digit, i) => {
             if (otpInputs[i]) otpInputs[i].value = digit;
           });
-          otpInputs[5].focus();
-          submitOtpLogin();
+          const focusIdx = Math.min(digits.length, 5);
+          otpInputs[focusIdx].focus();
+          if (digits.length === 6) {
+            submitOtpLogin();
+          }
         }
       });
     });
 
     function checkAutoSubmit() {
-      const code = Array.from(otpInputs).map(i => i.value).join('');
-      if (code.length === 6) {
+      const code = Array.from(otpInputs).map(i => i.value.trim()).join('');
+      if (code.length === 6 && /^\d{6}$/.test(code)) {
         submitOtpLogin();
       }
     }
 
     async function submitOtpLogin() {
-      const code = Array.from(otpInputs).map(i => i.value).join('');
-      if (code.length !== 6) {
-        alert('Please enter a valid 6-digit Authenticator code');
+      if (isSubmittingOtp) return;
+
+      const code = Array.from(otpInputs).map(i => i.value.trim()).join('');
+      if (code.length !== 6 || !/^\d{6}$/.test(code)) {
+        showToast('Please enter a 6-digit Authenticator code');
         return;
       }
 
+      isSubmittingOtp = true;
       const btn = document.getElementById('loginBtn');
       btn.textContent = 'Verifying...';
       btn.disabled = true;
@@ -1630,13 +1664,14 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
           showToast('Authenticator verified');
           showConsole();
         } else {
-          alert('Invalid verification code. Please check your Authenticator app.');
+          showToast('Invalid verification code. Check Authenticator app.');
           otpInputs.forEach(i => i.value = '');
           otpInputs[0].focus();
         }
       } catch (e) {
-        alert('Authentication error: ' + e);
+        showToast('Authentication error: ' + (e.message || e));
       } finally {
+        isSubmittingOtp = false;
         btn.textContent = 'Sign In';
         btn.disabled = false;
       }
@@ -1653,7 +1688,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
           document.getElementById('totpSetupModal').style.display = 'flex';
         }
       } catch (e) {
-        alert('Failed to load setup info: ' + e);
+        showToast('Failed to load setup info: ' + e);
       }
     }
 
@@ -1678,6 +1713,10 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
 
     function showLogin() {
       closeAllModals();
+      if (eventSource) {
+        eventSource.close();
+        eventSource = null;
+      }
       document.getElementById('loginView').style.display = 'flex';
       document.getElementById('mainConsole').style.display = 'none';
       otpInputs.forEach(i => i.value = '');
@@ -1686,6 +1725,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
 
     function showConsole() {
       closeAllModals();
+      isLoading = false;
       document.getElementById('loginView').style.display = 'none';
       document.getElementById('mainConsole').style.display = 'block';
       initSSE();
@@ -1906,10 +1946,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
     async function loadTopology() {
       try {
         const res = await api('/api/cluster/topology');
-        if (!res.ok) {
-          if (res.status === 401) showLogin();
-          return;
-        }
+        if (!res.ok) return;
         const topo = await res.json();
 
         renderTopologySVG(topo);
@@ -2049,11 +2086,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
 
         const res = await api(`/api/list${query}`);
         if (!res.ok) {
-          if (res.status === 401) {
-            showLogin();
-            return;
-          }
-          throw new Error(`HTTP ${res.status}`);
+          return;
         }
         const data = await res.json();
 
@@ -3087,16 +3120,30 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       }
     }
 
-    // Initial Gatekeeper: Check Authentication & Instant Optimistic Boot
+    // Initial Gatekeeper: Verify authentication cleanly before showing console
     async function checkAuthAndBoot() {
       if (!sessionToken) {
         showLogin();
         return;
       }
 
-      // Optimistic instant boot: display console immediately without blocking on a preflight round-trip.
-      // If the session token is invalid or expired, loadDirectory will receive a 401 and redirect to login.
-      showConsole();
+      try {
+        const res = await api('/api/auth/verify');
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.authenticated) {
+            showConsole();
+            return;
+          }
+        }
+      } catch (e) {
+        console.warn('Auth verify check error:', e);
+      }
+
+      // Invalid or expired token: clear stale session and show login screen cleanly (no mainConsole flash)
+      sessionToken = '';
+      localStorage.removeItem('ostore_sess');
+      showLogin();
     }
 
     checkAuthAndBoot();

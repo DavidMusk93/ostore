@@ -5,8 +5,8 @@
 //! and generates 14-day persistent sessions.
 
 use std::collections::HashMap;
-use std::path::Path;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use hmac::{Hmac, Mac};
 use sha1::Sha1;
@@ -175,8 +175,9 @@ impl TotpAuth {
 }
 
 pub struct SessionStore {
-    sessions: RwLock<HashMap<String, Instant>>,
+    sessions: RwLock<HashMap<String, u64>>,
     duration: Duration,
+    file_path: Option<PathBuf>,
 }
 
 impl Default for SessionStore {
@@ -190,6 +191,44 @@ impl SessionStore {
         Self {
             sessions: RwLock::new(HashMap::new()),
             duration,
+            file_path: None,
+        }
+    }
+
+    pub fn load_or_create(root: &Path) -> Self {
+        let file_path = root.join(".ostore").join("sessions.json");
+        let duration = Duration::from_secs(14 * 86400);
+        let mut map: HashMap<String, u64> = HashMap::new();
+
+        if let Ok(content) = std::fs::read_to_string(&file_path) {
+            if let Ok(loaded) = serde_json::from_str::<HashMap<String, u64>>(&content) {
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                for (tok, exp) in loaded {
+                    if exp > now {
+                        map.insert(tok, exp);
+                    }
+                }
+            }
+        }
+
+        Self {
+            sessions: RwLock::new(map),
+            duration,
+            file_path: Some(file_path),
+        }
+    }
+
+    fn persist_locked(&self, sessions: &HashMap<String, u64>) {
+        if let Some(ref path) = self.file_path {
+            if let Ok(json) = serde_json::to_string(sessions) {
+                let tmp = path.with_extension("tmp");
+                if std::fs::write(&tmp, json.as_bytes()).is_ok() {
+                    let _ = std::fs::rename(tmp, path);
+                }
+            }
         }
     }
 
@@ -200,20 +239,33 @@ impl SessionStore {
         let mut hasher = sha2::Sha256::new();
         hasher.update(now.to_be_bytes());
         hasher.update(rnd.to_be_bytes());
+        hasher.update(&now.to_le_bytes());
         let token = format!("sess_{}", hex::encode(&hasher.finalize()[..16]));
 
+        let now_sec = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let exp = now_sec + self.duration.as_secs();
+
         let mut lock = self.sessions.write().await;
-        lock.insert(token.clone(), Instant::now() + self.duration);
+        lock.insert(token.clone(), exp);
+        self.persist_locked(&lock);
         token
     }
 
     pub async fn verify_session(&self, token: &str) -> bool {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
         let mut lock = self.sessions.write().await;
-        if let Some(expires_at) = lock.get(token) {
-            if Instant::now() < *expires_at {
+        if let Some(&expires_at) = lock.get(token) {
+            if now < expires_at {
                 return true;
             } else {
                 lock.remove(token);
+                self.persist_locked(&lock);
             }
         }
         false
@@ -221,6 +273,8 @@ impl SessionStore {
 
     pub async fn revoke_session(&self, token: &str) {
         let mut lock = self.sessions.write().await;
-        lock.remove(token);
+        if lock.remove(token).is_some() {
+            self.persist_locked(&lock);
+        }
     }
 }

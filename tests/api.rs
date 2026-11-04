@@ -840,6 +840,27 @@ async fn totp_authenticator_login_and_session_access() {
         .unwrap();
     let resp = f.app.clone().oneshot(sess_req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
+
+    // 7. Test /api/auth/verify endpoint
+    let unauth_verify = Request::builder().uri("/api/auth/verify").body(Body::empty()).unwrap();
+    let resp = f.app.clone().oneshot(unauth_verify).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let j = body_json(resp).await;
+    assert_eq!(j["authenticated"], false);
+
+    let auth_verify = Request::builder()
+        .uri("/api/auth/verify")
+        .header(header::AUTHORIZATION, format!("Bearer {sess_token}"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = f.app.clone().oneshot(auth_verify).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let j = body_json(resp).await;
+    assert_eq!(j["authenticated"], true);
+
+    // 8. Test session persistence across AppState restart
+    let reopened_state = ostore::AppState::new(f.state.root.clone(), TOKEN.to_string()).unwrap();
+    assert!(reopened_state.sessions.verify_session(&sess_token).await);
 }
 
 #[tokio::test]
