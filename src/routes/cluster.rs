@@ -309,7 +309,7 @@ fn html_message(title: &str, msg: &str, success: bool) -> axum::response::Respon
     p {{ font-size: 0.86rem; color: #86868B; line-height: 1.5; margin-bottom: 24px; }}
     a {{ display: inline-block; background: {color}; color: #fff; text-decoration: none; padding: 10px 24px; border-radius: 980px; font-weight: 500; font-size: 0.86rem; }}
   </style>
-  <meta http-equiv="refresh" content="3;url=/ostore">
+  {redirect_meta}
 </head>
 <body>
   <div class="card">
@@ -319,7 +319,12 @@ fn html_message(title: &str, msg: &str, success: bool) -> axum::response::Respon
     <a href="/ostore">返回 ostore 控制台</a>
   </div>
 </body>
-</html>"#
+</html>"#,
+        redirect_meta = if success {
+            r#"<meta http-equiv="refresh" content="2;url=/ostore">"#
+        } else {
+            ""
+        }
     );
     (
         [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
@@ -384,6 +389,13 @@ pub async fn gdrive_auth_url(
         .redirect_uri
         .unwrap_or_else(|| "https://xyz69.top/ostore/api/cluster/gdrive/callback".to_string());
 
+    tracing::info!(
+        client_id = %mask_str(&req.client_id),
+        redirect = %redirect,
+        state = %state,
+        "generating gdrive oauth url"
+    );
+
     {
         let mut lock = PENDING_OAUTH.write().await;
         lock.retain(|_, (_, _, _, t)| t.elapsed() < std::time::Duration::from_secs(900));
@@ -420,13 +432,18 @@ pub async fn gdrive_callback(
     State(st): State<AppState>,
     Query(q): Query<CallbackQuery>,
 ) -> axum::response::Response {
+    tracing::info!(has_code = q.code.is_some(), has_state = q.state.is_some(), error = ?q.error, "received gdrive oauth callback");
+
     if let Some(err) = q.error {
+        tracing::warn!(error = %err, "google oauth callback returned error");
         return html_message("Google 授权失败", &format!("Google 返回错误: {err}"), false);
     }
     let Some(code) = q.code else {
+        tracing::warn!("google oauth callback missing code");
         return html_message("授权错误", "缺少 authorization code", false);
     };
     let Some(state_key) = q.state else {
+        tracing::warn!("google oauth callback missing state");
         return html_message("授权错误", "缺少 state 参数", false);
     };
 
@@ -435,7 +452,8 @@ pub async fn gdrive_callback(
         lock.remove(&state_key)
     };
     let Some((client_id, client_secret, redirect_uri, _)) = pending else {
-        return html_message("授权超时", "授权会话已过期，请重新点击授权", false);
+        tracing::warn!(state = %state_key, "gdrive oauth session expired or unknown state");
+        return html_message("授权超时", "授权会话已过期（或服务曾重启），请返回控制台重新点击授权", false);
     };
 
     let params = [
@@ -454,23 +472,32 @@ pub async fn gdrive_callback(
         .await
     {
         Ok(r) => r,
-        Err(e) => return html_message("Token 交换失败", &format!("网络请求失败: {e}"), false),
+        Err(e) => {
+            tracing::error!(error = %e, "gdrive token exchange network error");
+            return html_message("Token 交换失败", &format!("网络请求失败: {e}"), false);
+        }
     };
 
     if !resp.status().is_success() {
+        let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
-        return html_message("Token 交换失败", &format!("Google 响应异常: {text}"), false);
+        tracing::error!(status = %status, body = %text, "gdrive token exchange failed");
+        return html_message("Token 交换失败", &format!("Google 响应异常 ({status}): {text}"), false);
     }
 
     let val: serde_json::Value = match resp.json().await {
         Ok(v) => v,
-        Err(e) => return html_message("Token 解析失败", &format!("无法解析 JSON: {e}"), false),
+        Err(e) => {
+            tracing::error!(error = %e, "gdrive token json decode error");
+            return html_message("Token 解析失败", &format!("无法解析 JSON: {e}"), false);
+        }
     };
 
     let Some(refresh_token) = val.get("refresh_token").and_then(|v| v.as_str()) else {
+        tracing::warn!("google oauth did not return refresh_token");
         return html_message(
             "缺少 Refresh Token",
-            "Google 未返回 refresh_token（可能已授权过）。请在 Google 账号授权管理中取消对本应用的授权后重试，或直接在控制台手动填入 refresh_token。",
+            "Google 未返回 refresh_token（可能此前已对本应用授权）。请访问 Google 账号连接管理 (https://myaccount.google.com/connections) 取消对本应用的访问权限后重新授权，或在控制台手动填入已有 Refresh Token。",
             false,
         );
     };
@@ -483,10 +510,12 @@ pub async fn gdrive_callback(
             root_folder_id: "root".to_string(),
         };
         if let Err(e) = cluster.update_and_persist_gdrive(cfg).await {
+            tracing::error!(error = %e, "update_and_persist_gdrive failed");
             return html_message("保存失败", &format!("保存 Google Drive 配置失败: {e}"), false);
         }
     }
 
+    tracing::info!("gdrive oauth successful and cluster updated");
     html_message(
         "Google Drive 接入成功",
         "已成功绑定您的 Google 账号，云端存储配额已激活！正在跳转回控制台...",
@@ -518,15 +547,22 @@ pub async fn gdrive_connect(
         root_folder_id: req.root_folder_id.unwrap_or_else(|| "root".to_string()),
     };
 
+    tracing::info!(client_id = %mask_str(&cfg.client_id), "validating manual gdrive credentials");
     let client = crate::cluster::gdrive::GDriveClient::new(cfg.clone());
     let (total, avail) = client
         .get_storage_quota()
         .await
-        .map_err(|e| ApiError::bad_request("GDRIVE_AUTH_FAILED", format!("Google Drive 验证失败: {e}")))?;
+        .map_err(|e| {
+            tracing::warn!(error = %e, "manual gdrive validation failed");
+            ApiError::bad_request("GDRIVE_AUTH_FAILED", format!("Google Drive 验证失败: {e}"))
+        })?;
 
     cluster.update_and_persist_gdrive(cfg).await.map_err(|e| {
+        tracing::error!(error = %e, "update_and_persist_gdrive failed during manual connect");
         ApiError::internal(std::io::Error::new(std::io::ErrorKind::Other, e))
     })?;
+
+    tracing::info!("manual gdrive node connected and persisted successfully");
 
     Ok(Json(json!({
         "status": "ok",

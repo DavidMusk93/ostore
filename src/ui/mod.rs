@@ -1362,9 +1362,39 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
             2. 在「API 和服务」→「库」中搜索 <strong>Google Drive API</strong> 并点击启用。<br>
             3. 在「OAuth 同意屏幕」将类型选为外部，填写应用名并添加自己的 Google 邮箱为测试用户。<br>
             4. 在「凭据」→「创建凭据」选择 <strong>OAuth 客户端 ID</strong>，应用类型选「Web 应用」。<br>
-            5. 在「已获授权的重定向 URI」中添加：<br>
-            <code style="display:block; background:rgba(0,0,0,0.05); padding: 4px 8px; border-radius: 4px; margin: 4px 0; word-break: break-all;">https://xyz69.top/ostore/api/cluster/gdrive/callback</code>
+            5. 在「已获授权的重定向 URI」中添加（必须与当前访问域名 100% 一致）：<br>
+            <div style="display:flex; align-items:center; gap:6px; margin: 6px 0;">
+              <code id="gdriveCallbackUriCode" style="flex:1; background:rgba(0,0,0,0.05); padding: 5px 8px; border-radius: 4px; word-break: break-all; font-size: 0.72rem; font-family: var(--font-mono);">https://xyz69.top/ostore/api/cluster/gdrive/callback</code>
+              <button type="button" class="btn" style="height:26px; font-size:0.7rem; padding: 0 8px;" onclick="copyGDriveCallbackUri()">复制</button>
+            </div>
             6. 复制生成的 Client ID 与 Client Secret 粘贴至上方即可。
+          </div>
+        </details>
+
+        <!-- Troubleshooting FAQ -->
+        <details style="margin-top: 10px; font-size: 0.75rem; color: var(--ink-secondary); border-top: 1px solid var(--card-border); padding-top: 10px;">
+          <summary style="cursor: pointer; font-weight: 600; color: #FF3B30;">⚠️ 连接常见报错与排查解决 (点击展开)</summary>
+          <div style="line-height: 1.6; margin-top: 8px;">
+            <div style="margin-bottom: 8px;">
+              <strong style="color:var(--ink);">1. Error 400: redirect_uri_mismatch</strong><br>
+              说明 Google Cloud 控制台填写的重定向 URI 与当前访问地址不匹配。点击上方「复制」按钮获取准确的重定向 URI，填入 Google 控制台「已获授权的重定向 URI」中。
+            </div>
+            <div style="margin-bottom: 8px;">
+              <strong style="color:var(--ink);">2. Access blocked / Error 403: access_denied</strong><br>
+              说明应用处于测试中，未添加授权账号。请在 Google Cloud Console →「OAuth 同意屏幕」→「测试用户 (Test users)」中添加您正在登录的 Google 邮箱。
+            </div>
+            <div style="margin-bottom: 8px;">
+              <strong style="color:var(--ink);">3. Google 提示「Google 尚未验证此应用」</strong><br>
+              自建 OAuth 应用的标准安全提示，并非报错。点击左下角「高级 (Advanced)」→「前往...（不安全）」→ 勾选 Drive 权限后继续。
+            </div>
+            <div style="margin-bottom: 8px;">
+              <strong style="color:var(--ink);">4. Google Drive API 403 (API not enabled)</strong><br>
+              请在 Google Cloud Console →「API 和服务」→「库」中搜索启用 <strong>Google Drive API</strong>。
+            </div>
+            <div>
+              <strong style="color:var(--ink);">5. 缺少 Refresh Token</strong><br>
+              该账号此前已对本应用授权过。前往 <a href="https://myaccount.google.com/connections" target="_blank" style="color:var(--accent);">Google 账号关联应用</a> 解除授权后重新点击授权，或在「手动填入凭据」标签页输入已有 Refresh Token。
+            </div>
           </div>
         </details>
       </div>
@@ -1746,7 +1776,24 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
 
     function openGDriveModal() {
       checkGDriveStatus();
+      updateGDriveCallbackUri();
       document.getElementById('gdriveModal').style.display = 'flex';
+    }
+
+    function updateGDriveCallbackUri() {
+      const el = document.getElementById('gdriveCallbackUriCode');
+      if (el) {
+        el.textContent = window.location.origin + getBasePath() + '/api/cluster/gdrive/callback';
+      }
+    }
+
+    function copyGDriveCallbackUri() {
+      const uri = window.location.origin + getBasePath() + '/api/cluster/gdrive/callback';
+      navigator.clipboard.writeText(uri).then(() => {
+        showToast('回调地址已复制到剪贴板');
+      }).catch(() => {
+        showToast('复制失败，请手动长按复制');
+      });
     }
 
     function closeGDriveModal() {
