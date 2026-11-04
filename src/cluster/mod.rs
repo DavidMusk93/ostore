@@ -267,11 +267,33 @@ pub struct ClusterManager {
     statuses: Arc<RwLock<HashMap<String, NodeStatus>>>,
     last_sync_report: Arc<RwLock<Option<SyncReport>>>,
     cached_topology: Arc<RwLock<Option<(Instant, ClusterTopology)>>>,
-    is_syncing: Arc<AtomicBool>,
+    pub is_syncing: Arc<AtomicBool>,
     pub live_progress: Arc<RwLock<LiveSyncProgress>>,
     pub active_cancel: Arc<RwLock<Option<CancellationToken>>>,
     root: PathBuf,
     cache: Arc<crate::ChecksumCache>,
+}
+
+struct SyncGuard {
+    pub is_syncing: Arc<AtomicBool>,
+    live_progress: Arc<RwLock<LiveSyncProgress>>,
+    active_cancel: Arc<RwLock<Option<CancellationToken>>>,
+    metrics: Option<Arc<crate::metrics::Metrics>>,
+}
+
+impl Drop for SyncGuard {
+    fn drop(&mut self) {
+        self.is_syncing.store(false, Ordering::SeqCst);
+        if let Some(m) = &self.metrics {
+            m.sync_in_progress.store(0, Ordering::Relaxed);
+        }
+        if let Ok(mut lock) = self.active_cancel.try_write() {
+            *lock = None;
+        }
+        if let Ok(mut p) = self.live_progress.try_write() {
+            p.is_syncing = false;
+        }
+    }
 }
 
 impl ClusterManager {
@@ -1038,9 +1060,16 @@ impl ClusterManager {
     }
 
     pub async fn cancel_sync(&self) -> bool {
-        let guard = self.active_cancel.read().await;
-        if let Some(cancel) = guard.as_ref() {
+        let mut act = self.active_cancel.write().await;
+        if let Some(cancel) = act.take() {
             cancel.cancel();
+            self.is_syncing.store(false, Ordering::SeqCst);
+            let mut p = self.live_progress.write().await;
+            p.is_syncing = false;
+            true
+        } else if self.is_syncing.swap(false, Ordering::SeqCst) {
+            let mut p = self.live_progress.write().await;
+            p.is_syncing = false;
             true
         } else {
             false
@@ -1245,13 +1274,20 @@ impl ClusterManager {
     }
 
     /// Custom interactive & selectable synchronization across target nodes and paths.
-    pub async fn sync_custom(&self, opts: CustomSyncOptions, metrics: Option<&crate::metrics::Metrics>) -> SyncReport {
+    pub async fn sync_custom(&self, opts: CustomSyncOptions, metrics: Option<Arc<crate::metrics::Metrics>>) -> SyncReport {
         let cancel = CancellationToken::new();
         *self.active_cancel.write().await = Some(cancel.clone());
         self.is_syncing.store(true, Ordering::SeqCst);
-        if let Some(m) = metrics {
+        if let Some(m) = &metrics {
             m.sync_in_progress.store(1, Ordering::Relaxed);
         }
+
+        let _guard = SyncGuard {
+            is_syncing: self.is_syncing.clone(),
+            live_progress: self.live_progress.clone(),
+            active_cancel: self.active_cancel.clone(),
+            metrics: metrics.clone(),
+        };
 
         let start = Instant::now();
         let prefix = opts.prefix.as_deref().unwrap_or("").trim_matches('/').to_string();
@@ -1356,7 +1392,7 @@ impl ClusterManager {
                         }
 
                         // CPU safety governor & cooperative yield
-                        if let Some(m) = metrics {
+                        if let Some(m) = &metrics {
                             if m.current_system_cpu_ratio() > 0.75 {
                                 tokio::time::sleep(Duration::from_millis(50)).await;
                             }
@@ -1367,6 +1403,11 @@ impl ClusterManager {
                         if let Some(r_md5) = remote_map.get(rel_path) {
                             if r_md5 == md5 {
                                 res.skipped += 1;
+                                let mut p = self.live_progress.write().await;
+                                p.skipped_count += 1;
+                                if p.total_to_sync > 0 {
+                                    p.percent = ((p.synced_count + p.skipped_count) as f64 / p.total_to_sync as f64) * 100.0;
+                                }
                                 continue;
                             }
                         }
@@ -1385,13 +1426,16 @@ impl ClusterManager {
                                 let mut p = self.live_progress.write().await;
                                 p.synced_count += 1;
                                 if p.total_to_sync > 0 {
-                                    p.percent = (p.synced_count as f64 / p.total_to_sync as f64) * 100.0;
+                                    p.percent = ((p.synced_count + p.skipped_count) as f64 / p.total_to_sync as f64) * 100.0;
                                 }
                             }
                             Err(e) => {
                                 res.errors.push(format!("gdrive sync {rel_path} error: {e}"));
                                 let mut p = self.live_progress.write().await;
                                 p.failed_count += 1;
+                                if p.total_to_sync > 0 {
+                                    p.percent = ((p.synced_count + p.skipped_count + p.failed_count) as f64 / p.total_to_sync as f64) * 100.0;
+                                }
                             }
                         }
                     }
@@ -1464,6 +1508,11 @@ impl ClusterManager {
                 if let Some(r_hash) = remote_map.get(rel_path) {
                     if r_hash == md5 {
                         res.skipped += 1;
+                        let mut p = self.live_progress.write().await;
+                        p.skipped_count += 1;
+                        if p.total_to_sync > 0 {
+                            p.percent = ((p.synced_count + p.skipped_count) as f64 / p.total_to_sync as f64) * 100.0;
+                        }
                         continue;
                     }
                     if r_hash.len() == 64 {
@@ -1471,6 +1520,11 @@ impl ClusterManager {
                         if let Ok(m_sha) = crate::routes::files::sha256_file_real(&abs).await {
                             if &m_sha == r_hash {
                                 res.skipped += 1;
+                                let mut p = self.live_progress.write().await;
+                                p.skipped_count += 1;
+                                if p.total_to_sync > 0 {
+                                    p.percent = ((p.synced_count + p.skipped_count) as f64 / p.total_to_sync as f64) * 100.0;
+                                }
                                 continue;
                             }
                         }
@@ -1530,18 +1584,24 @@ impl ClusterManager {
                                 let mut p = progress.write().await;
                                 p.synced_count += 1;
                                 if p.total_to_sync > 0 {
-                                    p.percent = (p.synced_count as f64 / p.total_to_sync as f64) * 100.0;
+                                    p.percent = ((p.synced_count + p.skipped_count) as f64 / p.total_to_sync as f64) * 100.0;
                                 }
                                 Ok(())
                             }
                             Ok(resp) => {
                                 let mut p = progress.write().await;
                                 p.failed_count += 1;
+                                if p.total_to_sync > 0 {
+                                    p.percent = ((p.synced_count + p.skipped_count + p.failed_count) as f64 / p.total_to_sync as f64) * 100.0;
+                                }
                                 Err(format!("sync {rel_path} HTTP {}", resp.status()))
                             }
                             Err(e) => {
                                 let mut p = progress.write().await;
                                 p.failed_count += 1;
+                                if p.total_to_sync > 0 {
+                                    p.percent = ((p.synced_count + p.skipped_count + p.failed_count) as f64 / p.total_to_sync as f64) * 100.0;
+                                }
                                 Err(format!("sync {rel_path} error: {e}"))
                             }
                         }
@@ -1566,7 +1626,7 @@ impl ClusterManager {
         let total_errors: usize = node_results.iter().map(|n| n.errors.len()).sum();
         let duration_ms = start.elapsed().as_millis() as u64;
 
-        if let Some(m) = metrics {
+        if let Some(m) = &metrics {
             m.sync_in_progress.store(0, Ordering::Relaxed);
             m.sync_total_synced.fetch_add(total_synced as u64, Ordering::Relaxed);
             m.sync_total_skipped.fetch_add(total_skipped as u64, Ordering::Relaxed);

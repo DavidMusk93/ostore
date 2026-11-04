@@ -115,7 +115,7 @@ impl GDriveClient {
             folder_id_cache: Arc::new(RwLock::new(HashMap::new())),
             metadata_cache: Arc::new(RwLock::new(HashMap::new())),
             dir_listing_cache: Arc::new(RwLock::new(HashMap::new())),
-            upload_semaphore: Arc::new(Semaphore::new(3)),
+            upload_semaphore: Arc::new(Semaphore::new(2)),
         }
     }
 
@@ -136,6 +136,78 @@ impl GDriveClient {
             refresh_token,
             root_folder_id,
         }))
+    }
+
+    /// Execute an HTTP request closure with exponential backoff & jitter for Google Drive rate limits.
+    pub async fn execute_with_retry<F>(&self, op_name: &str, make_builder: F) -> Result<reqwest::Response, String>
+    where
+        F: Fn() -> reqwest::RequestBuilder,
+    {
+        let mut attempt = 0;
+        let max_attempts = 5;
+        loop {
+            attempt += 1;
+            let req = make_builder();
+            match req.send().await {
+                Ok(resp) => {
+                    let status = resp.status();
+                    if status.is_success() || status == reqwest::StatusCode::NOT_FOUND {
+                        return Ok(resp);
+                    }
+
+                    let is_rate_limited = status == reqwest::StatusCode::TOO_MANY_REQUESTS;
+                    let is_server_error = status.is_server_error();
+                    let is_forbidden = status == reqwest::StatusCode::FORBIDDEN;
+
+                    if (is_rate_limited || is_server_error || is_forbidden) && attempt < max_attempts {
+                        let retry_after_secs = resp
+                            .headers()
+                            .get(reqwest::header::RETRY_AFTER)
+                            .and_then(|h| h.to_str().ok())
+                            .and_then(|s| s.parse::<u64>().ok());
+
+                        let body = resp.text().await.unwrap_or_default();
+                        if is_forbidden {
+                            let is_rate_limit_reason = body.contains("userRateLimitExceeded")
+                                || body.contains("rateLimitExceeded");
+                            let is_quota_exceeded = body.contains("storageQuotaExceeded")
+                                || body.contains("quotaExceeded");
+
+                            if is_quota_exceeded {
+                                return Err("Google Drive daily upload quota (750GB/day limit) exceeded. Please wait 24 hours.".to_string());
+                            }
+                            if !is_rate_limit_reason {
+                                return Err(format!("{op_name} HTTP 403 Forbidden: {body}"));
+                            }
+                        }
+
+                        let delay = if let Some(secs) = retry_after_secs {
+                            Duration::from_secs(secs)
+                        } else {
+                            // Exponential backoff: 1s, 2s, 4s, 8s + 100-400ms jitter
+                            let base_ms = 1000u64.saturating_mul(1u64 << (attempt - 1));
+                            let jitter_ms = (chrono::Utc::now().timestamp_subsec_millis() % 300) as u64 + 100;
+                            Duration::from_millis((base_ms + jitter_ms).min(30_000))
+                        };
+
+                        tracing::warn!(op = op_name, attempt, delay_ms = delay.as_millis(), status = %status, "Google Drive rate limit/transient error, backing off...");
+                        tokio::time::sleep(delay).await;
+                        continue;
+                    }
+
+                    let body = resp.text().await.unwrap_or_default();
+                    return Err(format!("{op_name} HTTP {status}: {body}"));
+                }
+                Err(e) => {
+                    if attempt < max_attempts && (e.is_timeout() || e.is_connect()) {
+                        let delay = Duration::from_millis(500 * (1 << (attempt - 1)));
+                        tokio::time::sleep(delay).await;
+                        continue;
+                    }
+                    return Err(format!("{op_name} request failed: {e}"));
+                }
+            }
+        }
     }
 
     /// Retrieve valid OAuth2 access token with automatic refresh and caching.
@@ -195,12 +267,10 @@ impl GDriveClient {
         let token = self.get_access_token().await?;
         let url = format!("{GDRIVE_API_BASE}/about?fields=storageQuota");
         let resp = self
-            .client
-            .get(&url)
-            .header("Authorization", format!("Bearer {token}"))
-            .send()
-            .await
-            .map_err(|e| format!("about request error: {e}"))?;
+            .execute_with_retry("get_storage_quota", || {
+                self.client.get(&url).header("Authorization", format!("Bearer {token}"))
+            })
+            .await?;
 
         if !resp.status().is_success() {
             return Err(format!("about request HTTP {}", resp.status()));
@@ -262,12 +332,10 @@ impl GDriveClient {
             let url = format!("{GDRIVE_API_BASE}/files?q={}&fields=files(id,name)&pageSize=1", urlencoding::encode(&q));
 
             let resp = self
-                .client
-                .get(&url)
-                .header("Authorization", format!("Bearer {token}"))
-                .send()
-                .await
-                .map_err(|e| format!("folder query error for {part}: {e}"))?;
+                .execute_with_retry("folder query", || {
+                    self.client.get(&url).header("Authorization", format!("Bearer {token}"))
+                })
+                .await?;
 
             let target_folder_id = if resp.status().is_success() {
                 let fl: FileListResponse = resp.json().await.map_err(|e| e.to_string())?;
@@ -282,13 +350,13 @@ impl GDriveClient {
                         "parents": [current_parent_id]
                     });
                     let create_resp = self
-                        .client
-                        .post(&create_url)
-                        .header("Authorization", format!("Bearer {token}"))
-                        .json(&create_body)
-                        .send()
-                        .await
-                        .map_err(|e| format!("create folder {part} error: {e}"))?;
+                        .execute_with_retry("create folder", || {
+                            self.client
+                                .post(&create_url)
+                                .header("Authorization", format!("Bearer {token}"))
+                                .json(&create_body)
+                        })
+                        .await?;
 
                     if !create_resp.status().is_success() {
                         return Err(format!("create folder {part} HTTP {}", create_resp.status()));
@@ -341,12 +409,10 @@ impl GDriveClient {
             }
 
             let resp = self
-                .client
-                .get(&url)
-                .header("Authorization", format!("Bearer {token}"))
-                .send()
-                .await
-                .map_err(|e| format!("list_dir error on {rel_dir}: {e}"))?;
+                .execute_with_retry("list_dir", || {
+                    self.client.get(&url).header("Authorization", format!("Bearer {token}"))
+                })
+                .await?;
 
             if !resp.status().is_success() {
                 return Err(format!("list_dir {rel_dir} HTTP {}", resp.status()));
@@ -447,6 +513,9 @@ impl GDriveClient {
             }
         }
 
+        // Cooperative delay to keep overall request throughput strictly under Google Drive's 10 req/s threshold
+        tokio::time::sleep(Duration::from_millis(60)).await;
+
         let file_bytes = tokio::fs::read(abs_path)
             .await
             .map_err(|e| format!("read file for gdrive upload error: {e}"))?;
@@ -462,14 +531,14 @@ impl GDriveClient {
             // Update file content via PATCH
             let url = format!("{GDRIVE_UPLOAD_BASE}/files/{}?uploadType=media&fields=id,name,mimeType,size,md5Checksum,modifiedTime", exist.id);
             let resp = self
-                .client
-                .patch(&url)
-                .header("Authorization", format!("Bearer {token}"))
-                .header("Content-Type", &mime)
-                .body(file_bytes)
-                .send()
-                .await
-                .map_err(|e| format!("patch gdrive file error: {e}"))?;
+                .execute_with_retry("patch gdrive file", || {
+                    self.client
+                        .patch(&url)
+                        .header("Authorization", format!("Bearer {token}"))
+                        .header("Content-Type", &mime)
+                        .body(file_bytes.clone())
+                })
+                .await?;
 
             if !resp.status().is_success() {
                 return Err(format!("patch gdrive file HTTP {}", resp.status()));
@@ -510,17 +579,17 @@ impl GDriveClient {
 
             let url = format!("{GDRIVE_UPLOAD_BASE}/files?uploadType=multipart&fields=id,name,mimeType,size,md5Checksum,modifiedTime");
             let resp = self
-                .client
-                .post(&url)
-                .header("Authorization", format!("Bearer {token}"))
-                .header(
-                    "Content-Type",
-                    format!("multipart/related; boundary={boundary}"),
-                )
-                .body(body)
-                .send()
-                .await
-                .map_err(|e| format!("multipart gdrive upload error: {e}"))?;
+                .execute_with_retry("multipart gdrive upload", || {
+                    self.client
+                        .post(&url)
+                        .header("Authorization", format!("Bearer {token}"))
+                        .header(
+                            "Content-Type",
+                            format!("multipart/related; boundary={boundary}"),
+                        )
+                        .body(body.clone())
+                })
+                .await?;
 
             if !resp.status().is_success() {
                 return Err(format!("multipart gdrive upload HTTP {}", resp.status()));
@@ -538,12 +607,21 @@ impl GDriveClient {
             }
         };
 
-        // Cache update
+        // Cache update: insert into metadata cache and update dir listing cache in-place
         self.metadata_cache
             .write()
             .await
             .insert(rel_path.clone(), (Instant::now(), meta.clone()));
-        self.dir_listing_cache.write().await.remove(parent_dir);
+        {
+            let mut dlock = self.dir_listing_cache.write().await;
+            if let Some((_, list)) = dlock.get_mut(parent_dir) {
+                if let Some(pos) = list.iter().position(|item| item.name == meta.name) {
+                    list[pos] = meta.clone();
+                } else {
+                    list.push(meta.clone());
+                }
+            }
+        }
 
         Ok(meta)
     }
@@ -555,12 +633,12 @@ impl GDriveClient {
             let token = self.get_access_token().await?;
             let url = format!("{GDRIVE_API_BASE}/files/{}", existing.id);
             let resp = self
-                .client
-                .delete(&url)
-                .header("Authorization", format!("Bearer {token}"))
-                .send()
-                .await
-                .map_err(|e| format!("delete gdrive file error: {e}"))?;
+                .execute_with_retry("delete gdrive file", || {
+                    self.client
+                        .delete(&url)
+                        .header("Authorization", format!("Bearer {token}"))
+                })
+                .await?;
 
             if !resp.status().is_success() && resp.status() != reqwest::StatusCode::NOT_FOUND {
                 return Err(format!("delete gdrive file HTTP {}", resp.status()));
@@ -568,7 +646,13 @@ impl GDriveClient {
 
             self.metadata_cache.write().await.remove(&rel_path);
             let parent_dir = rel_path.rsplit_once('/').map(|(p, _)| p).unwrap_or("");
-            self.dir_listing_cache.write().await.remove(parent_dir);
+            {
+                let mut dlock = self.dir_listing_cache.write().await;
+                if let Some((_, list)) = dlock.get_mut(parent_dir) {
+                    let file_name = rel_path.rsplit('/').next().unwrap_or(&rel_path);
+                    list.retain(|item| item.name != file_name);
+                }
+            }
         }
         Ok(())
     }

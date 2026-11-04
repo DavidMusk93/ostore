@@ -3354,6 +3354,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
     let syncStartTime = 0;
     let selectedSyncNodes = new Set();
     let cachedDiffList = [];
+    let isFleetSyncActive = false;
 
     function onSyncScopeChanged() {
       const panel = document.getElementById('syncDiffPanel');
@@ -3512,6 +3513,12 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
         const liveContainer = document.getElementById('syncLiveProgressContainer');
 
         if (data.is_syncing) {
+          isFleetSyncActive = true;
+          if (!syncIntervalTimer) {
+            syncIntervalTimer = setInterval(async () => {
+              await refreshSyncStatus();
+            }, 400);
+          }
           if (badge) {
             badge.className = 'ratio-badge partial';
             badge.textContent = 'Syncing...';
@@ -3525,16 +3532,27 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
             const p = data.progress;
             document.getElementById('syncLiveProgressBar').style.width = `${Math.min(100, Math.max(0, p.percent || 0))}%`;
             document.getElementById('syncLivePercentText').textContent = `${(p.percent || 0).toFixed(1)}%`;
-            document.getElementById('syncLiveStatusText').textContent = `Replicating ${p.synced_count} of ${p.total_to_sync}...`;
+            const processed = (p.synced_count || 0) + (p.skipped_count || 0);
+            document.getElementById('syncLiveStatusText').textContent = `Replicating ${processed} of ${p.total_to_sync}... (${p.synced_count || 0} synced, ${p.skipped_count || 0} in-sync)`;
             document.getElementById('syncLiveSubText').textContent = p.current_file ? `${p.current_file} -> [${p.current_node}]` : '';
           }
         } else {
+          if (isFleetSyncActive) {
+            isFleetSyncActive = false;
+            if (syncIntervalTimer) {
+              clearInterval(syncIntervalTimer);
+              syncIntervalTimer = null;
+            }
+            showToast('Fleet replication finished successfully');
+            loadDirectory(currentPath, false);
+            loadTopology();
+          }
           if (cancelBtn) cancelBtn.style.display = 'none';
           if (runBtn) runBtn.disabled = false;
-          if (runBtnText && !syncIntervalTimer) {
+          if (runBtnText) {
             runBtnText.textContent = cachedDiffList.length > 0 ? `Sync Selected (${cachedDiffList.length})` : 'Run Sync Now';
           }
-          if (liveContainer && !syncIntervalTimer) liveContainer.style.display = 'none';
+          if (liveContainer) liveContainer.style.display = 'none';
 
           const last = data.last_sync;
           if (last) {
@@ -3679,7 +3697,13 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       try {
         const res = await api('/api/cluster/sync/cancel', { method: 'POST' });
         if (res.ok) {
+          isFleetSyncActive = false;
+          if (syncIntervalTimer) {
+            clearInterval(syncIntervalTimer);
+            syncIntervalTimer = null;
+          }
           showToast('Sync cancelled gracefully');
+          await refreshSyncStatus();
         }
       } catch (e) {
         showToast('Cancel error: ' + e);
@@ -3723,10 +3747,13 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       if (cancelBtn) cancelBtn.style.display = 'inline-flex';
       if (liveContainer) liveContainer.style.display = 'block';
 
+      isFleetSyncActive = true;
       syncStartTime = Date.now();
-      syncIntervalTimer = setInterval(async () => {
-        await refreshSyncStatus();
-      }, 400);
+      if (!syncIntervalTimer) {
+        syncIntervalTimer = setInterval(async () => {
+          await refreshSyncStatus();
+        }, 400);
+      }
 
       const payload = {
         prefix: prefix || undefined,
@@ -3745,20 +3772,29 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
         });
         if (res.ok) {
           const data = await res.json();
-          const synced = data.total_synced !== undefined ? data.total_synced : (data.node_results || []).reduce((a, n) => a + (n.synced || 0), 0);
-          showToast(`Sync finished: ${synced} files updated (${data.duration_ms}ms)`);
+          if (data.status === 'already_syncing') {
+            showToast('A replication task is already active in background');
+          } else {
+            showToast('Replication started in background...');
+          }
           const diffPanel = document.getElementById('syncDiffPanel');
           if (diffPanel) diffPanel.style.display = 'none';
           cachedDiffList = [];
           await refreshSyncStatus();
-          loadDirectory(currentPath, false);
-          loadTopology();
         } else {
+          isFleetSyncActive = false;
+          if (syncIntervalTimer) {
+            clearInterval(syncIntervalTimer);
+            syncIntervalTimer = null;
+          }
+          if (runBtn) runBtn.disabled = false;
+          if (runBtnText) runBtnText.textContent = 'Run Sync Now';
+          if (cancelBtn) cancelBtn.style.display = 'none';
+          if (liveContainer) liveContainer.style.display = 'none';
           showToast('Sync failed: HTTP ' + res.status);
         }
       } catch (e) {
-        showToast('Sync error: ' + e);
-      } finally {
+        isFleetSyncActive = false;
         if (syncIntervalTimer) {
           clearInterval(syncIntervalTimer);
           syncIntervalTimer = null;
@@ -3767,6 +3803,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
         if (runBtnText) runBtnText.textContent = 'Run Sync Now';
         if (cancelBtn) cancelBtn.style.display = 'none';
         if (liveContainer) liveContainer.style.display = 'none';
+        showToast('Sync error: ' + e);
       }
     }
 

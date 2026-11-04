@@ -298,8 +298,25 @@ pub async fn trigger_sync(
         }
     };
 
-    let report = cluster.sync_custom(opts, Some(&st.metrics)).await;
-    Ok(Json(json!(report)))
+    if cluster.is_syncing.load(std::sync::atomic::Ordering::SeqCst) {
+        return Ok(Json(json!({
+            "status": "already_syncing",
+            "is_syncing": true,
+            "message": "Replication task is already running in background"
+        })));
+    }
+
+    let cluster_clone = cluster.clone();
+    let metrics_clone = Some(st.metrics.clone());
+    tokio::spawn(async move {
+        cluster_clone.sync_custom(opts, metrics_clone).await;
+    });
+
+    Ok(Json(json!({
+        "status": "started",
+        "is_syncing": true,
+        "message": "Replication task started in background"
+    })))
 }
 
 // ==========================================
