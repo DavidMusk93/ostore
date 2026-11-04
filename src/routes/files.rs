@@ -435,6 +435,23 @@ pub async fn sha256_file_real(abs: &std::path::Path) -> Result<String, ApiError>
     Ok(hex::encode(hasher.finalize()))
 }
 
+/// Compute both MD5 and SHA-256 simultaneously in a single streaming pass over the file.
+pub async fn md5_and_sha256_file(abs: &std::path::Path) -> Result<(String, String), ApiError> {
+    let mut file = tokio::fs::File::open(abs).await.map_err(ApiError::internal)?;
+    let mut md5_hasher = Md5::new();
+    let mut sha_hasher = Sha256::new();
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = file.read(&mut buf).await.map_err(ApiError::internal)?;
+        if n == 0 {
+            break;
+        }
+        md5_hasher.update(&buf[..n]);
+        sha_hasher.update(&buf[..n]);
+    }
+    Ok((hex::encode(md5_hasher.finalize()), hex::encode(sha_hasher.finalize())))
+}
+
 /// Backwards-compatible sha256_file wrapper returning the MD5 digest.
 pub async fn sha256_file(abs: &std::path::Path) -> Result<String, ApiError> {
     md5_file(abs).await

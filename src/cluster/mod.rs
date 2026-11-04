@@ -383,11 +383,18 @@ impl ClusterManager {
 
     pub async fn probe_all(&self) {
         let nodes = self.config.read().unwrap().nodes.clone();
-        for node in &nodes {
-            if node.is_local {
-                if let Some((total, avail)) = crate::metrics::disk_space(&self.root) {
-                    let mut lock = self.statuses.write().await;
-                    let st = lock.entry(node.id.clone()).or_insert_with(|| NodeStatus {
+        let client = self.client.clone();
+        let gdrive_client = self.gdrive.read().await.clone();
+        let root = self.root.clone();
+
+        let probe_futures = nodes.into_iter().map(|node| {
+            let client = client.clone();
+            let gdrive = gdrive_client.clone();
+            let root = root.clone();
+            async move {
+                if node.is_local {
+                    let (total, avail) = crate::metrics::disk_space(&root).unwrap_or((0, 0));
+                    return NodeStatus {
                         id: node.id.clone(),
                         name: node.name.clone(),
                         url: node.url.clone(),
@@ -399,25 +406,98 @@ impl ClusterManager {
                         last_seen: Some(Utc::now()),
                         error: None,
                         node_type: node.node_type.clone(),
-                    });
-                    st.healthy = true;
-                    st.rtt_ms = Some(0);
-                    st.disk_total_bytes = total;
-                    st.disk_available_bytes = avail;
-                    st.last_seen = Some(Utc::now());
-                    st.error = None;
+                    };
                 }
-                continue;
-            }
 
-            if node.node_type.as_deref() == Some("gdrive") || node.id == "gdrive" {
-                if let Some(gdrive) = self.gdrive.read().await.clone() {
+                if node.node_type.as_deref() == Some("gdrive") || node.id == "gdrive" {
+                    if let Some(gdrive) = gdrive {
+                        let start = Instant::now();
+                        match gdrive.get_storage_quota().await {
+                            Ok((total, avail)) => {
+                                let rtt = start.elapsed().as_millis() as u64;
+                                NodeStatus {
+                                    id: node.id.clone(),
+                                    name: node.name.clone(),
+                                    url: node.url.clone(),
+                                    is_local: false,
+                                    healthy: true,
+                                    rtt_ms: Some(rtt),
+                                    disk_total_bytes: total,
+                                    disk_available_bytes: avail,
+                                    last_seen: Some(Utc::now()),
+                                    error: None,
+                                    node_type: Some("gdrive".to_string()),
+                                }
+                            }
+                            Err(e) => NodeStatus {
+                                id: node.id.clone(),
+                                name: node.name.clone(),
+                                url: node.url.clone(),
+                                is_local: false,
+                                healthy: false,
+                                rtt_ms: None,
+                                disk_total_bytes: 0,
+                                disk_available_bytes: 0,
+                                last_seen: Some(Utc::now()),
+                                error: Some(e),
+                                node_type: Some("gdrive".to_string()),
+                            },
+                        }
+                    } else {
+                        NodeStatus {
+                            id: node.id.clone(),
+                            name: node.name.clone(),
+                            url: node.url.clone(),
+                            is_local: false,
+                            healthy: false,
+                            rtt_ms: None,
+                            disk_total_bytes: 0,
+                            disk_available_bytes: 0,
+                            last_seen: Some(Utc::now()),
+                            error: Some("gdrive uninitialized".to_string()),
+                            node_type: Some("gdrive".to_string()),
+                        }
+                    }
+                } else {
                     let start = Instant::now();
-                    match gdrive.get_storage_quota().await {
-                        Ok((total, avail)) => {
+                    let base = node.url.trim_end_matches('/');
+                    let health_url = format!("{base}/healthz");
+                    let metrics_url = format!("{base}/api/metrics");
+
+                    let res = client
+                        .get(&health_url)
+                        .timeout(Duration::from_millis(2500))
+                        .send()
+                        .await;
+
+                    match res {
+                        Ok(resp) if resp.status().is_success() => {
                             let rtt = start.elapsed().as_millis() as u64;
-                            let mut lock = self.statuses.write().await;
-                            let st = lock.entry(node.id.clone()).or_insert_with(|| NodeStatus {
+                            let (mut total, mut avail) = (0u64, 0u64);
+
+                            let mut req = client
+                                .get(&metrics_url)
+                                .timeout(Duration::from_millis(2500));
+                            if !node.token.is_empty() {
+                                req = req.header("Authorization", format!("Bearer {}", node.token));
+                            }
+                            if let Ok(m_resp) = req.send().await {
+                                if let Ok(text) = m_resp.text().await {
+                                    for line in text.lines() {
+                                        if let Some(rest) = line.strip_prefix("ostore_root_disk_total_bytes ") {
+                                            if let Ok(v) = rest.trim().parse::<u64>() {
+                                                total = v;
+                                            }
+                                        } else if let Some(rest) = line.strip_prefix("ostore_root_disk_available_bytes ") {
+                                            if let Ok(v) = rest.trim().parse::<u64>() {
+                                                avail = v;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            NodeStatus {
                                 id: node.id.clone(),
                                 name: node.name.clone(),
                                 url: node.url.clone(),
@@ -428,135 +508,44 @@ impl ClusterManager {
                                 disk_available_bytes: avail,
                                 last_seen: Some(Utc::now()),
                                 error: None,
-                                node_type: Some("gdrive".to_string()),
-                            });
-                            st.healthy = true;
-                            st.rtt_ms = Some(rtt);
-                            st.disk_total_bytes = total;
-                            st.disk_available_bytes = avail;
-                            st.last_seen = Some(Utc::now());
-                            st.error = None;
-                            st.node_type = Some("gdrive".to_string());
-                        }
-                        Err(e) => {
-                            let mut lock = self.statuses.write().await;
-                            let st = lock.entry(node.id.clone()).or_insert_with(|| NodeStatus {
-                                id: node.id.clone(),
-                                name: node.name.clone(),
-                                url: node.url.clone(),
-                                is_local: false,
-                                healthy: false,
-                                rtt_ms: None,
-                                disk_total_bytes: 0,
-                                disk_available_bytes: 0,
-                                last_seen: Some(Utc::now()),
-                                error: Some(e.clone()),
-                                node_type: Some("gdrive".to_string()),
-                            });
-                            st.healthy = false;
-                            st.rtt_ms = None;
-                            st.last_seen = Some(Utc::now());
-                            st.error = Some(e);
-                        }
-                    }
-                }
-                continue;
-            }
-
-            let start = Instant::now();
-            let base = node.url.trim_end_matches('/');
-            let health_url = format!("{base}/healthz");
-            let metrics_url = format!("{base}/api/metrics");
-
-            let res = self.client.get(&health_url).send().await;
-            match res {
-                Ok(resp) if resp.status().is_success() => {
-                    let rtt = start.elapsed().as_millis() as u64;
-                    let (mut total, mut avail) = (0u64, 0u64);
-
-                    // Try fetching metrics to get exact disk usage
-                    let mut req = self.client.get(&metrics_url);
-                    if !node.token.is_empty() {
-                        req = req.header("Authorization", format!("Bearer {}", node.token));
-                    }
-                    if let Ok(m_resp) = req.send().await {
-                        if let Ok(text) = m_resp.text().await {
-                            for line in text.lines() {
-                                if let Some(rest) = line.strip_prefix("ostore_root_disk_total_bytes ") {
-                                    if let Ok(v) = rest.trim().parse::<u64>() {
-                                        total = v;
-                                    }
-                                } else if let Some(rest) = line.strip_prefix("ostore_root_disk_available_bytes ") {
-                                    if let Ok(v) = rest.trim().parse::<u64>() {
-                                        avail = v;
-                                    }
-                                }
+                                node_type: node.node_type.clone(),
                             }
                         }
+                        Ok(resp) => NodeStatus {
+                            id: node.id.clone(),
+                            name: node.name.clone(),
+                            url: node.url.clone(),
+                            is_local: false,
+                            healthy: false,
+                            rtt_ms: None,
+                            disk_total_bytes: 0,
+                            disk_available_bytes: 0,
+                            last_seen: Some(Utc::now()),
+                            error: Some(format!("HTTP {}", resp.status())),
+                            node_type: node.node_type.clone(),
+                        },
+                        Err(e) => NodeStatus {
+                            id: node.id.clone(),
+                            name: node.name.clone(),
+                            url: node.url.clone(),
+                            is_local: false,
+                            healthy: false,
+                            rtt_ms: None,
+                            disk_total_bytes: 0,
+                            disk_available_bytes: 0,
+                            last_seen: Some(Utc::now()),
+                            error: Some(e.to_string()),
+                            node_type: node.node_type.clone(),
+                        },
                     }
-
-                    let mut lock = self.statuses.write().await;
-                    let st = lock.entry(node.id.clone()).or_insert_with(|| NodeStatus {
-                        id: node.id.clone(),
-                        name: node.name.clone(),
-                        url: node.url.clone(),
-                        is_local: false,
-                        healthy: true,
-                        rtt_ms: Some(rtt),
-                        disk_total_bytes: total,
-                        disk_available_bytes: avail,
-                        last_seen: Some(Utc::now()),
-                        error: None,
-                        node_type: node.node_type.clone(),
-                    });
-                    st.healthy = true;
-                    st.rtt_ms = Some(rtt);
-                    st.disk_total_bytes = total;
-                    st.disk_available_bytes = avail;
-                    st.last_seen = Some(Utc::now());
-                    st.error = None;
-                }
-                Ok(resp) => {
-                    let mut lock = self.statuses.write().await;
-                    let st = lock.entry(node.id.clone()).or_insert_with(|| NodeStatus {
-                        id: node.id.clone(),
-                        name: node.name.clone(),
-                        url: node.url.clone(),
-                        is_local: false,
-                        healthy: false,
-                        rtt_ms: None,
-                        disk_total_bytes: 0,
-                        disk_available_bytes: 0,
-                        last_seen: Some(Utc::now()),
-                        error: Some(format!("HTTP {}", resp.status())),
-                        node_type: node.node_type.clone(),
-                    });
-                    st.healthy = false;
-                    st.rtt_ms = None;
-                    st.last_seen = Some(Utc::now());
-                    st.error = Some(format!("HTTP {}", resp.status()));
-                }
-                Err(e) => {
-                    let mut lock = self.statuses.write().await;
-                    let st = lock.entry(node.id.clone()).or_insert_with(|| NodeStatus {
-                        id: node.id.clone(),
-                        name: node.name.clone(),
-                        url: node.url.clone(),
-                        is_local: false,
-                        healthy: false,
-                        rtt_ms: None,
-                        disk_total_bytes: 0,
-                        disk_available_bytes: 0,
-                        last_seen: Some(Utc::now()),
-                        error: Some(e.to_string()),
-                        node_type: node.node_type.clone(),
-                    });
-                    st.healthy = false;
-                    st.rtt_ms = None;
-                    st.last_seen = Some(Utc::now());
-                    st.error = Some(e.to_string());
                 }
             }
+        });
+
+        let results = futures::future::join_all(probe_futures).await;
+        let mut lock = self.statuses.write().await;
+        for st in results {
+            lock.insert(st.id.clone(), st);
         }
     }
 
@@ -925,7 +914,7 @@ impl ClusterManager {
                         } else {
                             format!("{base}/api/stat?path={}", urlencoding::encode(&path))
                         };
-                        let mut req = client.get(&stat_url);
+                        let mut req = client.get(&stat_url).timeout(Duration::from_millis(3000));
                         if !node.token.is_empty() {
                             req = req.header("Authorization", format!("Bearer {}", node.token));
                         }
@@ -1091,15 +1080,20 @@ impl ClusterManager {
                 let abs = self.root.join(&rel);
                 if let Ok(meta) = tokio::fs::metadata(&abs).await {
                     if meta.is_file() {
-                        if let Ok(hash) = self.cache.get_or_compute(&abs, &meta).await {
-                            list.push((rel, hash, meta.len()));
+                        if let Ok((md5, sha)) = self.cache.get_or_compute_both(&abs, &meta).await {
+                            list.push((rel, md5, sha, meta.len()));
                         }
                     } else if meta.is_dir() {
                         let sub_entries = self.list_local_files_recursive(&rel).await;
-                        for (sub_rel, hash) in sub_entries {
+                        for (sub_rel, md5) in sub_entries {
                             let sub_abs = self.root.join(&sub_rel);
                             let size = tokio::fs::metadata(&sub_abs).await.map(|m| m.len()).unwrap_or(0);
-                            list.push((sub_rel, hash, size));
+                            let sha = if let Ok(m) = tokio::fs::metadata(&sub_abs).await {
+                                self.cache.get_or_compute_both(&sub_abs, &m).await.map(|(_, s)| s).unwrap_or_default()
+                            } else {
+                                String::new()
+                            };
+                            list.push((sub_rel, md5, sha, size));
                         }
                     }
                 }
@@ -1108,10 +1102,15 @@ impl ClusterManager {
         } else {
             let entries = self.list_local_files_recursive(&prefix).await;
             let mut list = Vec::new();
-            for (rel, hash) in entries {
+            for (rel, md5) in entries {
                 let abs = self.root.join(&rel);
                 let size = tokio::fs::metadata(&abs).await.map(|m| m.len()).unwrap_or(0);
-                list.push((rel, hash, size));
+                let sha = if let Ok(m) = tokio::fs::metadata(&abs).await {
+                    self.cache.get_or_compute_both(&abs, &m).await.map(|(_, s)| s).unwrap_or_default()
+                } else {
+                    String::new()
+                };
+                list.push((rel, md5, sha, size));
             }
             list
         };
@@ -1131,93 +1130,123 @@ impl ClusterManager {
         }
 
         let mut remote_maps: HashMap<String, HashMap<String, String>> = HashMap::new();
-        for node in &nodes_to_check {
-            if node.node_type.as_deref() == Some("gdrive") || node.id == "gdrive" {
-                if let Some(gdrive) = self.gdrive.read().await.clone() {
-                    let mut parent_dirs: std::collections::HashSet<String> = std::collections::HashSet::new();
-                    if !prefix.is_empty() {
-                        parent_dirs.insert(prefix.clone());
-                    }
-                    for (rel, _, _) in &local_files {
-                        let p = rel.rsplit_once('/').map(|(dir, _)| dir).unwrap_or("");
-                        parent_dirs.insert(p.to_string());
-                    }
-                    let mut map = HashMap::new();
-                    for p in parent_dirs {
-                        if let Ok(gdrive_items) = gdrive.list_dir(&p).await {
-                            for item in gdrive_items {
-                                if !item.is_dir {
-                                    let item_rel = if p.is_empty() {
-                                        item.name.clone()
-                                    } else {
-                                        format!("{p}/{}", item.name)
-                                    };
-                                    if let Some(md5) = item.md5 {
-                                        map.insert(item_rel, md5);
+        let client = self.client.clone();
+        let prefix_clone = prefix.clone();
+        let gdrive_client = self.gdrive.read().await.clone();
+        let local_files_ref = local_files.clone();
+
+        let fetch_futures = nodes_to_check.iter().map(|node| {
+            let client = client.clone();
+            let prefix = prefix_clone.clone();
+            let gdrive = gdrive_client.clone();
+            let node = node.clone();
+            let local_files = local_files_ref.clone();
+            async move {
+                if node.node_type.as_deref() == Some("gdrive") || node.id == "gdrive" {
+                    if let Some(gdrive) = gdrive {
+                        let mut parent_dirs: std::collections::HashSet<String> = std::collections::HashSet::new();
+                        if !prefix.is_empty() {
+                            parent_dirs.insert(prefix.clone());
+                        }
+                        for (rel, _, _, _) in &local_files {
+                            let p = rel.rsplit_once('/').map(|(dir, _)| dir).unwrap_or("");
+                            parent_dirs.insert(p.to_string());
+                        }
+                        let mut map = HashMap::new();
+                        for p in parent_dirs {
+                            if let Ok(gdrive_items) = gdrive.list_dir(&p).await {
+                                for item in gdrive_items {
+                                    if !item.is_dir {
+                                        let item_rel = if p.is_empty() {
+                                            item.name.clone()
+                                        } else {
+                                            format!("{p}/{}", item.name)
+                                        };
+                                        if let Some(md5) = item.md5 {
+                                            map.insert(item_rel, md5);
+                                        }
                                     }
                                 }
                             }
                         }
+                        return (node.id, map);
+                    } else {
+                        return (node.id, HashMap::new());
                     }
-                    remote_maps.insert(node.id.clone(), map);
                 }
-                continue;
-            }
 
-            let base = node.url.trim_end_matches('/');
-            let map = if local_files.len() <= 10 {
-                let mut m = HashMap::new();
-                for (rel, _, _) in &local_files {
-                    let stat_url = format!("{base}/api/stat?path={}&checksums=1", urlencoding::encode(rel));
-                    let mut req = self.client.get(&stat_url);
+                let base = node.url.trim_end_matches('/');
+                let map = if local_files.len() <= 10 {
+                    let stat_stream = futures::stream::iter(local_files)
+                        .map(|(rel, _, _, _)| {
+                            let client = client.clone();
+                            let base = base.to_string();
+                            let token = node.token.clone();
+                            async move {
+                                let stat_url = format!("{base}/api/stat?path={}&checksums=1", urlencoding::encode(&rel));
+                                let mut req = client.get(&stat_url).timeout(Duration::from_millis(3000));
+                                if !token.is_empty() {
+                                    req = req.header("Authorization", format!("Bearer {token}"));
+                                }
+                                if let Ok(resp) = req.send().await {
+                                    if resp.status().is_success() {
+                                        if let Ok(val) = resp.json::<serde_json::Value>().await {
+                                            if let Some(hash) = val.get("md5").or_else(|| val.get("sha256")).and_then(|v| v.as_str()) {
+                                                return Some((rel, hash.to_string()));
+                                            }
+                                        }
+                                    }
+                                }
+                                None
+                            }
+                        })
+                        .buffer_unordered(8);
+                    let stats: Vec<Option<(String, String)>> = stat_stream.collect().await;
+                    let mut m = HashMap::new();
+                    for item in stats.into_iter().flatten() {
+                        m.insert(item.0, item.1);
+                    }
+                    m
+                } else {
+                    let list_url = format!("{base}/api/list?path={prefix}&recursive=1&checksums=1");
+                    let mut req = client.get(&list_url).timeout(Duration::from_millis(5000));
                     if !node.token.is_empty() {
                         req = req.header("Authorization", format!("Bearer {}", node.token));
                     }
-                    if let Ok(resp) = req.send().await {
-                        if resp.status().is_success() {
-                            if let Ok(val) = resp.json::<serde_json::Value>().await {
-                                if let Some(hash) = val.get("md5").or_else(|| val.get("sha256")).and_then(|v| v.as_str()) {
-                                    m.insert(rel.clone(), hash.to_string());
-                                }
-                            }
-                        }
-                    }
-                }
-                m
-            } else {
-                let list_url = format!("{base}/api/list?path={prefix}&recursive=1&checksums=1");
-                let mut req = self.client.get(&list_url);
-                if !node.token.is_empty() {
-                    req = req.header("Authorization", format!("Bearer {}", node.token));
-                }
-                match req.send().await {
-                    Ok(resp) if resp.status().is_success() => {
-                        let val: serde_json::Value = resp.json().await.unwrap_or_default();
-                        let mut m = HashMap::new();
-                        if let Some(entries) = val.get("entries").and_then(|v| v.as_array()) {
-                            for e in entries {
-                                if e.get("type").and_then(|v| v.as_str()) == Some("file") {
-                                    if let (Some(path), Some(hash)) = (
-                                        e.get("path").and_then(|v| v.as_str()),
-                                        e.get("md5").or_else(|| e.get("sha256")).and_then(|v| v.as_str()),
-                                    ) {
-                                        m.insert(path.to_string(), hash.to_string());
+                    match req.send().await {
+                        Ok(resp) if resp.status().is_success() => {
+                            let val: serde_json::Value = resp.json().await.unwrap_or_default();
+                            let mut m = HashMap::new();
+                            if let Some(entries) = val.get("entries").and_then(|v| v.as_array()) {
+                                for e in entries {
+                                    if e.get("type").and_then(|v| v.as_str()) == Some("file") {
+                                        if let (Some(path), Some(hash)) = (
+                                            e.get("path").and_then(|v| v.as_str()),
+                                            e.get("md5").or_else(|| e.get("sha256")).and_then(|v| v.as_str()),
+                                        ) {
+                                            m.insert(path.to_string(), hash.to_string());
+                                        }
                                     }
                                 }
                             }
+                            m
                         }
-                        m
+                        _ => HashMap::new(),
                     }
-                    _ => HashMap::new(),
-                }
-            };
-            remote_maps.insert(node.id.clone(), map);
+                };
+                (node.id, map)
+            }
+        });
+
+        let results = futures::future::join_all(fetch_futures).await;
+        for (node_id, map) in results {
+            remote_maps.insert(node_id, map);
         }
 
         let mut differences = Vec::new();
         let mut in_sync_count = 0;
 
-        for (rel, local_hash, size) in &local_files {
+        for (rel, local_md5, local_sha, size) in &local_files {
             let mut missing_on = Vec::new();
             let mut mismatch_on = Vec::new();
             let mut in_sync_on = Vec::new();
@@ -1225,7 +1254,11 @@ impl ClusterManager {
             for node in &nodes_to_check {
                 if let Some(map) = remote_maps.get(&node.id) {
                     if let Some(r_hash) = map.get(rel) {
-                        let is_match = r_hash == local_hash;
+                        let is_match = if r_hash.len() == 64 {
+                            !local_sha.is_empty() && r_hash == local_sha
+                        } else {
+                            r_hash == local_md5
+                        };
                         if is_match {
                             in_sync_on.push(node.id.clone());
                         } else {
@@ -1245,7 +1278,7 @@ impl ClusterManager {
                 differences.push(FileDiffEntry {
                     path: rel.clone(),
                     size: *size,
-                    hash: local_hash.clone(),
+                    hash: local_md5.clone(),
                     missing_on,
                     mismatch_on,
                     in_sync_on,
@@ -1447,27 +1480,39 @@ impl ClusterManager {
             // Remote ostore node
             let base = node.url.trim_end_matches('/');
             let remote_map = if local_files.len() <= 10 {
-                let mut m = HashMap::new();
-                for (rel_path, _) in &local_files {
-                    let stat_url = format!("{base}/api/stat?path={}&checksums=1", urlencoding::encode(rel_path));
-                    let mut req = self.client.get(&stat_url);
-                    if !node.token.is_empty() {
-                        req = req.header("Authorization", format!("Bearer {}", node.token));
-                    }
-                    if let Ok(resp) = req.send().await {
-                        if resp.status().is_success() {
-                            if let Ok(val) = resp.json::<serde_json::Value>().await {
-                                if let Some(hash) = val.get("md5").or_else(|| val.get("sha256")).and_then(|v| v.as_str()) {
-                                    m.insert(rel_path.clone(), hash.to_string());
+                let stat_stream = futures::stream::iter(local_files.clone())
+                    .map(|(rel_path, _)| {
+                        let client = self.client.clone();
+                        let base = base.to_string();
+                        let token = node.token.clone();
+                        async move {
+                            let stat_url = format!("{base}/api/stat?path={}&checksums=1", urlencoding::encode(&rel_path));
+                            let mut req = client.get(&stat_url).timeout(Duration::from_millis(3000));
+                            if !token.is_empty() {
+                                req = req.header("Authorization", format!("Bearer {token}"));
+                            }
+                            if let Ok(resp) = req.send().await {
+                                if resp.status().is_success() {
+                                    if let Ok(val) = resp.json::<serde_json::Value>().await {
+                                        if let Some(hash) = val.get("md5").or_else(|| val.get("sha256")).and_then(|v| v.as_str()) {
+                                            return Some((rel_path, hash.to_string()));
+                                        }
+                                    }
                                 }
                             }
+                            None
                         }
-                    }
+                    })
+                    .buffer_unordered(8);
+                let stats: Vec<Option<(String, String)>> = stat_stream.collect().await;
+                let mut m = HashMap::new();
+                for item in stats.into_iter().flatten() {
+                    m.insert(item.0, item.1);
                 }
                 m
             } else {
                 let list_url = format!("{base}/api/list?path={prefix}&recursive=1&checksums=1");
-                let mut req = self.client.get(&list_url);
+                let mut req = self.client.get(&list_url).timeout(Duration::from_millis(5000));
                 if !node.token.is_empty() {
                     req = req.header("Authorization", format!("Bearer {}", node.token));
                 }
@@ -1517,16 +1562,19 @@ impl ClusterManager {
                     }
                     if r_hash.len() == 64 {
                         let abs = self.root.join(rel_path);
-                        if let Ok(m_sha) = crate::routes::files::sha256_file_real(&abs).await {
-                            if &m_sha == r_hash {
-                                res.skipped += 1;
-                                let mut p = self.live_progress.write().await;
-                                p.skipped_count += 1;
-                                if p.total_to_sync > 0 {
-                                    p.percent = ((p.synced_count + p.skipped_count) as f64 / p.total_to_sync as f64) * 100.0;
-                                }
-                                continue;
+                        let m_sha = if let Ok(meta) = tokio::fs::metadata(&abs).await {
+                            self.cache.get_or_compute_both(&abs, &meta).await.map(|(_, s)| s).unwrap_or_default()
+                        } else {
+                            String::new()
+                        };
+                        if !m_sha.is_empty() && &m_sha == r_hash {
+                            res.skipped += 1;
+                            let mut p = self.live_progress.write().await;
+                            p.skipped_count += 1;
+                            if p.total_to_sync > 0 {
+                                p.percent = ((p.synced_count + p.skipped_count) as f64 / p.total_to_sync as f64) * 100.0;
                             }
+                            continue;
                         }
                     }
                 }
@@ -1729,7 +1777,7 @@ impl ClusterManager {
                     }
                     let base = node.url.trim_end_matches('/');
                     let list_url = format!("{base}/api/list?path={}", urlencoding::encode(&prefix));
-                    let mut req = client.get(&list_url);
+                    let mut req = client.get(&list_url).timeout(Duration::from_millis(3000));
                     if !node.token.is_empty() {
                         req = req.header("Authorization", format!("Bearer {}", node.token));
                     }

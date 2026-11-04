@@ -69,10 +69,11 @@ async fn entry(
     } else {
         (meta.len(), None)
     };
-    let md5 = if checksums && !is_dir {
-        Some(st.checksum_cache.get_or_compute(abs, meta).await?)
+    let (md5, sha256) = if checksums && !is_dir {
+        let (m, s) = st.checksum_cache.get_or_compute_both(abs, meta).await?;
+        (Some(m), Some(s))
     } else {
-        None
+        (None, None)
     };
     Ok(Entry {
         name,
@@ -81,8 +82,8 @@ async fn entry(
         size,
         item_count,
         mtime,
-        md5: md5.clone(),
-        sha256: md5,
+        md5,
+        sha256,
     })
 }
 

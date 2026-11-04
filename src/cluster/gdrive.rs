@@ -380,6 +380,68 @@ impl GDriveClient {
         Ok(current_parent_id)
     }
 
+    /// Read-only folder path lookup without creating folders if missing.
+    pub async fn resolve_folder_path(&self, rel_dir: &str) -> Result<Option<String>, String> {
+        let rel_dir = rel_dir.trim_matches('/');
+        if rel_dir.is_empty() {
+            return Ok(Some(self.config.root_folder_id.clone()));
+        }
+
+        {
+            let lock = self.folder_id_cache.read().await;
+            if let Some(id) = lock.get(rel_dir) {
+                return Ok(Some(id.clone()));
+            }
+        }
+
+        let parts: Vec<&str> = rel_dir.split('/').filter(|p| !p.is_empty()).collect();
+        let mut current_parent_id = self.config.root_folder_id.clone();
+        let mut current_path = String::new();
+
+        for part in parts {
+            if !current_path.is_empty() {
+                current_path.push('/');
+            }
+            current_path.push_str(part);
+
+            {
+                let lock = self.folder_id_cache.read().await;
+                if let Some(id) = lock.get(&current_path) {
+                    current_parent_id = id.clone();
+                    continue;
+                }
+            }
+
+            let token = self.get_access_token().await?;
+            let escaped_name = part.replace('\'', "\\'");
+            let q = format!(
+                "'{current_parent_id}' in parents and name = '{escaped_name}' and mimeType = '{FOLDER_MIME_TYPE}' and trashed = false"
+            );
+            let url = format!("{GDRIVE_API_BASE}/files?q={}&fields=files(id,name)&pageSize=1", urlencoding::encode(&q));
+
+            let resp = self
+                .execute_with_retry("folder query", || {
+                    self.client.get(&url).header("Authorization", format!("Bearer {token}"))
+                })
+                .await?;
+
+            if resp.status().is_success() {
+                let fl: FileListResponse = resp.json().await.map_err(|e| e.to_string())?;
+                if let Some(existing) = fl.files.into_iter().next() {
+                    let mut lock = self.folder_id_cache.write().await;
+                    lock.insert(current_path.clone(), existing.id.clone());
+                    current_parent_id = existing.id;
+                } else {
+                    return Ok(None);
+                }
+            } else {
+                return Err(format!("query folder {part} HTTP {}", resp.status()));
+            }
+        }
+
+        Ok(Some(current_parent_id))
+    }
+
     /// List a directory in Google Drive in batches of 1,000 files.
     pub async fn list_dir(&self, rel_dir: &str) -> Result<Vec<GDriveFileMeta>, String> {
         let rel_dir = rel_dir.trim_matches('/').to_string();
@@ -392,7 +454,14 @@ impl GDriveClient {
             }
         }
 
-        let folder_id = self.ensure_folder_path(&rel_dir).await?;
+        let folder_id = match self.resolve_folder_path(&rel_dir).await? {
+            Some(id) => id,
+            None => {
+                let mut lock = self.dir_listing_cache.write().await;
+                lock.insert(rel_dir.to_string(), (Instant::now(), Vec::new()));
+                return Ok(Vec::new());
+            }
+        };
         let token = self.get_access_token().await?;
         let mut results = Vec::new();
         let mut page_token: Option<String> = None;

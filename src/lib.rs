@@ -39,11 +39,11 @@ pub use routes::build_router;
 /// Marker embedded in in-flight upload temp file names.
 pub const TMP_MARKER: &str = ".ostore-tmp-";
 
-/// Fast in-memory cache of (size, mtime_nanos) -> md5_hex to eliminate
-/// disk re-reads on /api/list and cluster syncs. Aligned with Google Drive md5Checksum.
+/// Fast in-memory cache of (size, mtime_nanos) -> (md5_hex, sha256_hex) to eliminate
+/// disk re-reads on /api/list, diff scans, and cluster syncs.
 #[derive(Default)]
 pub struct ChecksumCache {
-    cache: RwLock<HashMap<PathBuf, (u64, u128, String)>>,
+    cache: RwLock<HashMap<PathBuf, (u64, u128, String, String)>>,
 }
 
 impl ChecksumCache {
@@ -52,6 +52,15 @@ impl ChecksumCache {
     }
 
     pub async fn get_or_compute(&self, abs: &Path, meta: &std::fs::Metadata) -> Result<String, crate::error::ApiError> {
+        let (md5, _) = self.get_or_compute_both(abs, meta).await?;
+        Ok(md5)
+    }
+
+    pub async fn get_or_compute_both(
+        &self,
+        abs: &Path,
+        meta: &std::fs::Metadata,
+    ) -> Result<(String, String), crate::error::ApiError> {
         let size = meta.len();
         let mtime = meta
             .modified()
@@ -62,23 +71,28 @@ impl ChecksumCache {
 
         {
             let lock = self.cache.read().await;
-            if let Some((c_size, c_mtime, md5)) = lock.get(abs) {
-                if *c_size == size && *c_mtime == mtime {
-                    return Ok(md5.clone());
+            if let Some((c_size, c_mtime, md5, sha)) = lock.get(abs) {
+                if *c_size == size && *c_mtime == mtime && !sha.is_empty() {
+                    return Ok((md5.clone(), sha.clone()));
                 }
             }
         }
 
-        // Cache miss: compute MD5 from disk
-        let md5 = crate::routes::files::md5_file(abs).await?;
+        // Cache miss: compute both MD5 and SHA-256 in a single streaming disk read
+        let (md5, sha) = crate::routes::files::md5_and_sha256_file(abs).await?;
         let mut lock = self.cache.write().await;
-        lock.insert(abs.to_path_buf(), (size, mtime, md5.clone()));
-        Ok(md5)
+        lock.insert(abs.to_path_buf(), (size, mtime, md5.clone(), sha.clone()));
+        Ok((md5, sha))
     }
 
     pub async fn insert(&self, abs: &Path, size: u64, mtime: u128, md5: String) {
         let mut lock = self.cache.write().await;
-        lock.insert(abs.to_path_buf(), (size, mtime, md5));
+        lock.insert(abs.to_path_buf(), (size, mtime, md5, String::new()));
+    }
+
+    pub async fn insert_both(&self, abs: &Path, size: u64, mtime: u128, md5: String, sha: String) {
+        let mut lock = self.cache.write().await;
+        lock.insert(abs.to_path_buf(), (size, mtime, md5, sha));
     }
 
     pub async fn invalidate(&self, abs: &Path) {
