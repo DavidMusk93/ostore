@@ -3533,7 +3533,8 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
             document.getElementById('syncLiveProgressBar').style.width = `${Math.min(100, Math.max(0, p.percent || 0))}%`;
             document.getElementById('syncLivePercentText').textContent = `${(p.percent || 0).toFixed(1)}%`;
             const processed = (p.synced_count || 0) + (p.skipped_count || 0);
-            document.getElementById('syncLiveStatusText').textContent = `Replicating ${processed} of ${p.total_to_sync}... (${p.synced_count || 0} synced, ${p.skipped_count || 0} in-sync)`;
+            const bytesText = (p.bytes_transferred || 0) > 0 ? ' · ' + formatBytes(p.bytes_transferred) + (p.speed_bytes_per_sec > 0 ? ' (' + formatBytes(p.speed_bytes_per_sec) + '/s)' : '') : '';
+            document.getElementById('syncLiveStatusText').textContent = `Replicating ${processed} of ${p.total_to_sync}...${bytesText} (${p.synced_count || 0} synced, ${p.skipped_count || 0} in-sync)`;
             document.getElementById('syncLiveSubText').textContent = p.current_file ? `${p.current_file} -> [${p.current_node}]` : '';
           }
         } else {
@@ -3562,11 +3563,28 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
               badge.textContent = hasUpdates ? 'Updated' : 'Fleet in Sync';
             }
             const nodesHtml = (last.node_results || []).map(nr => `
-              <div style="display:flex; justify-content:space-between; margin-top:2px;">
+              <div style="display:flex; justify-content:space-between; margin-top:3px; font-size:0.75rem;">
                 <span>• Node <strong>${escapeHtml(nr.node_id)}</strong>:</span>
-                <span>${nr.synced} synced, ${nr.skipped} in-sync${nr.errors && nr.errors.length ? ` (<span style="color:var(--danger);">${nr.errors.length} err</span>)` : ''}</span>
+                <span>
+                  ${nr.synced} synced${(nr.bytes_transferred || 0) > 0 ? ` (${formatBytes(nr.bytes_transferred)}${nr.speed_bytes_per_sec > 0 ? ' @ ' + formatBytes(nr.speed_bytes_per_sec) + '/s' : ''})` : ''},
+                  ${nr.skipped} in-sync · ${nr.duration_ms || 0}ms
+                  ${nr.errors && nr.errors.length ? ` (<span style="color:var(--danger);">${nr.errors.length} err</span>)` : ''}
+                </span>
               </div>
             `).join('');
+
+            const timings = last.timings || {};
+            const timingsHtml = `
+              <div style="margin-bottom: 4px; font-size: 0.73rem; color: var(--ink-secondary); font-family: var(--font-mono);">
+                Cost: Scan <strong>${timings.local_scan_ms || 0}ms</strong> · Probe <strong>${timings.remote_probe_ms || 0}ms</strong> · Transfer <strong>${timings.data_transfer_ms || 0}ms</strong>
+              </div>
+            `;
+
+            const transferHtml = (last.total_bytes_transferred || 0) > 0 ? `
+              <div style="margin-bottom: 4px; font-size: 0.75rem;">
+                Transferred: <strong>${formatBytes(last.total_bytes_transferred)}</strong> · Throughput: <strong>${formatBytes(last.speed_bytes_per_sec || 0)}/s</strong>
+              </div>
+            ` : '';
 
             if (report) {
               report.innerHTML = `
@@ -3577,6 +3595,8 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
                 <div style="margin-bottom: 4px;">
                   Scope: <code>${last.prefix ? '/' + escapeHtml(last.prefix) : '/ (entire fleet)'}</code> · Took: <strong>${last.duration_ms}ms</strong>
                 </div>
+                ${timingsHtml}
+                ${transferHtml}
                 <div style="margin-bottom: 6px;">
                   Checked: <strong>${(last.total_checked || 0).toLocaleString()}</strong> · Synced: <strong style="color:var(--accent);">${last.total_synced || 0}</strong> · In-sync: <strong>${(last.total_skipped || 0).toLocaleString()}</strong>
                 </div>

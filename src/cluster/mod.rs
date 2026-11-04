@@ -171,6 +171,13 @@ pub struct ClusterTopology {
     pub replicate_prefixes: Vec<String>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub struct SyncTimings {
+    pub local_scan_ms: u64,
+    pub remote_probe_ms: u64,
+    pub data_transfer_ms: u64,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct NodeSyncResult {
     pub node_id: String,
@@ -178,6 +185,12 @@ pub struct NodeSyncResult {
     pub synced: usize,
     pub skipped: usize,
     pub errors: Vec<String>,
+    #[serde(default)]
+    pub bytes_transferred: u64,
+    #[serde(default)]
+    pub duration_ms: u64,
+    #[serde(default)]
+    pub speed_bytes_per_sec: f64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
@@ -192,6 +205,10 @@ pub struct LiveSyncProgress {
     pub percent: f64,
     pub start_time_ms: u64,
     pub elapsed_ms: u64,
+    #[serde(default)]
+    pub bytes_transferred: u64,
+    #[serde(default)]
+    pub speed_bytes_per_sec: f64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -231,9 +248,15 @@ pub struct SyncReport {
     pub total_synced: usize,
     pub total_skipped: usize,
     pub synced: usize,
+    #[serde(default)]
+    pub total_bytes_transferred: u64,
+    #[serde(default)]
+    pub speed_bytes_per_sec: f64,
     pub duration_ms: u64,
     pub timestamp: DateTime<Utc>,
     pub node_results: Vec<NodeSyncResult>,
+    #[serde(default)]
+    pub timings: SyncTimings,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -272,6 +295,7 @@ pub struct ClusterManager {
     pub active_cancel: Arc<RwLock<Option<CancellationToken>>>,
     root: PathBuf,
     cache: Arc<crate::ChecksumCache>,
+    metrics: Arc<RwLock<Option<Arc<crate::metrics::Metrics>>>>,
 }
 
 struct SyncGuard {
@@ -364,7 +388,17 @@ impl ClusterManager {
             active_cancel: Arc::new(RwLock::new(None)),
             root,
             cache,
+            metrics: Arc::new(RwLock::new(None)),
         }
+    }
+
+    pub async fn set_metrics(&self, metrics: Arc<crate::metrics::Metrics>) {
+        let mut lock = self.metrics.write().await;
+        *lock = Some(metrics);
+    }
+
+    pub async fn get_metrics(&self) -> Option<Arc<crate::metrics::Metrics>> {
+        self.metrics.read().await.clone()
     }
 
     pub fn start_probe_loop(self: Arc<Self>, shutdown: CancellationToken) {
@@ -692,18 +726,34 @@ impl ClusterManager {
     /// Replicate an uploaded file to all remote healthy nodes.
     pub async fn replicate_put(&self, rel_path: &str, abs_path: &Path) {
         let nodes = self.config.read().unwrap().nodes.clone();
+        let file_size = tokio::fs::metadata(abs_path).await.map(|m| m.len()).unwrap_or(0);
+        let metrics = self.get_metrics().await;
+
         for node in nodes {
             if node.is_local {
                 continue;
             }
+            let node_start = Instant::now();
             if node.node_type.as_deref() == Some("gdrive") || node.id == "gdrive" {
                 if let Some(gdrive) = self.gdrive.read().await.clone() {
                     let md5 = match tokio::fs::metadata(abs_path).await {
                         Ok(meta) => self.cache.get_or_compute(abs_path, &meta).await.unwrap_or_default(),
                         Err(_) => String::new(),
                     };
-                    if let Err(e) = gdrive.upload_file(rel_path, abs_path, &md5).await {
-                        tracing::warn!(node = %node.id, path = %rel_path, error = %e, "gdrive replication failed");
+                    match gdrive.upload_file(rel_path, abs_path, &md5).await {
+                        Ok(_) => {
+                            let lat = node_start.elapsed().as_millis() as u64;
+                            if let Some(m) = &metrics {
+                                m.record_replication(&node.id, true, file_size, lat);
+                            }
+                        }
+                        Err(e) => {
+                            let lat = node_start.elapsed().as_millis() as u64;
+                            if let Some(m) = &metrics {
+                                m.record_replication(&node.id, false, 0, lat);
+                            }
+                            tracing::warn!(node = %node.id, path = %rel_path, error = %e, "gdrive replication failed");
+                        }
                     }
                 }
                 continue;
@@ -729,12 +779,24 @@ impl ClusterManager {
 
             match req.send().await {
                 Ok(resp) if resp.status().is_success() => {
+                    let lat = node_start.elapsed().as_millis() as u64;
+                    if let Some(m) = &metrics {
+                        m.record_replication(&node.id, true, file_size, lat);
+                    }
                     tracing::info!(node = %node.id, path = %rel_path, "successfully replicated object");
                 }
                 Ok(resp) => {
+                    let lat = node_start.elapsed().as_millis() as u64;
+                    if let Some(m) = &metrics {
+                        m.record_replication(&node.id, false, 0, lat);
+                    }
                     tracing::warn!(node = %node.id, path = %rel_path, status = %resp.status(), "replication failed");
                 }
                 Err(e) => {
+                    let lat = node_start.elapsed().as_millis() as u64;
+                    if let Some(m) = &metrics {
+                        m.record_replication(&node.id, false, 0, lat);
+                    }
                     tracing::warn!(node = %node.id, path = %rel_path, error = %e, "replication request error");
                 }
             }
@@ -1308,6 +1370,7 @@ impl ClusterManager {
 
     /// Custom interactive & selectable synchronization across target nodes and paths.
     pub async fn sync_custom(&self, opts: CustomSyncOptions, metrics: Option<Arc<crate::metrics::Metrics>>) -> SyncReport {
+        let metrics = metrics.or(self.get_metrics().await);
         let cancel = CancellationToken::new();
         *self.active_cancel.write().await = Some(cancel.clone());
         self.is_syncing.store(true, Ordering::SeqCst);
@@ -1325,6 +1388,7 @@ impl ClusterManager {
         let start = Instant::now();
         let prefix = opts.prefix.as_deref().unwrap_or("").trim_matches('/').to_string();
 
+        let scan_start = Instant::now();
         let local_files = if let Some(p) = &opts.paths {
             let mut list = Vec::new();
             for rel in p {
@@ -1345,6 +1409,7 @@ impl ClusterManager {
         } else {
             self.list_local_files_recursive(&prefix).await
         };
+        let local_scan_ms = scan_start.elapsed().as_millis() as u64;
 
         let mut nodes_to_sync = Vec::new();
         let cfg_nodes = self.config.read().unwrap().nodes.clone();
@@ -1374,25 +1439,35 @@ impl ClusterManager {
             percent: 0.0,
             start_time_ms: chrono::Utc::now().timestamp_millis() as u64,
             elapsed_ms: 0,
+            bytes_transferred: 0,
+            speed_bytes_per_sec: 0.0,
         };
 
         let mut node_results = Vec::new();
+        let mut total_remote_probe_ms = 0u64;
+        let mut total_data_transfer_ms = 0u64;
+        let mut total_bytes_transferred = 0u64;
 
         for node in &nodes_to_sync {
             if cancel.is_cancelled() {
                 break;
             }
 
+            let node_start = Instant::now();
             let mut res = NodeSyncResult {
                 node_id: node.id.clone(),
                 total_checked: local_files.len(),
                 synced: 0,
                 skipped: 0,
                 errors: Vec::new(),
+                bytes_transferred: 0,
+                duration_ms: 0,
+                speed_bytes_per_sec: 0.0,
             };
 
             if node.node_type.as_deref() == Some("gdrive") || node.id == "gdrive" {
                 if let Some(gdrive) = self.gdrive.read().await.clone() {
+                    let probe_start = Instant::now();
                     let mut parent_dirs: std::collections::HashSet<String> = std::collections::HashSet::new();
                     if !prefix.is_empty() {
                         parent_dirs.insert(prefix.clone());
@@ -1418,7 +1493,10 @@ impl ClusterManager {
                             }
                         }
                     }
+                    let probe_duration = probe_start.elapsed().as_millis() as u64;
+                    total_remote_probe_ms += probe_duration;
 
+                    let transfer_start = Instant::now();
                     for (rel_path, md5) in &local_files {
                         if cancel.is_cancelled() {
                             break;
@@ -1445,6 +1523,7 @@ impl ClusterManager {
                             }
                         }
                         let abs_path = self.root.join(rel_path);
+                        let file_size = tokio::fs::metadata(&abs_path).await.map(|m| m.len()).unwrap_or(0);
 
                         {
                             let mut p = self.live_progress.write().await;
@@ -1456,8 +1535,15 @@ impl ClusterManager {
                         match gdrive.upload_file(rel_path, &abs_path, md5).await {
                             Ok(_) => {
                                 res.synced += 1;
+                                res.bytes_transferred += file_size;
+                                total_bytes_transferred += file_size;
+                                let elapsed_sec = start.elapsed().as_secs_f64();
                                 let mut p = self.live_progress.write().await;
                                 p.synced_count += 1;
+                                p.bytes_transferred += file_size;
+                                if elapsed_sec > 0.05 {
+                                    p.speed_bytes_per_sec = p.bytes_transferred as f64 / elapsed_sec;
+                                }
                                 if p.total_to_sync > 0 {
                                     p.percent = ((p.synced_count + p.skipped_count) as f64 / p.total_to_sync as f64) * 100.0;
                                 }
@@ -1472,6 +1558,12 @@ impl ClusterManager {
                             }
                         }
                     }
+                    let transfer_duration = transfer_start.elapsed().as_millis() as u64;
+                    total_data_transfer_ms += transfer_duration;
+                    res.duration_ms = node_start.elapsed().as_millis() as u64;
+                    if res.duration_ms > 0 {
+                        res.speed_bytes_per_sec = (res.bytes_transferred as f64) / (res.duration_ms as f64 / 1000.0);
+                    }
                     node_results.push(res);
                 }
                 continue;
@@ -1479,6 +1571,7 @@ impl ClusterManager {
 
             // Remote ostore node
             let base = node.url.trim_end_matches('/');
+            let probe_start = Instant::now();
             let remote_map = if local_files.len() <= 10 {
                 let stat_stream = futures::stream::iter(local_files.clone())
                     .map(|(rel_path, _)| {
@@ -1537,16 +1630,20 @@ impl ClusterManager {
                     Ok(resp) if resp.status() == reqwest::StatusCode::NOT_FOUND => HashMap::new(),
                     Ok(resp) => {
                         res.errors.push(format!("failed to fetch remote list: HTTP {}", resp.status()));
+                        res.duration_ms = node_start.elapsed().as_millis() as u64;
                         node_results.push(res);
                         continue;
                     }
                     Err(e) => {
                         res.errors.push(format!("failed to connect to remote node: {e}"));
+                        res.duration_ms = node_start.elapsed().as_millis() as u64;
                         node_results.push(res);
                         continue;
                     }
                 }
             };
+            let probe_duration = probe_start.elapsed().as_millis() as u64;
+            total_remote_probe_ms += probe_duration;
 
             let mut to_sync = Vec::new();
             for (rel_path, md5) in &local_files {
@@ -1581,6 +1678,7 @@ impl ClusterManager {
                 to_sync.push(rel_path.clone());
             }
 
+            let transfer_start = Instant::now();
             let client = self.client.clone();
             let base_url = base.to_string();
             let token = node.token.clone();
@@ -1616,6 +1714,7 @@ impl ClusterManager {
                         }
 
                         let abs_path = root.join(&rel_path);
+                        let file_size = tokio::fs::metadata(&abs_path).await.map(|m| m.len()).unwrap_or(0);
                         let upload_url = format!("{base_url}/api/files/{rel_path}");
                         let file = match tokio::fs::File::open(&abs_path).await {
                             Ok(f) => f,
@@ -1629,12 +1728,17 @@ impl ClusterManager {
                         }
                         match put_req.send().await {
                             Ok(resp) if resp.status().is_success() => {
+                                let elapsed_sec = start_instant.elapsed().as_secs_f64();
                                 let mut p = progress.write().await;
                                 p.synced_count += 1;
+                                p.bytes_transferred += file_size;
+                                if elapsed_sec > 0.05 {
+                                    p.speed_bytes_per_sec = p.bytes_transferred as f64 / elapsed_sec;
+                                }
                                 if p.total_to_sync > 0 {
                                     p.percent = ((p.synced_count + p.skipped_count) as f64 / p.total_to_sync as f64) * 100.0;
                                 }
-                                Ok(())
+                                Ok(file_size)
                             }
                             Ok(resp) => {
                                 let mut p = progress.write().await;
@@ -1657,12 +1761,22 @@ impl ClusterManager {
                 })
                 .buffer_unordered(concurrency);
 
-            let results: Vec<Result<(), String>> = upload_stream.collect().await;
+            let results: Vec<Result<u64, String>> = upload_stream.collect().await;
             for r in results {
                 match r {
-                    Ok(()) => res.synced += 1,
+                    Ok(sz) => {
+                        res.synced += 1;
+                        res.bytes_transferred += sz;
+                        total_bytes_transferred += sz;
+                    }
                     Err(e) => res.errors.push(e),
                 }
+            }
+            let transfer_duration = transfer_start.elapsed().as_millis() as u64;
+            total_data_transfer_ms += transfer_duration;
+            res.duration_ms = node_start.elapsed().as_millis() as u64;
+            if res.duration_ms > 0 {
+                res.speed_bytes_per_sec = (res.bytes_transferred as f64) / (res.duration_ms as f64 / 1000.0);
             }
 
             node_results.push(res);
@@ -1673,14 +1787,33 @@ impl ClusterManager {
         let total_skipped: usize = node_results.iter().map(|n| n.skipped).sum();
         let total_errors: usize = node_results.iter().map(|n| n.errors.len()).sum();
         let duration_ms = start.elapsed().as_millis() as u64;
+        let speed_bytes_per_sec = if duration_ms > 0 {
+            (total_bytes_transferred as f64) / (duration_ms as f64 / 1000.0)
+        } else {
+            0.0
+        };
+
+        let timings = SyncTimings {
+            local_scan_ms,
+            remote_probe_ms: total_remote_probe_ms,
+            data_transfer_ms: total_data_transfer_ms,
+        };
 
         if let Some(m) = &metrics {
             m.sync_in_progress.store(0, Ordering::Relaxed);
-            m.sync_total_synced.fetch_add(total_synced as u64, Ordering::Relaxed);
-            m.sync_total_skipped.fetch_add(total_skipped as u64, Ordering::Relaxed);
-            m.sync_total_failed.fetch_add(total_errors as u64, Ordering::Relaxed);
-            m.sync_last_duration_ms.store(duration_ms, Ordering::Relaxed);
-            m.sync_last_synced.store(total_synced as u64, Ordering::Relaxed);
+            m.record_sync_completion(
+                total_checked,
+                total_synced,
+                total_skipped,
+                total_errors,
+                total_bytes_transferred,
+                duration_ms,
+                speed_bytes_per_sec,
+                local_scan_ms,
+                total_remote_probe_ms,
+                total_data_transfer_ms,
+                &node_results,
+            );
         }
 
         let report = SyncReport {
@@ -1689,9 +1822,12 @@ impl ClusterManager {
             total_synced,
             total_skipped,
             synced: total_synced,
+            total_bytes_transferred,
+            speed_bytes_per_sec,
             duration_ms,
             timestamp: Utc::now(),
             node_results,
+            timings,
         };
 
         *self.last_sync_report.write().await = Some(report.clone());

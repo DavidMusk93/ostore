@@ -24,6 +24,7 @@ use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use chrono::Utc;
 use tokio::sync::{RwLock, Semaphore};
@@ -44,6 +45,8 @@ pub const TMP_MARKER: &str = ".ostore-tmp-";
 #[derive(Default)]
 pub struct ChecksumCache {
     cache: RwLock<HashMap<PathBuf, (u64, u128, String, String)>>,
+    pub hits: AtomicU64,
+    pub misses: AtomicU64,
 }
 
 impl ChecksumCache {
@@ -73,11 +76,13 @@ impl ChecksumCache {
             let lock = self.cache.read().await;
             if let Some((c_size, c_mtime, md5, sha)) = lock.get(abs) {
                 if *c_size == size && *c_mtime == mtime && !sha.is_empty() {
+                    self.hits.fetch_add(1, Ordering::Relaxed);
                     return Ok((md5.clone(), sha.clone()));
                 }
             }
         }
 
+        self.misses.fetch_add(1, Ordering::Relaxed);
         // Cache miss: compute both MD5 and SHA-256 in a single streaming disk read
         let (md5, sha) = crate::routes::files::md5_and_sha256_file(abs).await?;
         let mut lock = self.cache.write().await;

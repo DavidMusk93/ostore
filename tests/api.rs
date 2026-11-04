@@ -603,6 +603,10 @@ async fn metrics_exposition() {
     assert!(text.contains("route=\"/api/files/{*path}\",method=\"PUT\",status=\"200\""), "{text}");
     assert!(text.contains("route=\"/api/metrics\",method=\"GET\",status=\"401\""));
     assert!(text.contains("ostore_root_disk_available_bytes"));
+    assert!(text.contains("ostore_sync_in_progress"));
+    assert!(text.contains("ostore_checksum_cache_requests_total{result=\"hit\"}"));
+    assert!(text.contains("ostore_checksum_cache_requests_total{result=\"miss\"}"));
+    assert!(text.contains("ostore_sync_phase_duration_seconds{phase=\"local_scan\"}"));
 }
 
 #[test]

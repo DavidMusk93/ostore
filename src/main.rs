@@ -56,7 +56,8 @@ async fn main() {
             std::process::exit(2);
         }
     };
-    if state.cluster.is_some() {
+    if let Some(cluster) = &cluster_mgr {
+        cluster.set_metrics(state.metrics.clone()).await;
         tracing::info!("Cluster control plane enabled");
     }
     if state.s3.is_some() {

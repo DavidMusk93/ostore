@@ -32,6 +32,24 @@ struct CpuSample {
 }
 
 
+#[derive(Default, Clone, Debug)]
+pub struct NodeSyncStats {
+    pub synced_files: u64,
+    pub skipped_files: u64,
+    pub failed_files: u64,
+    pub bytes_transferred: u64,
+    pub last_duration_ms: u64,
+    pub last_speed_bps: u64,
+}
+
+#[derive(Default, Clone, Debug)]
+pub struct NodeReplicationStats {
+    pub success_count: u64,
+    pub failure_count: u64,
+    pub bytes_replicated: u64,
+    pub last_latency_ms: u64,
+}
+
 #[derive(Default)]
 struct Histogram {
     counts: [u64; BUCKETS.len()],
@@ -87,8 +105,21 @@ pub struct Metrics {
     pub sync_total_synced: AtomicU64,
     pub sync_total_skipped: AtomicU64,
     pub sync_total_failed: AtomicU64,
+    pub sync_total_bytes: AtomicU64,
+    pub sync_total_files_checked: AtomicU64,
     pub sync_last_duration_ms: AtomicU64,
     pub sync_last_synced: AtomicU64,
+    pub sync_last_bytes: AtomicU64,
+    pub sync_last_speed_bps: AtomicU64,
+    pub sync_last_scan_ms: AtomicU64,
+    pub sync_last_probe_ms: AtomicU64,
+    pub sync_last_transfer_ms: AtomicU64,
+    pub node_sync_stats: Mutex<BTreeMap<String, NodeSyncStats>>,
+    pub replication_success: AtomicU64,
+    pub replication_failure: AtomicU64,
+    pub replication_bytes: AtomicU64,
+    pub replication_last_latency_ms: AtomicU64,
+    pub node_replication_stats: Mutex<BTreeMap<String, NodeReplicationStats>>,
 }
 
 impl Default for Metrics {
@@ -132,8 +163,83 @@ impl Metrics {
             sync_total_synced: AtomicU64::new(0),
             sync_total_skipped: AtomicU64::new(0),
             sync_total_failed: AtomicU64::new(0),
+            sync_total_bytes: AtomicU64::new(0),
+            sync_total_files_checked: AtomicU64::new(0),
             sync_last_duration_ms: AtomicU64::new(0),
             sync_last_synced: AtomicU64::new(0),
+            sync_last_bytes: AtomicU64::new(0),
+            sync_last_speed_bps: AtomicU64::new(0),
+            sync_last_scan_ms: AtomicU64::new(0),
+            sync_last_probe_ms: AtomicU64::new(0),
+            sync_last_transfer_ms: AtomicU64::new(0),
+            node_sync_stats: Mutex::new(BTreeMap::new()),
+            replication_success: AtomicU64::new(0),
+            replication_failure: AtomicU64::new(0),
+            replication_bytes: AtomicU64::new(0),
+            replication_last_latency_ms: AtomicU64::new(0),
+            node_replication_stats: Mutex::new(BTreeMap::new()),
+        }
+    }
+
+    pub fn record_sync_completion(
+        &self,
+        checked: usize,
+        synced: usize,
+        skipped: usize,
+        failed: usize,
+        bytes_transferred: u64,
+        duration_ms: u64,
+        speed_bps: f64,
+        scan_ms: u64,
+        probe_ms: u64,
+        transfer_ms: u64,
+        node_results: &[crate::cluster::NodeSyncResult],
+    ) {
+        self.sync_total_synced.fetch_add(synced as u64, Ordering::Relaxed);
+        self.sync_total_skipped.fetch_add(skipped as u64, Ordering::Relaxed);
+        self.sync_total_failed.fetch_add(failed as u64, Ordering::Relaxed);
+        self.sync_total_bytes.fetch_add(bytes_transferred, Ordering::Relaxed);
+        self.sync_total_files_checked.fetch_add(checked as u64, Ordering::Relaxed);
+
+        self.sync_last_duration_ms.store(duration_ms, Ordering::Relaxed);
+        self.sync_last_synced.store(synced as u64, Ordering::Relaxed);
+        self.sync_last_bytes.store(bytes_transferred, Ordering::Relaxed);
+        self.sync_last_speed_bps.store(speed_bps as u64, Ordering::Relaxed);
+        self.sync_last_scan_ms.store(scan_ms, Ordering::Relaxed);
+        self.sync_last_probe_ms.store(probe_ms, Ordering::Relaxed);
+        self.sync_last_transfer_ms.store(transfer_ms, Ordering::Relaxed);
+
+        if let Ok(mut lock) = self.node_sync_stats.lock() {
+            for nr in node_results {
+                let entry = lock.entry(nr.node_id.clone()).or_default();
+                entry.synced_files += nr.synced as u64;
+                entry.skipped_files += nr.skipped as u64;
+                entry.failed_files += nr.errors.len() as u64;
+                entry.bytes_transferred += nr.bytes_transferred;
+                entry.last_duration_ms = nr.duration_ms;
+                entry.last_speed_bps = nr.speed_bytes_per_sec as u64;
+            }
+        }
+    }
+
+    pub fn record_replication(&self, node_id: &str, success: bool, bytes: u64, latency_ms: u64) {
+        if success {
+            self.replication_success.fetch_add(1, Ordering::Relaxed);
+            self.replication_bytes.fetch_add(bytes, Ordering::Relaxed);
+        } else {
+            self.replication_failure.fetch_add(1, Ordering::Relaxed);
+        }
+        self.replication_last_latency_ms.store(latency_ms, Ordering::Relaxed);
+
+        if let Ok(mut lock) = self.node_replication_stats.lock() {
+            let entry = lock.entry(node_id.to_string()).or_default();
+            if success {
+                entry.success_count += 1;
+                entry.bytes_replicated += bytes;
+            } else {
+                entry.failure_count += 1;
+            }
+            entry.last_latency_ms = latency_ms;
         }
     }
 
@@ -249,8 +355,78 @@ impl Metrics {
         counter(o, "ostore_sync_total_synced", "Total files successfully synchronized across fleet.", self.sync_total_synced.load(Ordering::Relaxed));
         counter(o, "ostore_sync_total_skipped", "Total files skipped (already matching hash) during fleet sync.", self.sync_total_skipped.load(Ordering::Relaxed));
         counter(o, "ostore_sync_total_failed", "Total files failed during fleet sync.", self.sync_total_failed.load(Ordering::Relaxed));
+        counter(o, "ostore_sync_bytes_transferred_total", "Total payload bytes transferred across the fleet during synchronization.", self.sync_total_bytes.load(Ordering::Relaxed));
+        counter(o, "ostore_sync_files_checked_total", "Total objects scanned and evaluated across fleet sync operations.", self.sync_total_files_checked.load(Ordering::Relaxed));
         gauge_f(o, "ostore_sync_last_duration_seconds", "Duration of the last fleet sync in seconds.", (self.sync_last_duration_ms.load(Ordering::Relaxed) as f64) / 1000.0);
         gauge(o, "ostore_sync_last_synced_files", "Number of files synced in the last fleet sync run.", self.sync_last_synced.load(Ordering::Relaxed) as i64);
+        gauge(o, "ostore_sync_last_bytes_transferred", "Payload bytes transferred during the most recent fleet sync.", self.sync_last_bytes.load(Ordering::Relaxed) as i64);
+        gauge_f(o, "ostore_sync_last_speed_bytes_per_second", "Effective network transfer throughput during the last sync in bytes/sec.", self.sync_last_speed_bps.load(Ordering::Relaxed) as f64);
+
+        // Sync Phase Breakdown (Operation Costs)
+        let _ = writeln!(o, "# HELP ostore_sync_phase_duration_seconds Operational latency cost breakdown by synchronization phase in seconds.");
+        let _ = writeln!(o, "# TYPE ostore_sync_phase_duration_seconds gauge");
+        let _ = writeln!(o, "ostore_sync_phase_duration_seconds{{phase=\"local_scan\"}} {:.4}", (self.sync_last_scan_ms.load(Ordering::Relaxed) as f64) / 1000.0);
+        let _ = writeln!(o, "ostore_sync_phase_duration_seconds{{phase=\"remote_probe\"}} {:.4}", (self.sync_last_probe_ms.load(Ordering::Relaxed) as f64) / 1000.0);
+        let _ = writeln!(o, "ostore_sync_phase_duration_seconds{{phase=\"data_transfer\"}} {:.4}", (self.sync_last_transfer_ms.load(Ordering::Relaxed) as f64) / 1000.0);
+
+        // Per-node Sync Breakdown
+        if let Ok(m) = self.node_sync_stats.lock() {
+            if !m.is_empty() {
+                let _ = writeln!(o, "# HELP ostore_sync_node_files_total Sync file distribution by follower node and status outcome.");
+                let _ = writeln!(o, "# TYPE ostore_sync_node_files_total counter");
+                for (nid, st) in m.iter() {
+                    let _ = writeln!(o, "ostore_sync_node_files_total{{node=\"{}\",status=\"synced\"}} {}", esc(nid), st.synced_files);
+                    let _ = writeln!(o, "ostore_sync_node_files_total{{node=\"{}\",status=\"skipped\"}} {}", esc(nid), st.skipped_files);
+                    let _ = writeln!(o, "ostore_sync_node_files_total{{node=\"{}\",status=\"failed\"}} {}", esc(nid), st.failed_files);
+                }
+
+                let _ = writeln!(o, "# HELP ostore_sync_node_bytes_transferred_total Volume of data in bytes transferred to each follower node.");
+                let _ = writeln!(o, "# TYPE ostore_sync_node_bytes_transferred_total counter");
+                for (nid, st) in m.iter() {
+                    let _ = writeln!(o, "ostore_sync_node_bytes_transferred_total{{node=\"{}\"}} {}", esc(nid), st.bytes_transferred);
+                }
+
+                let _ = writeln!(o, "# HELP ostore_sync_node_duration_seconds Time spent synchronizing to each follower node in seconds.");
+                let _ = writeln!(o, "# TYPE ostore_sync_node_duration_seconds gauge");
+                for (nid, st) in m.iter() {
+                    let _ = writeln!(o, "ostore_sync_node_duration_seconds{{node=\"{}\"}} {:.4}", esc(nid), (st.last_duration_ms as f64) / 1000.0);
+                }
+
+                let _ = writeln!(o, "# HELP ostore_sync_node_speed_bytes_per_second Effective transfer speed to each follower node.");
+                let _ = writeln!(o, "# TYPE ostore_sync_node_speed_bytes_per_second gauge");
+                for (nid, st) in m.iter() {
+                    let _ = writeln!(o, "ostore_sync_node_speed_bytes_per_second{{node=\"{}\"}} {:.1}", esc(nid), st.last_speed_bps as f64);
+                }
+            }
+        }
+
+        // Live Write-time Replication Telemetry
+        counter(o, "ostore_replication_success_total", "Successful real-time writes replicated to follower nodes.", self.replication_success.load(Ordering::Relaxed));
+        counter(o, "ostore_replication_failure_total", "Failed real-time writes to follower nodes.", self.replication_failure.load(Ordering::Relaxed));
+        counter(o, "ostore_replication_bytes_total", "Total payload bytes replicated on write across follower nodes.", self.replication_bytes.load(Ordering::Relaxed));
+        gauge_f(o, "ostore_replication_last_latency_seconds", "Latency in seconds of the last write-time object replication.", (self.replication_last_latency_ms.load(Ordering::Relaxed) as f64) / 1000.0);
+
+        if let Ok(m) = self.node_replication_stats.lock() {
+            if !m.is_empty() {
+                let _ = writeln!(o, "# HELP ostore_replication_node_events_total Automatic write-time replication calls by target node.");
+                let _ = writeln!(o, "# TYPE ostore_replication_node_events_total counter");
+                for (nid, st) in m.iter() {
+                    let _ = writeln!(o, "ostore_replication_node_events_total{{node=\"{}\",status=\"success\"}} {}", esc(nid), st.success_count);
+                    let _ = writeln!(o, "ostore_replication_node_events_total{{node=\"{}\",status=\"failure\"}} {}", esc(nid), st.failure_count);
+                }
+                let _ = writeln!(o, "# HELP ostore_replication_node_bytes_total Total bytes replicated to each node on write.");
+                let _ = writeln!(o, "# TYPE ostore_replication_node_bytes_total counter");
+                for (nid, st) in m.iter() {
+                    let _ = writeln!(o, "ostore_replication_node_bytes_total{{node=\"{}\"}} {}", esc(nid), st.bytes_replicated);
+                }
+            }
+        }
+
+        // Checksum Cache Hit/Miss Telemetry (Hash Computation Cost)
+        let _ = writeln!(o, "# HELP ostore_checksum_cache_requests_total In-memory dual-checksum cache requests and hit ratio.");
+        let _ = writeln!(o, "# TYPE ostore_checksum_cache_requests_total counter");
+        let _ = writeln!(o, "ostore_checksum_cache_requests_total{{result=\"hit\"}} {}", st.checksum_cache.hits.load(Ordering::Relaxed));
+        let _ = writeln!(o, "ostore_checksum_cache_requests_total{{result=\"miss\"}} {}", st.checksum_cache.misses.load(Ordering::Relaxed));
 
         if let Some(cluster) = &st.cluster {
             let statuses = cluster.get_node_statuses().await;
