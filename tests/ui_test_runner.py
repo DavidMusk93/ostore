@@ -162,14 +162,12 @@ def run_regression_test():
         
         # Toggle Target Node Chip
         print("Testing node chip click to toggle selection...", flush=True)
-        follower_chips = page.query_selector_all('.fleet-node-item:not([onclick=""])')
-        if follower_chips:
-            follower_chips[0].click()
-            page.wait_for_timeout(1000)
-            fresh_chips = page.query_selector_all('.fleet-node-item:not([onclick=""])')
-            if fresh_chips:
-                fresh_chips[0].click()
-                page.wait_for_timeout(1000)
+        node_locator = page.locator('.fleet-node-item:not([onclick=""])').first
+        if node_locator.count() > 0:
+            node_locator.click()
+            page.wait_for_timeout(800)
+            node_locator.click()
+            page.wait_for_timeout(800)
         
         # Scan Differences
         print("Testing Scan Differences button...", flush=True)
