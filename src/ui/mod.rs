@@ -845,6 +845,37 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
     .mini-dot.probing { background: #D2D2D7; opacity: 0.6; }
     .ratio-badge.probing { background: rgba(0, 0, 0, 0.05); color: var(--ink-secondary); }
 
+    .batch-action-bar {
+      position: fixed;
+      bottom: 24px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(255, 255, 255, 0.95);
+      border: 1px solid var(--card-border);
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.16);
+      border-radius: var(--radius-pill);
+      padding: 8px 18px;
+      display: none;
+      align-items: center;
+      gap: 12px;
+      z-index: 100;
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+    }
+    .row-select-cb {
+      width: 15px;
+      height: 15px;
+      cursor: pointer;
+      accent-color: var(--accent);
+      vertical-align: middle;
+    }
+    .parent-dir-row {
+      transition: background-color 0.12s ease;
+    }
+    .parent-dir-row:hover {
+      background: #F2F2F7 !important;
+    }
+
     .media-box {
       max-width: 90vw;
       max-height: 85vh;
@@ -1008,6 +1039,10 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
     <section class="panel">
       <div class="explorer-bar">
         <div class="breadcrumbs-wrap">
+          <button class="btn" id="btnNavBack" onclick="navigateUp()" style="display: none; padding: 4px 9px; font-size: 0.78rem; align-items: center; gap: 4px;" title="返回上一级目录">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"></polyline></svg>
+            <span>上一级</span>
+          </button>
           <div class="breadcrumbs" id="breadcrumbs">
             <span class="crumb-link" onclick="navigate('')">root</span>
           </div>
@@ -1015,6 +1050,10 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
         </div>
         <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
           <input type="text" class="search-input" id="searchBox" placeholder="Filter objects..." oninput="onFilter()">
+          <button class="btn" id="btnSyncFolder" onclick="openCurrentFolderSync()" title="同步当前目录下的所有文件到指定节点">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+            <span>同步当前目录</span>
+          </button>
           <button class="btn" onclick="openMkdir()">New Folder</button>
           <button class="btn" onclick="triggerFolderUploadInput()" title="Upload entire folder tree">Upload Folder</button>
           <button class="btn btn-primary" onclick="triggerFileInput()">Upload File</button>
@@ -1027,16 +1066,29 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
         <table class="file-table">
           <thead>
             <tr>
-              <th style="width: 42%;">Name</th>
-              <th style="width: 16%;">Size & Total Items</th>
-              <th style="width: 16%;">Modified</th>
-              <th style="width: 14%;">Replication Map</th>
-              <th style="width: 12%; text-align: right;">Folder Actions</th>
+              <th style="width: 38px; text-align: center;">
+                <input type="checkbox" id="selectAllCb" class="row-select-cb" onchange="toggleSelectAllRows(this.checked)" title="全选当前列表项">
+              </th>
+              <th style="width: 38%;">Name</th>
+              <th style="width: 15%;">Size & Total Items</th>
+              <th style="width: 15%;">Modified</th>
+              <th style="width: 18%;">Replication Map</th>
+              <th style="width: 14%; text-align: right;">Actions</th>
             </tr>
           </thead>
           <tbody id="fileTableBody"></tbody>
         </table>
         <div id="scrollAnchor" style="height: 24px; text-align: center; color: var(--ink-secondary); font-size: 0.75rem; padding: 6px;"></div>
+      </div>
+
+      <!-- Floating Batch Action Bar -->
+      <div class="batch-action-bar" id="batchActionBar">
+        <span style="font-size: 0.82rem; font-weight: 600; color: var(--ink);" id="batchSelectedLabel">已选择 0 项</span>
+        <button class="btn btn-primary" onclick="openBatchSync()" style="padding: 4px 12px; font-size: 0.78rem;">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+          批量同步到节点
+        </button>
+        <button class="btn" onclick="clearRowSelection()" style="padding: 4px 10px; font-size: 0.78rem;">取消选择</button>
       </div>
     </section>
   </div>
@@ -1144,16 +1196,21 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       <!-- Target Scope Selector -->
       <div style="margin-bottom: 12px;">
         <label style="font-size: 0.78rem; font-weight: 600; color: var(--ink-secondary); margin-bottom: 6px; display: block;">Replication Scope:</label>
-        <div style="display: flex; gap: 14px; font-size: 0.82rem; flex-wrap: wrap;">
+        <div style="display: flex; gap: 14px; font-size: 0.82rem; flex-wrap: wrap; align-items: center;">
           <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
-            <input type="radio" name="syncScope" value="all" checked onchange="onSyncScopeChanged()">
+            <input type="radio" name="syncScope" value="all" id="syncScopeAll" checked onchange="onSyncScopeChanged()">
             <span>Entire Storage (Root /)</span>
           </label>
           <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
-            <input type="radio" name="syncScope" value="current" onchange="onSyncScopeChanged()">
+            <input type="radio" name="syncScope" value="current" id="syncScopeCurrent" onchange="onSyncScopeChanged()">
             <span id="syncCurrentFolderLabel">Current Folder</span>
           </label>
+          <label style="display: none; align-items: center; gap: 6px; cursor: pointer;" id="syncItemScopeWrapper">
+            <input type="radio" name="syncScope" value="item" id="syncScopeItem" onchange="onSyncScopeChanged()">
+            <span id="syncItemScopeLabel" style="font-weight: 600; color: var(--accent);">Target Item</span>
+          </label>
         </div>
+        <div id="syncTargetBadge" style="display: none; margin-top: 6px; font-size: 0.74rem; font-family: var(--font-mono); color: var(--accent); background: rgba(0, 113, 227, 0.08); padding: 4px 8px; border-radius: 4px; word-break: break-all;"></div>
       </div>
 
       <!-- Sync Status & Last Report Box -->
@@ -1422,6 +1479,10 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
     const replicaMapCache = new Map();
     const dirCache = new Map(); // path -> { entries, totalCount, totalBytes, hasMore, offset, timestamp }
     const DIR_CACHE_TTL_MS = 60000;
+
+    // Row selection for granular batch operations
+    const selectedRowPaths = new Set();
+    let activeSyncTarget = null; // null or { type: 'item'|'dir'|'file'|'batch'|'current', paths: [...], prefix: '...', label: '...' }
 
     let sessionToken = localStorage.getItem('ostore_sess') || localStorage.getItem('ostore_token') || '';
     let eventSource = null;
@@ -1761,13 +1822,20 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       initSSE();
       loadTopology();
       checkGDriveStatus();
-      loadDirectory('', false);
+
+      const searchParams = new URLSearchParams(window.location.search);
+      let initialPath = searchParams.get('path');
+      if (initialPath === null) {
+        initialPath = sessionStorage.getItem('ostore_current_path') || '';
+      }
+      loadDirectory(initialPath, false, false);
     }
 
     function closeAllModals() {
       document.getElementById('totpSetupModal').style.display = 'none';
       document.getElementById('tokenModal').style.display = 'none';
       document.getElementById('folderDetailModal').style.display = 'none';
+      document.getElementById('clusterSyncModal').style.display = 'none';
       document.getElementById('fileTopoModal').style.display = 'none';
       document.getElementById('mediaModal').style.display = 'none';
       const gdModal = document.getElementById('gdriveModal');
@@ -2131,15 +2199,125 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       svg.innerHTML = pathsHtml + nodesHtml;
     }
 
+    function getDirUrl(p) {
+      const base = window.location.pathname;
+      return p ? `${base}?path=${encodeURIComponent(p)}` : base;
+    }
+
+    function navigate(p, addToHistory = true) {
+      loadDirectory(p, false, addToHistory);
+    }
+
+    function navigateUp() {
+      if (!currentPath) return;
+      const parts = currentPath.split('/').filter(Boolean);
+      parts.pop();
+      navigate(parts.join('/'), true);
+    }
+
+    function updateNavControls() {
+      const backBtn = document.getElementById('btnNavBack');
+      if (backBtn) {
+        backBtn.style.display = currentPath ? 'inline-flex' : 'none';
+      }
+      const syncCurBtn = document.getElementById('btnSyncFolder');
+      if (syncCurBtn) {
+        syncCurBtn.title = `同步当前目录 (/${currentPath || 'root'}) 到指定节点`;
+      }
+    }
+
+    window.addEventListener('popstate', (e) => {
+      let targetPath = '';
+      if (e.state && typeof e.state.path === 'string') {
+        targetPath = e.state.path;
+      } else {
+        const params = new URLSearchParams(window.location.search);
+        targetPath = params.get('path') || '';
+      }
+      loadDirectory(targetPath, false, false);
+    });
+
+    // Row selection for batch operations
+    function toggleSelectAllRows(checked) {
+      document.querySelectorAll('.row-select-cb').forEach(cb => {
+        cb.checked = checked;
+        const p = cb.getAttribute('data-path');
+        if (p) {
+          if (checked) selectedRowPaths.add(p);
+          else selectedRowPaths.delete(p);
+        }
+      });
+      updateBatchBar();
+    }
+
+    function onRowSelectionChange(event) {
+      if (event) event.stopPropagation();
+      document.querySelectorAll('.row-select-cb').forEach(cb => {
+        const p = cb.getAttribute('data-path');
+        if (p) {
+          if (cb.checked) selectedRowPaths.add(p);
+          else selectedRowPaths.delete(p);
+        }
+      });
+      updateSelectAllCheckbox();
+      updateBatchBar();
+    }
+
+    function updateSelectAllCheckbox() {
+      const allCbs = document.querySelectorAll('.row-select-cb');
+      const selectAll = document.getElementById('selectAllCb');
+      if (!selectAll || allCbs.length === 0) return;
+      const checkedCount = document.querySelectorAll('.row-select-cb:checked').length;
+      selectAll.checked = checkedCount === allCbs.length;
+      selectAll.indeterminate = checkedCount > 0 && checkedCount < allCbs.length;
+    }
+
+    function clearRowSelection() {
+      selectedRowPaths.clear();
+      document.querySelectorAll('.row-select-cb').forEach(cb => cb.checked = false);
+      const selectAll = document.getElementById('selectAllCb');
+      if (selectAll) {
+        selectAll.checked = false;
+        selectAll.indeterminate = false;
+      }
+      updateBatchBar();
+    }
+
+    function updateBatchBar() {
+      const bar = document.getElementById('batchActionBar');
+      const lbl = document.getElementById('batchSelectedLabel');
+      if (!bar) return;
+      if (selectedRowPaths.size > 0) {
+        bar.style.display = 'flex';
+        if (lbl) lbl.textContent = `已选择 ${selectedRowPaths.size} 项`;
+      } else {
+        bar.style.display = 'none';
+      }
+    }
+
     // Object Explorer: True Lazy Load with SWR Client-Side Cache
-    async function loadDirectory(path = currentPath, append = false) {
+    async function loadDirectory(path = currentPath, append = false, addToHistory = true) {
       if (isLoading) return;
       isLoading = true;
 
       if (!append) {
         currentPath = path;
         currentOffset = 0;
+        clearRowSelection();
         updateBreadcrumbs();
+        updateNavControls();
+
+        if (addToHistory) {
+          try {
+            const url = getDirUrl(currentPath);
+            window.history.pushState({ path: currentPath }, '', url);
+          } catch (e) {
+            console.warn('history.pushState failed:', e);
+          }
+        }
+        try {
+          sessionStorage.setItem('ostore_current_path', currentPath);
+        } catch (e) {}
 
         const cached = dirCache.get(path);
         if (cached && (Date.now() - cached.timestamp < DIR_CACHE_TTL_MS)) {
@@ -2159,7 +2337,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
         } else {
           currentEntries = [];
           document.getElementById('fileTableBody').innerHTML = `
-            <tr><td colspan="5" style="text-align:center; padding: 24px; color: var(--ink-secondary); font-family:var(--font-mono);">
+            <tr><td colspan="6" style="text-align:center; padding: 24px; color: var(--ink-secondary); font-family:var(--font-mono);">
               ⚡ Reading directory metadata...
             </td></tr>
           `;
@@ -2223,10 +2401,29 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
 
       if (!append) {
         tbody.innerHTML = '';
+        if (currentPath && !q) {
+          const parentRowHtml = `
+            <tr class="file-row parent-dir-row" onclick="navigateUp()" style="cursor: pointer; background: #FAFBFD;">
+              <td style="text-align: center;"></td>
+              <td colspan="4">
+                <div class="name-cell" style="color: var(--accent); font-weight: 600;">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="16" height="16"><polyline points="15 18 9 12 15 6"></polyline></svg>
+                  <span>.. (返回上一级目录)</span>
+                </div>
+              </td>
+              <td style="text-align: right;">
+                <button class="btn btn-sm" onclick="event.stopPropagation(); navigateUp()" style="padding: 2px 10px; font-size: 0.72rem;">返回上一级</button>
+              </td>
+            </tr>
+          `;
+          tbody.insertAdjacentHTML('beforeend', parentRowHtml);
+        }
       }
 
       if (filtered.length === 0 && !append) {
-        tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; padding: 32px; color: var(--ink-secondary);">Folder is empty</td></tr>`;
+        if (!currentPath || q) {
+          tbody.innerHTML = `<tr><td colspan="6" style="text-align:center; padding: 32px; color: var(--ink-secondary);">Folder is empty</td></tr>`;
+        }
         return;
       }
 
@@ -2235,30 +2432,34 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
         .join('');
 
       tbody.insertAdjacentHTML('beforeend', rowsHtml);
+      updateSelectAllCheckbox();
     }
 
     function renderRowHtml(item) {
       const isDir = item.type === 'dir';
-      const dlUrl = isDir ? `${getBasePath()}/api/archive?path=${item.path}` : `${getBasePath()}/api/files/${item.path}`;
+      const dlUrl = isDir ? `${getBasePath()}/api/archive?path=${encodeURIComponent(item.path)}` : `${getBasePath()}/api/files/${encodeURIComponent(item.path)}`;
 
       let nodeMapHtml = '-';
       if (!isDir) {
         const cached = replicaMapCache.get(item.path);
         const hasCc2 = cached ? cached.cc2 : null;
         const hasRn = cached ? cached.rn : null;
+        const hasGd = cached ? cached.gd : null;
         const isProbing = hasCc2 === null || hasRn === null;
 
         const cc2DotClass = hasCc2 === null ? 'probing' : (hasCc2 === true ? 'present' : 'missing');
         const rnDotClass = hasRn === null ? 'probing' : (hasRn === true ? 'present' : 'missing');
-        const count = 1 + (hasCc2 === true ? 1 : 0) + (hasRn === true ? 1 : 0);
-        const ratioClass = isProbing ? 'probing' : (count === 3 ? 'full' : 'partial');
-        const ratioText = isProbing ? '...' : `${count}/3`;
+        const gdDotClass = hasGd === null ? 'probing' : (hasGd === true ? 'present' : 'missing');
+        const count = 1 + (hasCc2 === true ? 1 : 0) + (hasRn === true ? 1 : 0) + (hasGd === true ? 1 : 0);
+        const ratioClass = isProbing ? 'probing' : (count === 4 ? 'full' : 'partial');
+        const ratioText = isProbing ? '...' : `${count}/4`;
 
         nodeMapHtml = `
-          <div class="node-badges-cluster" id="badge-${escapeId(item.path)}" onclick="inspectFileReplica('${item.path}')" title="Click to inspect replica details and individual file sync">
+          <div class="node-badges-cluster" id="badge-${escapeId(item.path)}" onclick="inspectFileReplica('${escapeJs(item.path)}')" title="查看副本拓扑详情与单文件同步">
             <span class="node-dot-item present"><span class="mini-dot main"></span>cc</span>
             <span class="node-dot-item ${hasCc2 === true ? 'present' : ''}"><span class="mini-dot ${cc2DotClass}"></span>cc2</span>
             <span class="node-dot-item ${hasRn === true ? 'present' : ''}"><span class="mini-dot ${rnDotClass}"></span>rn</span>
+            <span class="node-dot-item ${hasGd === true ? 'present' : ''}"><span class="mini-dot ${gdDotClass}"></span>gd</span>
             <span class="ratio-badge ${ratioClass}">${ratioText}</span>
           </div>
         `;
@@ -2268,7 +2469,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       if (isDir) {
         const itemCount = item.item_count !== undefined && item.item_count !== null ? `${item.item_count.toLocaleString()} items` : 'Directory';
         sizeDisplayHtml = `
-          <div class="dir-size-cell" onclick="openFolderDetail('${item.path}', '${item.name}', ${item.size}, ${item.item_count || 0}, '${item.mtime}')" title="Click to inspect folder properties">
+          <div class="dir-size-cell" onclick="openFolderDetail('${escapeJs(item.path)}', '${escapeJs(item.name)}', ${item.size || 0}, ${item.item_count || 0}, '${escapeJs(item.mtime || '')}')" title="Click to inspect folder properties">
             <span class="dir-size-val">${formatBytes(item.size)}</span>
             <span class="dir-items-val">${itemCount}</span>
           </div>
@@ -2281,16 +2482,19 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       if (isDir) {
         actionsHtml = `
           <div class="row-actions">
+            <button class="icon-btn" title="同步此文件夹到指定节点" onclick="openItemSync('${escapeJs(item.path)}', true, event)">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+            </button>
             <a class="icon-btn" href="${dlUrl}" download="${escapeHtml(item.name)}.tar" title="Download folder as tar archive">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
             </a>
-            <button class="icon-btn" title="Folder properties and sync" onclick="openFolderDetail('${item.path}', '${item.name}', ${item.size}, ${item.item_count || 0}, '${item.mtime}')">
+            <button class="icon-btn" title="Folder properties" onclick="openFolderDetail('${escapeJs(item.path)}', '${escapeJs(item.name)}', ${item.size || 0}, ${item.item_count || 0}, '${escapeJs(item.mtime || '')}')">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
             </button>
-            <button class="icon-btn" title="Rename folder" onclick="renamePrompt('${item.path}')">
+            <button class="icon-btn" title="Rename folder" onclick="renamePrompt('${escapeJs(item.path)}')">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
             </button>
-            <button class="icon-btn btn-delete" title="Delete folder" onclick="deleteItem('${item.path}', true)">
+            <button class="icon-btn btn-delete" title="Delete folder" onclick="deleteItem('${escapeJs(item.path)}', true)">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
             </button>
           </div>
@@ -2298,24 +2502,32 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       } else {
         actionsHtml = `
           <div class="row-actions">
+            <button class="icon-btn" title="同步此文件到指定节点" onclick="openItemSync('${escapeJs(item.path)}', false, event)">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+            </button>
             <a class="icon-btn" href="${dlUrl}?download=1" download="${escapeHtml(item.name)}" title="Download">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
             </a>
             <button class="icon-btn" title="Copy Direct URL" onclick="copyURL('${dlUrl}')">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
             </button>
-            <button class="icon-btn" title="Copy MD5" onclick="copyMD5('${item.md5 || item.sha256 || ''}')">
+            <button class="icon-btn" title="Copy MD5" onclick="copyMD5('${escapeJs(item.md5 || item.sha256 || '')}')">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
             </button>
-            <button class="icon-btn btn-delete" title="Delete" onclick="deleteItem('${item.path}', false)">
+            <button class="icon-btn btn-delete" title="Delete" onclick="deleteItem('${escapeJs(item.path)}', false)">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
             </button>
           </div>
         `;
       }
 
+      const isChecked = selectedRowPaths.has(item.path);
+
       return `
         <tr class="file-row" id="row-${escapeId(item.path)}">
+          <td style="text-align: center;">
+            <input type="checkbox" class="row-select-cb" data-path="${escapeHtml(item.path)}" data-is-dir="${isDir}" ${isChecked ? 'checked' : ''} onchange="onRowSelectionChange(event)" onclick="event.stopPropagation()">
+          </td>
           <td>
             <div class="name-cell" onclick="${isDir ? `navigate('${escapeJs(item.path)}')` : `openMediaPreview('${escapeJs(item.path)}', ${item.size || 0}, '${escapeJs(item.sha256 || '')}')`}">
               ${isDir
@@ -2349,10 +2561,6 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
     }, { root: document.getElementById('tableViewport'), threshold: 0.1 });
 
     scrollObserver.observe(document.getElementById('scrollAnchor'));
-
-    function navigate(p) {
-      loadDirectory(p, false);
-    }
 
     function updateBreadcrumbs() {
       const bc = document.getElementById('breadcrumbs');
@@ -2419,15 +2627,9 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
 
     async function syncFolderReplicas() {
       if (!inspectingFolderPath) return;
-      showToast(`Syncing folder "${inspectingFolderPath}" to all followers...`);
-      const res = await api(`/api/cluster/sync?prefix=${encodeURIComponent(inspectingFolderPath)}`, { method: 'POST' });
-      if (res.ok) {
-        const r = await res.json();
-        const synced = r.total_synced !== undefined ? r.total_synced : (r.node_results || []).reduce((acc, n) => acc + (n.synced || 0), 0);
-        showToast(`Folder sync completed: ${synced} files updated (${r.duration_ms}ms)`);
-        closeFolderDetailModal();
-        loadDirectory(currentPath, false);
-      }
+      const target = inspectingFolderPath;
+      closeFolderDetailModal();
+      openItemSync(target, true);
     }
 
     async function inspectFileReplica(filePath, deepVerify = false) {
@@ -2450,6 +2652,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
 
         let hasCc2 = false;
         let hasRn = false;
+        let hasGd = false;
 
         let html = `
           <div class="file-node-row">
@@ -2474,13 +2677,21 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
           const isMatched = f.exists && f.matches;
           if (f.id === 'cc2' && isMatched) hasCc2 = true;
           if (f.id === 'racknerd' && isMatched) hasRn = true;
+          if ((f.id === 'gdrive' || (f.name && f.name.includes('Google Drive'))) && isMatched) hasGd = true;
+
+          const actionBtn = isMatched ? '' : `
+            <button class="btn btn-primary" onclick="syncFileToNode('${escapeJs(filePath)}', '${escapeJs(f.id)}')" style="margin-top: 6px; padding: 2px 8px; font-size: 0.72rem; align-self: flex-end;">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+              同步到此节点
+            </button>
+          `;
 
           html += `
             <div class="file-node-row">
               <div>
                 <div style="font-weight:600; font-size: 0.84rem; display: flex; align-items: center; gap: 6px;">
                   <span class="status-dot ${isMatched ? '' : 'disconnected'}"></span>
-                  <span>${f.name}</span>
+                  <span>${escapeHtml(f.name)}</span>
                   <span class="topo-card-badge">Follower · ${f.rtt_ms !== null ? f.rtt_ms + 'ms' : 'off'}</span>
                 </div>
                 <div style="font-size: 0.72rem; font-family: var(--font-mono); color: var(--ink-secondary); margin-top: 4px;">
@@ -2489,11 +2700,12 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
                     : '<strong style="color:var(--danger)">Missing on this node</strong>'}
                 </div>
               </div>
-              <div style="text-align: right; font-family: var(--font-mono); font-size: 0.78rem;">
+              <div style="display: flex; flex-direction: column; align-items: flex-end; text-align: right; font-family: var(--font-mono); font-size: 0.78rem;">
                 <div>${f.exists ? formatBytes(f.size) : '0 B'}</div>
                 <span class="ratio-badge ${isMatched ? 'full' : 'partial'}" style="font-size:0.7rem;">
                   ${isMatched ? 'Replica Synced' : (f.exists ? 'Size Mismatch' : 'Not Replicated')}
                 </span>
+                ${actionBtn}
               </div>
             </div>
           `;
@@ -2511,8 +2723,8 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
           <span>Mode: <strong>${metrics.verify_hash ? 'Deep Hash' : 'Fast Tiered Probe'}</strong></span>
         `;
 
-        replicaMapCache.set(filePath, { cc2: hasCc2, rn: hasRn });
-        updateRowBadge(filePath, hasCc2, hasRn);
+        replicaMapCache.set(filePath, { cc2: hasCc2, rn: hasRn, gd: hasGd });
+        updateRowBadge(filePath, hasCc2, hasRn, hasGd);
 
         document.getElementById('fileTopoSummary').textContent = 
           `Status: ${data.replica_count}/${data.expected_replicas} Nodes Hold Replicas`;
@@ -2522,20 +2734,42 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       }
     }
 
-    function updateRowBadge(filePath, hasCc2, hasRn) {
+    async function syncFileToNode(filePath, nodeId) {
+      showToast(`正在同步 ${filePath.split('/').pop()} 到 ${nodeId}...`);
+      try {
+        const res = await api('/api/cluster/sync', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ paths: [filePath], target_nodes: [nodeId] }),
+        });
+        if (res.ok) {
+          showToast(`已成功同步到 ${nodeId}!`);
+          inspectFileReplica(filePath, true);
+          probeDirectoryReplicas(currentPath);
+        } else {
+          showToast(`同步到 ${nodeId} 失败: HTTP ${res.status}`);
+        }
+      } catch (e) {
+        showToast(`同步异常: ${e}`);
+      }
+    }
+
+    function updateRowBadge(filePath, hasCc2, hasRn, hasGd) {
       const badge = document.getElementById(`badge-${escapeId(filePath)}`);
       if (!badge) return;
       const isProbing = hasCc2 === null || hasRn === null;
       const cc2DotClass = hasCc2 === null ? 'probing' : (hasCc2 === true ? 'present' : 'missing');
       const rnDotClass = hasRn === null ? 'probing' : (hasRn === true ? 'present' : 'missing');
-      const count = 1 + (hasCc2 === true ? 1 : 0) + (hasRn === true ? 1 : 0);
-      const ratioClass = isProbing ? 'probing' : (count === 3 ? 'full' : 'partial');
-      const ratioText = isProbing ? '...' : `${count}/3`;
+      const gdDotClass = hasGd === null ? 'probing' : (hasGd === true ? 'present' : 'missing');
+      const count = 1 + (hasCc2 === true ? 1 : 0) + (hasRn === true ? 1 : 0) + (hasGd === true ? 1 : 0);
+      const ratioClass = isProbing ? 'probing' : (count === 4 ? 'full' : 'partial');
+      const ratioText = isProbing ? '...' : `${count}/4`;
 
       badge.innerHTML = `
         <span class="node-dot-item present"><span class="mini-dot main"></span>cc</span>
         <span class="node-dot-item ${hasCc2 === true ? 'present' : ''}"><span class="mini-dot ${cc2DotClass}"></span>cc2</span>
         <span class="node-dot-item ${hasRn === true ? 'present' : ''}"><span class="mini-dot ${rnDotClass}"></span>rn</span>
+        <span class="node-dot-item ${hasGd === true ? 'present' : ''}"><span class="mini-dot ${gdDotClass}"></span>gd</span>
         <span class="ratio-badge ${ratioClass}">${ratioText}</span>
       `;
     }
@@ -2881,8 +3115,8 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
         const data = await res.json();
         if (!data.files) return;
         for (const [filePath, info] of Object.entries(data.files)) {
-          replicaMapCache.set(filePath, { cc2: info.cc2, rn: info.rn });
-          updateRowBadge(filePath, info.cc2, info.rn);
+          replicaMapCache.set(filePath, { cc2: info.cc2, rn: info.rn, gd: info.gd });
+          updateRowBadge(filePath, info.cc2, info.rn, info.gd);
         }
       } catch (e) {
         console.warn('Directory replica probe error:', e);
@@ -2917,6 +3151,68 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
         }
       });
       refreshSyncStatus();
+    }
+
+    function openItemSync(targetPath, isDir, event) {
+      if (event) event.stopPropagation();
+      activeSyncTarget = {
+        type: isDir ? 'dir' : 'file',
+        paths: isDir ? [] : [targetPath],
+        prefix: isDir ? targetPath : '',
+        label: `${isDir ? '文件夹' : '文件'}: ${targetPath.split('/').pop()}`,
+      };
+      setupSyncModalWithTarget();
+    }
+
+    function openBatchSync() {
+      const selected = Array.from(selectedRowPaths);
+      if (selected.length === 0) {
+        showToast('请先选择要同步的文件或文件夹');
+        return;
+      }
+      activeSyncTarget = {
+        type: 'batch',
+        paths: selected,
+        prefix: '',
+        label: `已选中 ${selected.length} 个项目`,
+      };
+      setupSyncModalWithTarget();
+    }
+
+    function openCurrentFolderSync() {
+      activeSyncTarget = {
+        type: 'current',
+        paths: [],
+        prefix: currentPath,
+        label: `当前目录: /${currentPath || ' (root)'}`,
+      };
+      setupSyncModalWithTarget();
+    }
+
+    function setupSyncModalWithTarget() {
+      const itemWrapper = document.getElementById('syncItemScopeWrapper');
+      const itemLabel = document.getElementById('syncItemScopeLabel');
+      const badge = document.getElementById('syncTargetBadge');
+      const scopeItemRadio = document.getElementById('syncScopeItem');
+      const scopeCurrentRadio = document.getElementById('syncScopeCurrent');
+      const scopeAllRadio = document.getElementById('syncScopeAll');
+
+      if (activeSyncTarget && (activeSyncTarget.type === 'file' || activeSyncTarget.type === 'dir' || activeSyncTarget.type === 'batch')) {
+        itemWrapper.style.display = 'inline-flex';
+        itemLabel.textContent = activeSyncTarget.label;
+        scopeItemRadio.checked = true;
+        badge.textContent = `🎯 同步目标: ${activeSyncTarget.label} (${activeSyncTarget.type === 'batch' ? activeSyncTarget.paths.length + ' 项' : (activeSyncTarget.prefix || activeSyncTarget.paths[0])})`;
+        badge.style.display = 'block';
+      } else {
+        itemWrapper.style.display = 'none';
+        badge.style.display = 'none';
+        if (activeSyncTarget && activeSyncTarget.type === 'current') {
+          scopeCurrentRadio.checked = true;
+        } else {
+          scopeAllRadio.checked = true;
+        }
+      }
+      openClusterSyncModal();
     }
 
     async function openClusterSyncModal() {
@@ -3053,8 +3349,20 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
 
     async function scanSyncDiff() {
       const scopeRadio = document.querySelector('input[name="syncScope"]:checked');
-      const isCurrentFolder = scopeRadio && scopeRadio.value === 'current';
-      const prefix = isCurrentFolder ? currentPath : '';
+      const scopeVal = scopeRadio ? scopeRadio.value : 'all';
+      let prefix = '';
+      let paths = undefined;
+
+      if (scopeVal === 'item' && activeSyncTarget) {
+        if (activeSyncTarget.type === 'dir') {
+          prefix = activeSyncTarget.prefix;
+        } else {
+          paths = activeSyncTarget.paths;
+        }
+      } else if (scopeVal === 'current') {
+        prefix = currentPath;
+      }
+
       const targetNodes = Array.from(selectedSyncNodes);
 
       const btn = document.getElementById('btnScanDiff');
@@ -3063,7 +3371,8 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
 
       try {
         const payload = {
-          prefix,
+          prefix: prefix || undefined,
+          paths: paths && paths.length > 0 ? paths : undefined,
           target_nodes: targetNodes.length > 0 ? targetNodes : undefined,
         };
         const res = await api('/api/cluster/sync-diff', {
@@ -3143,12 +3452,28 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
 
     async function runClusterSyncFromModal() {
       const scopeRadio = document.querySelector('input[name="syncScope"]:checked');
-      const isCurrentFolder = scopeRadio && scopeRadio.value === 'current';
-      const prefix = isCurrentFolder ? currentPath : '';
+      const scopeVal = scopeRadio ? scopeRadio.value : 'all';
+      let prefix = '';
+      let paths = undefined;
+
+      if (scopeVal === 'item' && activeSyncTarget) {
+        if (activeSyncTarget.type === 'dir') {
+          prefix = activeSyncTarget.prefix;
+        } else {
+          paths = activeSyncTarget.paths;
+        }
+      } else if (scopeVal === 'current') {
+        prefix = currentPath;
+      }
+
       const targetNodes = Array.from(selectedSyncNodes);
 
       const checkedFiles = Array.from(document.querySelectorAll('.diff-file-cb:checked')).map(cb => cb.getAttribute('data-path'));
       const hasSpecificFiles = document.getElementById('syncDiffPanel') && document.getElementById('syncDiffPanel').style.display !== 'none' && checkedFiles.length > 0;
+      if (hasSpecificFiles) {
+        paths = checkedFiles;
+        prefix = '';
+      }
 
       const runBtn = document.getElementById('btnRunSync');
       const runBtnText = document.getElementById('btnRunSyncText');
@@ -3166,14 +3491,15 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       }, 400);
 
       const payload = {
-        prefix: hasSpecificFiles ? undefined : prefix,
-        paths: hasSpecificFiles ? checkedFiles : undefined,
+        prefix: prefix || undefined,
+        paths: paths && paths.length > 0 ? paths : undefined,
         target_nodes: targetNodes.length > 0 ? targetNodes : undefined,
         concurrency: 3,
       };
 
       try {
-        showToast(`Starting fleet sync (${hasSpecificFiles ? checkedFiles.length + ' selected files' : (prefix ? '/' + prefix : 'entire storage')})...`);
+        const targetDesc = paths ? `${paths.length} files` : (prefix ? `/${prefix}` : 'entire storage');
+        showToast(`Starting fleet sync (${targetDesc})...`);
         const res = await api('/api/cluster/sync', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },

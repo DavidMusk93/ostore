@@ -248,6 +248,8 @@ pub struct ClusterSyncStatus {
 pub struct FileReplicaSummary {
     pub cc2: bool,
     pub rn: bool,
+    #[serde(default)]
+    pub gd: bool,
     pub replica_count: usize,
     pub expected_replicas: usize,
 }
@@ -1656,6 +1658,11 @@ impl ClusterManager {
                 .and_then(|m| m.get(&fname))
                 .map(|s| *s == local_size)
                 .unwrap_or(false);
+            let gd_match = follower_maps
+                .get("gdrive")
+                .and_then(|m| m.get(&fname))
+                .map(|s| *s == local_size)
+                .unwrap_or(false);
 
             let mut count = 1;
             for (_node_id, m) in &follower_maps {
@@ -1671,6 +1678,7 @@ impl ClusterManager {
                 FileReplicaSummary {
                     cc2: cc2_match,
                     rn: rn_match,
+                    gd: gd_match,
                     replica_count: count,
                     expected_replicas,
                 },
