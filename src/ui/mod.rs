@@ -1837,12 +1837,26 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
         if (data && data.connected) {
           const used = formatBytes(data.disk_total_bytes - data.disk_available_bytes);
           const total = formatBytes(data.disk_total_bytes);
-          if (headerLabel) headerLabel.textContent = `GDrive (${total})`;
+          const btn = document.getElementById('gdriveHeaderBtn');
+          if (btn) {
+            btn.style.background = 'rgba(52, 199, 89, 0.12)';
+            btn.style.borderColor = 'rgba(52, 199, 89, 0.35)';
+            btn.title = `Google Drive 云盘已就绪 (${total} 总量，${formatBytes(data.disk_available_bytes)} 可用)`;
+          }
+          if (headerLabel) {
+            headerLabel.innerHTML = `<span class="status-dot" style="margin-right:4px;"></span>GDrive (${total})`;
+          }
           if (card) card.style.display = 'block';
           if (tabs) tabs.style.display = 'none';
           if (quota) quota.textContent = `${used} / ${total}`;
           if (clientText) clientText.textContent = `Client: ${data.client_id} · Root: ${data.root_folder_id}`;
         } else {
+          const btn = document.getElementById('gdriveHeaderBtn');
+          if (btn) {
+            btn.style.background = '';
+            btn.style.borderColor = '';
+            btn.title = 'Google Drive Cloud Storage Node';
+          }
           if (headerLabel) headerLabel.textContent = 'Google Drive';
           if (card) card.style.display = 'none';
           if (tabs) tabs.style.display = 'block';
@@ -2009,21 +2023,25 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
         cardsList.innerHTML = list.map(n => {
           const used = n.disk_total_bytes - n.disk_available_bytes;
           const pct = n.disk_total_bytes > 0 ? ((used / n.disk_total_bytes) * 100).toFixed(0) : 0;
+          const isGDrive = n.node_type === 'gdrive' || n.id === 'gdrive';
+          const cardBorder = isGDrive ? 'style="border-color: rgba(0, 113, 227, 0.35); background: rgba(0, 113, 227, 0.03);"' : '';
+          const badgeStyle = isGDrive ? 'style="background: rgba(0, 113, 227, 0.1); color: var(--accent); border-color: rgba(0, 113, 227, 0.3);"' : '';
+          const barColor = isGDrive ? 'var(--accent)' : (n.is_local ? 'var(--accent)' : 'var(--success)');
           return `
-            <div class="topo-card">
+            <div class="topo-card" ${cardBorder}>
               <div class="topo-card-head">
                 <span class="topo-card-title">
                   <span class="status-dot ${n.healthy ? '' : 'disconnected'}"></span>
-                  ${n.name || n.id}
+                  ${isGDrive ? '☁️ ' : ''}${n.name || n.id}
                 </span>
-                <span class="topo-card-badge">${n.role} · ${n.rtt_ms !== null ? n.rtt_ms + 'ms' : 'off'}</span>
+                <span class="topo-card-badge" ${badgeStyle}>${n.role} · ${n.rtt_ms !== null ? n.rtt_ms + 'ms' : 'off'}</span>
               </div>
               <div class="topo-card-meta">
                 <span>Used: ${pct}%</span>
                 <span>Free: ${formatBytes(n.disk_available_bytes)}</span>
               </div>
               <div class="meter-bar">
-                <div class="meter-fill" style="width: ${pct}%; background: ${n.is_local ? 'var(--accent)' : 'var(--success)'};"></div>
+                <div class="meter-fill" style="width: ${pct}%; background: ${barColor};"></div>
               </div>
             </div>
           `;
@@ -2059,37 +2077,58 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       const svg = document.getElementById('topoCanvas');
       const cp = topo.control_plane;
       const workers = topo.workers || [];
-      const w1 = workers[0] || { name: 'cc2-follower', rtt_ms: 1 };
-      const w2 = workers[1] || { name: 'racknerd-follower', rtt_ms: 3 };
+      const count = workers.length;
 
-      svg.innerHTML = `
-        <path d="M270 65 Q210 115 150 160" fill="none" stroke="#D2D2D7" stroke-width="2" stroke-dasharray="4 4"/>
-        <path d="M270 65 Q330 115 390 160" fill="none" stroke="#D2D2D7" stroke-width="2" stroke-dasharray="4 4"/>
+      const workerPositions = [];
+      if (count === 1) {
+        workerPositions.push(270);
+      } else if (count === 2) {
+        workerPositions.push(160, 380);
+      } else if (count === 3) {
+        workerPositions.push(110, 270, 430);
+      } else if (count > 3) {
+        const step = 420 / (count - 1);
+        for (let i = 0; i < count; i++) {
+          workerPositions.push(60 + Math.round(i * step));
+        }
+      }
 
-        <!-- Main Node -->
+      let pathsHtml = '';
+      let nodesHtml = '';
+
+      // Main Node
+      nodesHtml += `
         <g transform="translate(270, 45)">
           <circle r="24" fill="#FFFFFF" stroke="#0071E3" stroke-width="2.5"/>
           <circle r="4" fill="#34C759"/>
           <text y="-30" text-anchor="middle" fill="#1D1D1F" font-size="11" font-weight="600">${cp ? cp.name : 'Main'}</text>
           <text y="38" text-anchor="middle" fill="#86868B" font-size="9" font-family="monospace">Primary Entry (:8781)</text>
         </g>
-
-        <!-- Follower 1 -->
-        <g transform="translate(150, 165)">
-          <circle r="20" fill="#FFFFFF" stroke="#34C759" stroke-width="2"/>
-          <circle r="3" fill="#34C759"/>
-          <text y="32" text-anchor="middle" fill="#1D1D1F" font-size="11" font-weight="500">${w1.name}</text>
-          <text y="44" text-anchor="middle" fill="#86868B" font-size="9" font-family="monospace">${w1.rtt_ms}ms · Follower</text>
-        </g>
-
-        <!-- Follower 2 -->
-        <g transform="translate(390, 165)">
-          <circle r="20" fill="#FFFFFF" stroke="#34C759" stroke-width="2"/>
-          <circle r="3" fill="#34C759"/>
-          <text y="32" text-anchor="middle" fill="#1D1D1F" font-size="11" font-weight="500">${w2.name}</text>
-          <text y="44" text-anchor="middle" fill="#86868B" font-size="9" font-family="monospace">${w2.rtt_ms}ms · Follower</text>
-        </g>
       `;
+
+      workers.forEach((w, i) => {
+        const x = workerPositions[i] || (150 + i * 110);
+        const y = 165;
+        const isGDrive = w.node_type === 'gdrive' || w.id === 'gdrive';
+        const strokeColor = isGDrive ? '#0071E3' : (w.healthy ? '#34C759' : '#FF3B30');
+        const roleLabel = isGDrive ? 'Cloud Node' : 'Follower';
+        const displayName = isGDrive ? '☁️ Google Drive' : (w.name || w.id);
+
+        pathsHtml += `
+          <path d="M270 65 Q${Math.round((270 + x) / 2)} 115 ${x} ${y - 12}" fill="none" stroke="${strokeColor}" stroke-width="2" stroke-dasharray="4 4" opacity="0.8"/>
+        `;
+
+        nodesHtml += `
+          <g transform="translate(${x}, ${y})">
+            <circle r="20" fill="#FFFFFF" stroke="${strokeColor}" stroke-width="${isGDrive ? '2.5' : '2'}"/>
+            <circle r="3" fill="${w.healthy ? '#34C759' : '#FF3B30'}"/>
+            <text y="32" text-anchor="middle" fill="#1D1D1F" font-size="11" font-weight="${isGDrive ? '600' : '500'}">${displayName}</text>
+            <text y="44" text-anchor="middle" fill="${isGDrive ? 'var(--accent)' : '#86868B'}" font-size="9" font-family="monospace">${w.rtt_ms !== null ? w.rtt_ms + 'ms' : 'off'} · ${roleLabel}</text>
+          </g>
+        `;
+      });
+
+      svg.innerHTML = pathsHtml + nodesHtml;
     }
 
     // Object Explorer: True Lazy Load with SWR Client-Side Cache

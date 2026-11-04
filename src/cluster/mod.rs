@@ -97,6 +97,8 @@ pub struct NodeStatus {
     pub disk_available_bytes: u64,
     pub last_seen: Option<DateTime<Utc>>,
     pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_type: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -257,7 +259,7 @@ pub struct DirReplicaStatus {
 }
 
 pub struct ClusterManager {
-    pub config: ClusterConfig,
+    pub config: std::sync::RwLock<ClusterConfig>,
     pub gdrive: Arc<RwLock<Option<Arc<GDriveClient>>>>,
     client: reqwest::Client,
     statuses: Arc<RwLock<HashMap<String, NodeStatus>>>,
@@ -321,12 +323,13 @@ impl ClusterManager {
                     disk_available_bytes: 0,
                     last_seen: None,
                     error: None,
+                    node_type: node.node_type.clone(),
                 },
             );
         }
 
         Self {
-            config,
+            config: std::sync::RwLock::new(config),
             gdrive,
             client,
             statuses: Arc::new(RwLock::new(initial_statuses)),
@@ -355,18 +358,30 @@ impl ClusterManager {
     }
 
     pub async fn probe_all(&self) {
-        for node in &self.config.nodes {
+        let nodes = self.config.read().unwrap().nodes.clone();
+        for node in &nodes {
             if node.is_local {
                 if let Some((total, avail)) = crate::metrics::disk_space(&self.root) {
                     let mut lock = self.statuses.write().await;
-                    if let Some(st) = lock.get_mut(&node.id) {
-                        st.healthy = true;
-                        st.rtt_ms = Some(0);
-                        st.disk_total_bytes = total;
-                        st.disk_available_bytes = avail;
-                        st.last_seen = Some(Utc::now());
-                        st.error = None;
-                    }
+                    let st = lock.entry(node.id.clone()).or_insert_with(|| NodeStatus {
+                        id: node.id.clone(),
+                        name: node.name.clone(),
+                        url: node.url.clone(),
+                        is_local: true,
+                        healthy: true,
+                        rtt_ms: Some(0),
+                        disk_total_bytes: total,
+                        disk_available_bytes: avail,
+                        last_seen: Some(Utc::now()),
+                        error: None,
+                        node_type: node.node_type.clone(),
+                    });
+                    st.healthy = true;
+                    st.rtt_ms = Some(0);
+                    st.disk_total_bytes = total;
+                    st.disk_available_bytes = avail;
+                    st.last_seen = Some(Utc::now());
+                    st.error = None;
                 }
                 continue;
             }
@@ -378,23 +393,46 @@ impl ClusterManager {
                         Ok((total, avail)) => {
                             let rtt = start.elapsed().as_millis() as u64;
                             let mut lock = self.statuses.write().await;
-                            if let Some(st) = lock.get_mut(&node.id) {
-                                st.healthy = true;
-                                st.rtt_ms = Some(rtt);
-                                st.disk_total_bytes = total;
-                                st.disk_available_bytes = avail;
-                                st.last_seen = Some(Utc::now());
-                                st.error = None;
-                            }
+                            let st = lock.entry(node.id.clone()).or_insert_with(|| NodeStatus {
+                                id: node.id.clone(),
+                                name: node.name.clone(),
+                                url: node.url.clone(),
+                                is_local: false,
+                                healthy: true,
+                                rtt_ms: Some(rtt),
+                                disk_total_bytes: total,
+                                disk_available_bytes: avail,
+                                last_seen: Some(Utc::now()),
+                                error: None,
+                                node_type: Some("gdrive".to_string()),
+                            });
+                            st.healthy = true;
+                            st.rtt_ms = Some(rtt);
+                            st.disk_total_bytes = total;
+                            st.disk_available_bytes = avail;
+                            st.last_seen = Some(Utc::now());
+                            st.error = None;
+                            st.node_type = Some("gdrive".to_string());
                         }
                         Err(e) => {
                             let mut lock = self.statuses.write().await;
-                            if let Some(st) = lock.get_mut(&node.id) {
-                                st.healthy = false;
-                                st.rtt_ms = None;
-                                st.last_seen = Some(Utc::now());
-                                st.error = Some(e);
-                            }
+                            let st = lock.entry(node.id.clone()).or_insert_with(|| NodeStatus {
+                                id: node.id.clone(),
+                                name: node.name.clone(),
+                                url: node.url.clone(),
+                                is_local: false,
+                                healthy: false,
+                                rtt_ms: None,
+                                disk_total_bytes: 0,
+                                disk_available_bytes: 0,
+                                last_seen: Some(Utc::now()),
+                                error: Some(e.clone()),
+                                node_type: Some("gdrive".to_string()),
+                            });
+                            st.healthy = false;
+                            st.rtt_ms = None;
+                            st.last_seen = Some(Utc::now());
+                            st.error = Some(e);
                         }
                     }
                 }
@@ -434,32 +472,65 @@ impl ClusterManager {
                     }
 
                     let mut lock = self.statuses.write().await;
-                    if let Some(st) = lock.get_mut(&node.id) {
-                        st.healthy = true;
-                        st.rtt_ms = Some(rtt);
-                        st.disk_total_bytes = total;
-                        st.disk_available_bytes = avail;
-                        st.last_seen = Some(Utc::now());
-                        st.error = None;
-                    }
+                    let st = lock.entry(node.id.clone()).or_insert_with(|| NodeStatus {
+                        id: node.id.clone(),
+                        name: node.name.clone(),
+                        url: node.url.clone(),
+                        is_local: false,
+                        healthy: true,
+                        rtt_ms: Some(rtt),
+                        disk_total_bytes: total,
+                        disk_available_bytes: avail,
+                        last_seen: Some(Utc::now()),
+                        error: None,
+                        node_type: node.node_type.clone(),
+                    });
+                    st.healthy = true;
+                    st.rtt_ms = Some(rtt);
+                    st.disk_total_bytes = total;
+                    st.disk_available_bytes = avail;
+                    st.last_seen = Some(Utc::now());
+                    st.error = None;
                 }
                 Ok(resp) => {
                     let mut lock = self.statuses.write().await;
-                    if let Some(st) = lock.get_mut(&node.id) {
-                        st.healthy = false;
-                        st.rtt_ms = None;
-                        st.last_seen = Some(Utc::now());
-                        st.error = Some(format!("HTTP {}", resp.status()));
-                    }
+                    let st = lock.entry(node.id.clone()).or_insert_with(|| NodeStatus {
+                        id: node.id.clone(),
+                        name: node.name.clone(),
+                        url: node.url.clone(),
+                        is_local: false,
+                        healthy: false,
+                        rtt_ms: None,
+                        disk_total_bytes: 0,
+                        disk_available_bytes: 0,
+                        last_seen: Some(Utc::now()),
+                        error: Some(format!("HTTP {}", resp.status())),
+                        node_type: node.node_type.clone(),
+                    });
+                    st.healthy = false;
+                    st.rtt_ms = None;
+                    st.last_seen = Some(Utc::now());
+                    st.error = Some(format!("HTTP {}", resp.status()));
                 }
                 Err(e) => {
                     let mut lock = self.statuses.write().await;
-                    if let Some(st) = lock.get_mut(&node.id) {
-                        st.healthy = false;
-                        st.rtt_ms = None;
-                        st.last_seen = Some(Utc::now());
-                        st.error = Some(e.to_string());
-                    }
+                    let st = lock.entry(node.id.clone()).or_insert_with(|| NodeStatus {
+                        id: node.id.clone(),
+                        name: node.name.clone(),
+                        url: node.url.clone(),
+                        is_local: false,
+                        healthy: false,
+                        rtt_ms: None,
+                        disk_total_bytes: 0,
+                        disk_available_bytes: 0,
+                        last_seen: Some(Utc::now()),
+                        error: Some(e.to_string()),
+                        node_type: node.node_type.clone(),
+                    });
+                    st.healthy = false;
+                    st.rtt_ms = None;
+                    st.last_seen = Some(Utc::now());
+                    st.error = Some(e.to_string());
                 }
             }
         }
@@ -471,7 +542,8 @@ impl ClusterManager {
         let mut total_disk = 0u64;
         let mut avail_disk = 0u64;
 
-        for node_cfg in &self.config.nodes {
+        let cfg = self.config.read().unwrap().clone();
+        for node_cfg in &cfg.nodes {
             if let Some(st) = lock.get(&node_cfg.id) {
                 nodes.push(st.clone());
                 total_disk = total_disk.saturating_add(st.disk_total_bytes);
@@ -483,7 +555,7 @@ impl ClusterManager {
             nodes,
             total_disk_bytes: total_disk,
             available_disk_bytes: avail_disk,
-            replicate_prefixes: self.config.replicate_prefixes.clone(),
+            replicate_prefixes: cfg.replicate_prefixes.clone(),
         }
     }
 
@@ -503,7 +575,8 @@ impl ClusterManager {
         let mut total_disk = 0u64;
         let mut avail_disk = 0u64;
 
-        for node_cfg in &self.config.nodes {
+        let cfg = self.config.read().unwrap().clone();
+        for node_cfg in &cfg.nodes {
             if let Some(st) = lock.get(&node_cfg.id) {
                 total_disk = total_disk.saturating_add(st.disk_total_bytes);
                 avail_disk = avail_disk.saturating_add(st.disk_available_bytes);
@@ -548,7 +621,7 @@ impl ClusterManager {
             total_disk_bytes: total_disk,
             available_disk_bytes: avail_disk,
             distributions,
-            replicate_prefixes: self.config.replicate_prefixes.clone(),
+            replicate_prefixes: cfg.replicate_prefixes.clone(),
         };
 
         *self.cached_topology.write().await = Some((Instant::now(), topo.clone()));
@@ -580,10 +653,11 @@ impl ClusterManager {
     }
 
     pub fn should_replicate(&self, rel_path: &str) -> bool {
-        if self.config.replicate_prefixes.is_empty() {
+        let prefixes = self.config.read().unwrap().replicate_prefixes.clone();
+        if prefixes.is_empty() {
             return true;
         }
-        for prefix in &self.config.replicate_prefixes {
+        for prefix in &prefixes {
             let p = prefix.trim_matches('/');
             if p == "*" || rel_path == p || rel_path.starts_with(&format!("{p}/")) {
                 return true;
@@ -604,7 +678,7 @@ impl ClusterManager {
 
     /// Replicate an uploaded file to all remote healthy nodes.
     pub async fn replicate_put(&self, rel_path: &str, abs_path: &Path) {
-        let nodes = self.config.nodes.clone();
+        let nodes = self.config.read().unwrap().nodes.clone();
         for node in nodes {
             if node.is_local {
                 continue;
@@ -659,8 +733,8 @@ impl ClusterManager {
         if !self.should_replicate(&rel_path) {
             return;
         }
+        let nodes = self.config.read().unwrap().nodes.clone();
         tokio::spawn(async move {
-            let nodes = self.config.nodes.clone();
             for node in nodes {
                 if node.is_local {
                     continue;
@@ -728,7 +802,8 @@ impl ClusterManager {
 
         // 2. Concurrently check follower nodes
         let mut follower_nodes = Vec::new();
-        for node in &self.config.nodes {
+        let cfg_nodes = self.config.read().unwrap().nodes.clone();
+        for node in &cfg_nodes {
             if node.is_local {
                 continue;
             }
@@ -951,7 +1026,8 @@ impl ClusterManager {
     pub async fn get_node_statuses(&self) -> Vec<NodeStatus> {
         let nodes_map = self.statuses.read().await;
         let mut list = Vec::new();
-        for n in &self.config.nodes {
+        let cfg_nodes = self.config.read().unwrap().nodes.clone();
+        for n in &cfg_nodes {
             if let Some(st) = nodes_map.get(&n.id) {
                 list.push(st.clone());
             }
@@ -1003,7 +1079,8 @@ impl ClusterManager {
         };
 
         let mut nodes_to_check = Vec::new();
-        for n in &self.config.nodes {
+        let cfg_nodes = self.config.read().unwrap().nodes.clone();
+        for n in &cfg_nodes {
             if n.is_local {
                 continue;
             }
@@ -1158,7 +1235,8 @@ impl ClusterManager {
         };
 
         let mut nodes_to_sync = Vec::new();
-        for node in &self.config.nodes {
+        let cfg_nodes = self.config.read().unwrap().nodes.clone();
+        for node in &cfg_nodes {
             if node.is_local {
                 continue;
             }
@@ -1490,7 +1568,8 @@ impl ClusterManager {
         }
 
         let mut follower_nodes = Vec::new();
-        for node in &self.config.nodes {
+        let cfg_nodes = self.config.read().unwrap().nodes.clone();
+        for node in &cfg_nodes {
             if !node.is_local {
                 follower_nodes.push(node.clone());
             }
@@ -1558,7 +1637,7 @@ impl ClusterManager {
             follower_maps.insert(node_id, map);
         }
 
-        let expected_replicas = 1 + self.config.nodes.iter().filter(|n| !n.is_local).count();
+        let expected_replicas = 1 + self.config.read().unwrap().nodes.iter().filter(|n| !n.is_local).count();
         let mut files_summary = HashMap::new();
 
         for (fname, local_size) in local_files {
@@ -1691,6 +1770,7 @@ impl ClusterManager {
 
         // 2. Update in-memory state
         *self.gdrive.write().await = Some(client);
+        *self.config.write().unwrap() = cluster_cfg.clone();
         let mut statuses = self.statuses.write().await;
         statuses.insert(
             "gdrive".to_string(),
@@ -1705,6 +1785,7 @@ impl ClusterManager {
                 disk_available_bytes: avail,
                 last_seen: Some(Utc::now()),
                 error: None,
+                node_type: Some("gdrive".to_string()),
             },
         );
 
@@ -1724,6 +1805,7 @@ impl ClusterManager {
                     .retain(|n| n.id != "gdrive" && n.node_type.as_deref() != Some("gdrive"));
                 let json_text = serde_json::to_string_pretty(&cluster_cfg).map_err(|e| e.to_string())?;
                 let _ = std::fs::write(config_path, json_text);
+                *self.config.write().unwrap() = cluster_cfg;
             }
         }
 
