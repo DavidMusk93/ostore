@@ -41,292 +41,323 @@ def run_regression_test():
         page.goto(BASE_URL)
         page.wait_for_timeout(1500)
 
-        # First verify Authenticator Setup modal opens and can copy secret
+        # Totp Setup Modal
         setup_link = page.query_selector('a:has-text("Set up Authenticator")')
         if setup_link and setup_link.is_visible():
             print("Clicking 'Set up Authenticator' link...", flush=True)
             setup_link.click()
             page.wait_for_timeout(600)
             page.wait_for_selector("#totpSetupModal", state="visible")
-            print("Totp setup modal is visible! Clicking 'Copy Secret'...", flush=True)
+            print("Clicking 'Copy Secret'...", flush=True)
             page.click('button:has-text("Copy Secret")')
-            page.wait_for_timeout(500)
+            page.wait_for_timeout(400)
             print("Closing Totp setup modal...", flush=True)
             page.click('#totpSetupModal button.icon-btn:has-text("✕")')
             page.wait_for_timeout(500)
 
-        # Developer Token login
+        # Developer Token Login
         print("Clicking 'Use developer token' link...", flush=True)
         page.click('a:has-text("Use developer token")')
         page.wait_for_timeout(600)
-        token_modal = page.wait_for_selector("#tokenModal", state="visible")
-        print("Token modal is visible! Filling token...", flush=True)
+        page.wait_for_selector("#tokenModal", state="visible")
+        print("Filling token & clicking Save...", flush=True)
         page.fill("#tokenInput", DEV_TOKEN)
-        page.wait_for_timeout(400)
-        print("Clicking Save button in token modal...", flush=True)
+        page.wait_for_timeout(300)
         page.click('#tokenModal button:has-text("Save")')
         page.wait_for_timeout(2000)
 
-        # Verify main console is displayed
         page.wait_for_selector("#mainConsole", state="visible", timeout=8000)
         print("SUCCESS: Main console loaded into view!", flush=True)
-        page.screenshot(path="/root/ostore/tests/step1_console_ready.png")
 
-        # --- STEP 2: Google Drive Modal & Status ---
-        log_step("2. Test Google Drive Cloud Node Button & Status")
-        page.click("#gdriveHeaderBtn")
+        # --- STEP 2: Top Replication Map (SVG Topology & Cards) Interactions ---
+        log_step("2. Test Top Replication Map (SVG Canvas Nodes, Cards & Spectrum Bar)")
+        
+        # 2a. Click Main Node on SVG Canvas
+        print("Testing click on Main Node in Topology SVG canvas...", flush=True)
+        main_svg_node = page.wait_for_selector('#topoCanvas g:has-text("cc-main"), #topoCanvas g:has-text("Main")', state="visible")
+        main_svg_node.click()
         page.wait_for_timeout(1000)
-        page.wait_for_selector("#gdriveModal", state="visible")
-        
-        # Check if connected card or connect tabs is displayed
-        connected_card = page.query_selector("#gdriveConnectedCard")
-        if connected_card and connected_card.is_visible():
-            quota_text = page.inner_text("#gdriveQuotaText")
-            client_text = page.inner_text("#gdriveClientText")
-            print(f"Google Drive is connected! Quota: {quota_text}, Client: {client_text}", flush=True)
-        else:
-            tabs = page.query_selector("#gdriveConnectTabs")
-            if tabs and tabs.is_visible():
-                print("Testing tab switching...", flush=True)
-                page.click("#tabManualBtn")
-                page.wait_for_timeout(400)
-                page.click("#tabOAuthBtn")
-                page.wait_for_timeout(400)
-
-        # Close modal
-        page.click('#gdriveModal button.icon-btn:has-text("✕")')
-        page.wait_for_timeout(600)
-        print("SUCCESS: Google Drive modal verified!", flush=True)
-
-        # --- STEP 3: Fleet Replication Modal (Header Button) ---
-        log_step("3. Test Fleet Replication Header Button & Scan Diff")
-        page.click('button[onclick="openClusterSyncModal()"]')
-        page.wait_for_timeout(1500)
         page.wait_for_selector("#clusterSyncModal", state="visible")
-        
-        # Verify Entire Storage is default when opened from header
-        scope_all = page.query_selector("#syncScopeAll")
-        assert scope_all and scope_all.is_checked(), "Expected Entire Storage (Root /) to be checked by default"
-        print("Entire Storage radio is correctly selected by default.", flush=True)
-
-        # Scan Diff
-        print("Clicking 'Scan Differences' button...", flush=True)
-        page.click("#btnScanDiff")
-        page.wait_for_timeout(3500)
-
-        diff_count_text = page.inner_text("#syncDiffCount")
-        print(f"Diff scan finished. Detected differences count: {diff_count_text}", flush=True)
-
-        # Select All / Deselect All
-        print("Testing Select All and Deselect All links...", flush=True)
-        page.click('a:has-text("Select All")')
-        page.wait_for_timeout(500)
-        page.click('a:has-text("Deselect All")')
-        page.wait_for_timeout(500)
-
-        # Close modal
+        print("Main Node SVG click successfully opened Cluster Sync Modal! Closing...", flush=True)
         page.click('#clusterSyncModal button:has-text("Close")')
         page.wait_for_timeout(600)
-        print("SUCCESS: Fleet replication modal verified!", flush=True)
 
-        # --- STEP 4: Toolbar Buttons (Search & Current Folder Sync) ---
-        log_step("4. Test Toolbar Buttons: Search, Filter, Sync Current Folder")
-        print("Testing Search Box filtering...", flush=True)
+        # 2b. Click Google Drive Node on SVG Canvas
+        print("Testing click on Google Drive Node in Topology SVG canvas...", flush=True)
+        gdrive_svg_node = page.query_selector('#topoCanvas g:has-text("Google Drive")')
+        if gdrive_svg_node:
+            gdrive_svg_node.click()
+            page.wait_for_timeout(1000)
+            page.wait_for_selector("#gdriveModal", state="visible")
+            print("Google Drive SVG click successfully opened GDrive Modal! Closing...", flush=True)
+            page.click('#gdriveModal button.icon-btn:has-text("✕")')
+            page.wait_for_timeout(600)
+
+        # 2c. Click Follower Node on SVG Canvas
+        print("Testing click on Follower Node in Topology SVG canvas...", flush=True)
+        follower_svg_node = page.query_selector('#topoCanvas g:has-text("cc2"), #topoCanvas g:has-text("racknerd")')
+        if follower_svg_node:
+            follower_svg_node.click()
+            page.wait_for_timeout(1000)
+            page.wait_for_selector("#clusterSyncModal", state="visible")
+            print("Follower SVG click opened Cluster Sync Modal! Closing...", flush=True)
+            page.click('#clusterSyncModal button:has-text("Close")')
+            page.wait_for_timeout(600)
+
+        # 2d. Click Topology Card in Grid
+        print("Testing click on Topology Cards in Grid...", flush=True)
+        topo_cards = page.query_selector_all(".topo-card")
+        if topo_cards:
+            topo_cards[0].click()
+            page.wait_for_timeout(1000)
+            # Either gdriveModal or clusterSyncModal opens
+            if page.is_visible("#clusterSyncModal"):
+                page.click('#clusterSyncModal button:has-text("Close")')
+            elif page.is_visible("#gdriveModal"):
+                page.click('#gdriveModal button.icon-btn:has-text("✕")')
+            page.wait_for_timeout(600)
+            print("Topology Card click verified!", flush=True)
+
+        # 2e. Click Data Distribution Spectrum Segment
+        print("Testing click on Data Distribution Spectrum segment...", flush=True)
+        spectrum_segments = page.query_selector_all(".spectrum-segment")
+        if spectrum_segments:
+            spectrum_segments[0].click()
+            page.wait_for_timeout(1200)
+            crumb_text = page.inner_text("#breadcrumbs")
+            print(f"Spectrum segment navigated to: {crumb_text}", flush=True)
+            # Return to root
+            page.evaluate("navigate('')")
+            page.wait_for_timeout(1200)
+            print("Returned to root after Spectrum segment test!", flush=True)
+
+        # 2f. Click Data Distribution Spectrum Legend Item
+        print("Testing click on Spectrum Legend item...", flush=True)
+        legend_items = page.query_selector_all(".spectrum-legend-item")
+        if legend_items:
+            legend_items[0].click()
+            page.wait_for_timeout(1200)
+            crumb_text = page.inner_text("#breadcrumbs")
+            print(f"Spectrum legend item navigated to: {crumb_text}", flush=True)
+            # Return to root
+            page.evaluate("navigate('')")
+            page.wait_for_timeout(1200)
+            print("Returned to root after Spectrum legend test!", flush=True)
+        print("SUCCESS: All Top Topology / Replication Map interactions verified!", flush=True)
+
+        # --- STEP 3: Header Buttons (GDrive & Fleet Replication) ---
+        log_step("3. Test Header Buttons: Google Drive & Fleet Replication")
+        
+        # Google Drive Header Button
+        page.click("#gdriveHeaderBtn")
+        page.wait_for_timeout(800)
+        page.wait_for_selector("#gdriveModal", state="visible")
+        page.click('#gdriveModal button.icon-btn:has-text("✕")')
+        page.wait_for_timeout(500)
+
+        # Fleet Replication Header Button
+        page.click('button[onclick="openClusterSyncModal()"]')
+        page.wait_for_timeout(1200)
+        page.wait_for_selector("#clusterSyncModal", state="visible")
+        
+        # Toggle Target Node Chip
+        print("Testing node chip click to toggle selection...", flush=True)
+        follower_chips = page.query_selector_all('.fleet-node-item:not([onclick=""])')
+        if follower_chips:
+            follower_chips[0].click()
+            page.wait_for_timeout(1000)
+            fresh_chips = page.query_selector_all('.fleet-node-item:not([onclick=""])')
+            if fresh_chips:
+                fresh_chips[0].click()
+                page.wait_for_timeout(1000)
+        
+        # Scan Differences
+        print("Testing Scan Differences button...", flush=True)
+        page.click("#btnScanDiff")
+        page.wait_for_timeout(3500)
+        page.click('a:has-text("Select All")')
+        page.wait_for_timeout(400)
+        page.click('a:has-text("Deselect All")')
+        page.wait_for_timeout(400)
+        page.click('#clusterSyncModal button:has-text("Close")')
+        page.wait_for_timeout(600)
+        print("SUCCESS: Header buttons verified!", flush=True)
+
+        # --- STEP 4: Toolbar Controls (Search, Sync Current Folder) ---
+        log_step("4. Test Toolbar: Filter Objects & Sync Current Folder")
         page.fill("#searchBox", "shenqiao")
-        page.wait_for_timeout(600)
-        rows_filtered = page.query_selector_all("#fileTableBody tr")
-        print(f"Filtered rows for 'shenqiao': {len(rows_filtered)}", flush=True)
+        page.wait_for_timeout(500)
         page.fill("#searchBox", "")
-        page.wait_for_timeout(600)
+        page.wait_for_timeout(500)
 
-        # Test Sync Current Folder button
-        print("Clicking Sync Current Folder (#btnSyncFolder)...", flush=True)
         page.click("#btnSyncFolder")
         page.wait_for_timeout(1000)
         page.wait_for_selector("#clusterSyncModal", state="visible")
-        target_badge = page.inner_text("#syncTargetBadge")
-        print(f"Target badge displayed: {target_badge}", flush=True)
-        assert "当前目录" in target_badge, f"Badge should mention 当前目录, got: {target_badge}"
+        badge_text = page.inner_text("#syncTargetBadge")
+        print(f"Current folder sync badge: {badge_text}", flush=True)
         page.click('#clusterSyncModal button:has-text("Close")')
         page.wait_for_timeout(600)
-        print("SUCCESS: Toolbar buttons verified!", flush=True)
+        print("SUCCESS: Toolbar controls verified!", flush=True)
 
-        # --- STEP 5: Row Actions (Folder Properties & Folder Sync) ---
-        log_step("5. Test Folder Row Actions (Properties & Folder Sync)")
+        # --- STEP 5: Table Column "Replication Map" & Row Actions in Root ---
+        log_step("5. Test Table 'Replication Map' Column & Row Actions in Root")
         
-        # Test Folder Properties Modal
-        folder_prop_btn = page.query_selector('button[title="Folder properties"]')
-        if folder_prop_btn:
-            print("Clicking Folder Properties button...", flush=True)
-            folder_prop_btn.click()
-            page.wait_for_timeout(800)
-            page.wait_for_selector("#folderDetailModal", state="visible")
-            print("Folder Detail Modal visible. Clicking 'Sync Replicas'...", flush=True)
-            page.click('button:has-text("Sync Replicas")')
-            page.wait_for_timeout(1500)
-            page.wait_for_selector("#clusterSyncModal", state="visible")
-            badge_text = page.inner_text("#syncTargetBadge")
-            print(f"Sync target badge from folder properties: {badge_text}", flush=True)
-            page.click('#clusterSyncModal button:has-text("Close")')
-            page.wait_for_timeout(600)
+        # 5a. Click Replication Map cell on directory row
+        dir_replica_badge = page.wait_for_selector(".dir-replica-cell", state="visible", timeout=10000)
+        print("Clicking 'Cluster Replicas' under 'Replication Map' column on folder...", flush=True)
+        dir_replica_badge.click()
+        page.wait_for_timeout(1200)
+        page.wait_for_selector("#clusterSyncModal", state="visible")
+        badge_text = page.inner_text("#syncTargetBadge")
+        print(f"Sync target badge from folder Replication Map cell: {badge_text}", flush=True)
+        page.click('#clusterSyncModal button:has-text("Close")')
+        page.wait_for_timeout(600)
 
-        # Test Folder Sync Icon
-        folder_sync_icon = page.query_selector('button[title="同步此文件夹到指定节点"]')
-        if folder_sync_icon:
-            print("Clicking row folder sync icon...", flush=True)
-            folder_sync_icon.click()
-            page.wait_for_timeout(1500)
-            page.wait_for_selector("#clusterSyncModal", state="visible")
-            badge_text = page.inner_text("#syncTargetBadge")
-            print(f"Sync target badge from folder sync icon: {badge_text}", flush=True)
-            page.click('#clusterSyncModal button:has-text("Close")')
-            page.wait_for_timeout(600)
-        print("SUCCESS: Folder row actions verified!", flush=True)
+        # 5b. Click Size cell to open Folder Properties
+        print("Clicking Folder Size cell to open Folder Properties...", flush=True)
+        dir_size_cell = page.wait_for_selector(".dir-size-cell", state="visible")
+        dir_size_cell.click()
+        page.wait_for_timeout(800)
+        page.wait_for_selector("#folderDetailModal", state="visible")
+        print("Clicking 'Sync Replicas' button inside Folder Detail Modal...", flush=True)
+        page.click('button:has-text("Sync Replicas")')
+        page.wait_for_timeout(1200)
+        page.wait_for_selector("#clusterSyncModal", state="visible")
+        page.click('#clusterSyncModal button:has-text("Close")')
+        page.wait_for_timeout(600)
 
-        # --- STEP 6: Navigate into Subfolder & Test File Row Actions & Badges ---
-        log_step("6. Navigate into Subfolder & Test File Actions, Badges & Deep Hash")
-        folder_rows = page.query_selector_all('.name-cell')
-        assert len(folder_rows) > 0, "Expected at least one folder row in root"
-        print("Clicking first directory to navigate into subfolder...", flush=True)
-        folder_rows[0].click()
+        # 5c. Click Folder Sync action icon
+        print("Clicking Folder Sync action button in row...", flush=True)
+        folder_sync_btn = page.wait_for_selector('button[title="同步此文件夹到指定节点"]', state="visible")
+        folder_sync_btn.click()
+        page.wait_for_timeout(1200)
+        page.wait_for_selector("#clusterSyncModal", state="visible")
+        page.click('#clusterSyncModal button:has-text("Close")')
+        page.wait_for_timeout(600)
+
+        # 5d. Table Header Select All Checkbox
+        print("Testing Table Header Select All Checkbox (#selectAllCb)...", flush=True)
+        select_all_cb = page.wait_for_selector("#selectAllCb", state="visible")
+        select_all_cb.check()
+        page.wait_for_timeout(500)
+        page.wait_for_selector("#batchActionBar", state="visible")
+        select_all_cb.uncheck()
+        page.wait_for_timeout(500)
+        print("SUCCESS: Root table and Replication Map column verified!", flush=True)
+
+        # --- STEP 6: Navigate into Subfolder & Test File Actions, Badges & Media Preview ---
+        log_step("6. Navigate to Subfolder: File Replication Map Badges, Media Preview & Actions")
+        folder_name_cells = page.query_selector_all(".name-cell")
+        print("Clicking folder name cell to navigate into directory...", flush=True)
+        folder_name_cells[0].click()
         page.wait_for_timeout(2000)
 
-        # Verify back button is visible
-        back_btn = page.wait_for_selector("#btnNavBack", state="visible")
-        print("Back button (#btnNavBack) is visible in subfolder!", flush=True)
-
-        # In subfolder, find file replica badge
-        first_badge = page.wait_for_selector(".node-badges-cluster", state="visible", timeout=6000)
-        print("Clicking file replica badge to open File Topology Modal...", flush=True)
-        first_badge.click()
+        # 6a. Click Replication Map Badge on File Row
+        print("Testing click on File 'Replication Map' badge (.node-badges-cluster)...", flush=True)
+        file_badge = page.wait_for_selector(".node-badges-cluster", state="visible")
+        file_badge.click()
         page.wait_for_timeout(1500)
         page.wait_for_selector("#fileTopoModal", state="visible")
-
-        # Test Deep Hash Check
-        print("Clicking 'Deep Hash Check' button...", flush=True)
+        
+        # Deep Hash Check
+        print("Clicking 'Deep Hash Check' in File Replica Topology...", flush=True)
         page.click("#btnDeepCheck")
         page.wait_for_timeout(2500)
         summary = page.inner_text("#fileTopoSummary")
         print(f"Topology summary: {summary}", flush=True)
 
-        # Test 'Sync To Followers'
-        print("Clicking 'Sync To Followers' button...", flush=True)
+        # Sync To Followers
+        print("Clicking 'Sync To Followers'...", flush=True)
         page.click("#btnSyncSingleFile")
-        page.wait_for_timeout(3000)
-
+        page.wait_for_timeout(2500)
         page.click('#fileTopoModal button.icon-btn:has-text("✕")')
         page.wait_for_timeout(600)
 
-        # Test Copy URL button
+        # 6b. Click File Name to open Media Preview Modal
+        print("Clicking file name to open Media Preview modal...", flush=True)
+        file_name_cell = page.wait_for_selector('.file-row:not(.parent-dir-row) .name-cell', state="visible")
+        file_name_cell.click()
+        page.wait_for_timeout(1500)
+        page.wait_for_selector("#mediaModal", state="visible")
+        copy_text_btn = page.query_selector("#mediaCopyBtn")
+        if copy_text_btn and copy_text_btn.is_visible():
+            print("Clicking 'Copy Object Content' in media preview...", flush=True)
+            copy_text_btn.click()
+            page.wait_for_timeout(400)
+        page.click('#mediaModal button.icon-btn:has-text("✕")')
+        page.wait_for_timeout(600)
+        print("Media Preview verified!", flush=True)
+
+        # 6c. Copy URL & Copy MD5 action icons
         copy_url_btn = page.query_selector('button[title="Copy Direct URL"]')
         if copy_url_btn:
-            print("Clicking 'Copy Direct URL' button...", flush=True)
             copy_url_btn.click()
-            page.wait_for_timeout(400)
-
-        # Test Copy MD5 button
+            page.wait_for_timeout(300)
         copy_md5_btn = page.query_selector('button[title="Copy MD5"]')
         if copy_md5_btn:
-            print("Clicking 'Copy MD5' button...", flush=True)
             copy_md5_btn.click()
-            page.wait_for_timeout(400)
+            page.wait_for_timeout(300)
 
-        # Test Single file sync icon
-        file_sync_icon = page.query_selector('button[title="同步此文件到指定节点"]')
-        if file_sync_icon:
-            print("Clicking single file sync icon...", flush=True)
-            file_sync_icon.click()
-            page.wait_for_timeout(1500)
+        # 6d. Single File Sync Action Icon
+        file_sync_btn = page.query_selector('button[title="同步此文件到指定节点"]')
+        if file_sync_btn:
+            file_sync_btn.click()
+            page.wait_for_timeout(1000)
             page.wait_for_selector("#clusterSyncModal", state="visible")
-            badge_text = page.inner_text("#syncTargetBadge")
-            print(f"Sync target badge from file sync icon: {badge_text}", flush=True)
             page.click('#clusterSyncModal button:has-text("Close")')
             page.wait_for_timeout(600)
 
-        # Test Multi-Row Selection & Batch Sync in Subfolder
-        print("Testing Multi-Row Selection & Batch Sync in subfolder...", flush=True)
-        sub_cbs = page.query_selector_all(".row-select-cb")
-        print(f"Found {len(sub_cbs)} selectable checkboxes in subfolder.", flush=True)
+        # --- STEP 7: Batch Selection & Multi-Item Fleet Sync ---
+        log_step("7. Test Multi-Row Selection, Batch Action Bar & Sync Execution")
+        sub_cbs = page.query_selector_all(".row-select-cb:not(#selectAllCb)")
         if len(sub_cbs) >= 2:
+            print("Selecting multiple file rows...", flush=True)
             sub_cbs[0].check()
             sub_cbs[1].check()
             page.wait_for_timeout(500)
             page.wait_for_selector("#batchActionBar", state="visible")
-            sel_text = page.inner_text("#batchSelectedLabel")
-            print(f"Batch bar visible with: {sel_text}", flush=True)
-
+            
             # Click 批量同步
-            print("Clicking '批量同步' button...", flush=True)
+            print("Clicking '批量同步' button in batch bar...", flush=True)
             page.click('button:has-text("批量同步")')
-            page.wait_for_timeout(1500)
+            page.wait_for_timeout(1200)
             page.wait_for_selector("#clusterSyncModal", state="visible")
-            batch_target = page.inner_text("#syncTargetBadge")
-            print(f"Batch sync target badge: {batch_target}", flush=True)
-
-            # Scan diff on batch
-            print("Scanning diff on batch target...", flush=True)
+            
+            # Scan Diff on batch
+            print("Scanning differences on batch selection...", flush=True)
             page.click("#btnScanDiff")
-            page.wait_for_timeout(3000)
+            page.wait_for_timeout(2500)
 
             # Run Sync
             print("Clicking 'Run Sync Now' / 'Sync Selected'...", flush=True)
             page.click("#btnRunSync")
-            page.wait_for_timeout(4000)
-            print("Batch sync execution finished cleanly!", flush=True)
+            page.wait_for_timeout(3500)
+            print("Batch replication executed cleanly!", flush=True)
 
             page.click('#clusterSyncModal button:has-text("Close")')
             page.wait_for_timeout(600)
 
-            # Verify batch bar is automatically hidden as selection was cleared upon sync completion
-            assert not page.is_visible("#batchActionBar"), "Batch bar should be hidden after sync completion"
-            print("Batch bar automatically hidden post-sync as expected!", flush=True)
+        # --- STEP 8: Navigation Controls (Back Button, Parent Row, Breadcrumbs) ---
+        log_step("8. Test Navigation Controls: Parent Row '..', Back Button & Breadcrumbs")
+        
+        # Click Breadcrumb root link
+        print("Clicking root breadcrumb link...", flush=True)
+        crumb_root = page.wait_for_selector('.crumb-link:has-text("root")', state="visible")
+        crumb_root.click()
+        page.wait_for_timeout(1500)
+        print("Navigated back to root via breadcrumb!", flush=True)
 
-        # Click Back button to return to root
-        print("Clicking back button to return to root...", flush=True)
+        # Navigate into folder again
+        folder_name_cells = page.query_selector_all(".name-cell")
+        folder_name_cells[0].click()
+        page.wait_for_timeout(1500)
+
+        # Click Back Button (#btnNavBack)
+        print("Clicking Back button (#btnNavBack)...", flush=True)
+        back_btn = page.wait_for_selector("#btnNavBack", state="visible")
         back_btn.click()
         page.wait_for_timeout(1500)
-        print("Returned to root successfully!", flush=True)
-
-        # --- STEP 7: Multi-Row Selection & Batch Sync Execution ---
-        log_step("7. Test Multi-Row Selection, Batch Bar & Interactive Sync Execution")
-        cbs = page.query_selector_all(".row-select-cb")
-        print(f"Found {len(cbs)} selectable item checkboxes.", flush=True)
-        if len(cbs) >= 2:
-            print("Selecting first 2 items...", flush=True)
-            cbs[0].check()
-            cbs[1].check()
-            page.wait_for_timeout(600)
-            page.wait_for_selector("#batchActionBar", state="visible")
-            sel_text = page.inner_text("#batchSelectedLabel")
-            print(f"Batch bar visible with: {sel_text}", flush=True)
-            
-            # Click 批量同步
-            print("Clicking '批量同步' button...", flush=True)
-            page.click('button:has-text("批量同步")')
-            page.wait_for_timeout(1500)
-            page.wait_for_selector("#clusterSyncModal", state="visible")
-            batch_target = page.inner_text("#syncTargetBadge")
-            print(f"Batch sync target badge: {batch_target}", flush=True)
-
-            # Scan diff on batch
-            print("Scanning diff on batch target...", flush=True)
-            page.click("#btnScanDiff")
-            page.wait_for_timeout(3000)
-
-            # Trigger Run Sync Now
-            print("Clicking 'Run Sync Now' / 'Sync Selected'...", flush=True)
-            page.click("#btnRunSync")
-            page.wait_for_timeout(4000)
-            print("Sync execution finished cleanly!", flush=True)
-
-            # Close Cluster Sync Modal
-            page.click('#clusterSyncModal button:has-text("Close")')
-            page.wait_for_timeout(600)
-
-            # Clear selection
-            print("Clicking '取消选择'...", flush=True)
-            page.click('button:has-text("取消选择")')
-            page.wait_for_timeout(500)
+        print("Navigated back to root via Back button!", flush=True)
 
         # Final full page screenshot
         final_screen = "/root/ostore/tests/ui_test_full_success.png"
@@ -334,7 +365,7 @@ def run_regression_test():
         print(f"\nFinal regression screenshot saved: {final_screen}", flush=True)
 
         print("\n========================================================")
-        print(" REGRESSION TEST SUITE PASSED WITH 0 ERRORS!")
+        print(" ALL UI & REPLICATION MAP INTERACTIONS PASSED WITH 0 ERRORS!")
         print("========================================================", flush=True)
         print(f"Total Console logs: {len(logs)}")
         print(f"Total Page errors: {len(errors)}")

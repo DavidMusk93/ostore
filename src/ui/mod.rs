@@ -2113,17 +2113,18 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
           const used = n.disk_total_bytes - n.disk_available_bytes;
           const pct = n.disk_total_bytes > 0 ? ((used / n.disk_total_bytes) * 100).toFixed(0) : 0;
           const isGDrive = n.node_type === 'gdrive' || n.id === 'gdrive';
-          const cardBorder = isGDrive ? 'style="border-color: rgba(0, 113, 227, 0.35); background: rgba(0, 113, 227, 0.03);"' : '';
+          const cardBorder = isGDrive ? 'style="border-color: rgba(0, 113, 227, 0.35); background: rgba(0, 113, 227, 0.03); cursor: pointer;"' : 'style="cursor: pointer;"';
           const badgeStyle = isGDrive ? 'style="background: rgba(0, 113, 227, 0.1); color: var(--accent); border-color: rgba(0, 113, 227, 0.3);"' : '';
           const barColor = isGDrive ? 'var(--accent)' : (n.is_local ? 'var(--accent)' : 'var(--success)');
+          const clickFn = isGDrive ? 'openGDriveModal()' : 'openClusterSyncModal()';
           return `
-            <div class="topo-card" ${cardBorder}>
+            <div class="topo-card" ${cardBorder} onclick="${clickFn}" title="Click to inspect node details & replication">
               <div class="topo-card-head">
                 <span class="topo-card-title">
                   <span class="status-dot ${n.healthy ? '' : 'disconnected'}"></span>
-                  ${isGDrive ? '☁️ ' : ''}${n.name || n.id}
+                  ${isGDrive ? '☁️ ' : ''}${escapeHtml(n.name || n.id)}
                 </span>
-                <span class="topo-card-badge" ${badgeStyle}>${n.role} · ${n.rtt_ms !== null ? n.rtt_ms + 'ms' : 'off'}</span>
+                <span class="topo-card-badge" ${badgeStyle}>${escapeHtml(n.role)} · ${n.rtt_ms !== null ? n.rtt_ms + 'ms' : 'off'}</span>
               </div>
               <div class="topo-card-meta">
                 <span>Used: ${pct}%</span>
@@ -2147,13 +2148,13 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
 
         bar.innerHTML = topo.distributions.map((d, i) => {
           const pct = ((d.total_bytes / totalBytes) * 100).toFixed(1);
-          return `<div class="spectrum-segment" style="width: ${pct}%; background: ${colors[i % colors.length]};" title="${d.prefix}: ${formatBytes(d.total_bytes)} (${pct}%)"></div>`;
+          return `<div class="spectrum-segment" style="width: ${pct}%; background: ${colors[i % colors.length]}; cursor: pointer;" onclick="navigate('${escapeJs(d.prefix)}')" title="Navigate to /${escapeHtml(d.prefix)}: ${formatBytes(d.total_bytes)} (${pct}%)"></div>`;
         }).join('');
 
         legend.innerHTML = topo.distributions.map((d, i) => `
-          <div class="spectrum-legend-item">
+          <div class="spectrum-legend-item" style="cursor: pointer;" onclick="navigate('${escapeJs(d.prefix)}')" title="Navigate to /${escapeHtml(d.prefix)}">
             <span class="legend-dot" style="background: ${colors[i % colors.length]};"></span>
-            <span>/${d.prefix} — ${formatBytes(d.total_bytes)} (${d.object_count} obj · ${d.replica_factor}x Synced)</span>
+            <span>/${escapeHtml(d.prefix)} — ${formatBytes(d.total_bytes)} (${d.object_count} obj · ${d.replica_factor}x Synced)</span>
           </div>
         `).join('');
 
@@ -2187,10 +2188,10 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
 
       // Main Node
       nodesHtml += `
-        <g transform="translate(270, 45)">
+        <g transform="translate(270, 45)" class="topo-node-item" style="cursor: pointer;" onclick="openClusterSyncModal()" title="Main Control Node — Click to open Fleet Replication">
           <circle r="24" fill="#FFFFFF" stroke="#0071E3" stroke-width="2.5"/>
           <circle r="4" fill="#34C759"/>
-          <text y="-30" text-anchor="middle" fill="#1D1D1F" font-size="11" font-weight="600">${cp ? cp.name : 'Main'}</text>
+          <text y="-30" text-anchor="middle" fill="#1D1D1F" font-size="11" font-weight="600">${cp ? escapeHtml(cp.name) : 'Main'}</text>
           <text y="38" text-anchor="middle" fill="#86868B" font-size="9" font-family="monospace">Primary Entry (:8781)</text>
         </g>
       `;
@@ -2202,16 +2203,18 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
         const strokeColor = isGDrive ? '#0071E3' : (w.healthy ? '#34C759' : '#FF3B30');
         const roleLabel = isGDrive ? 'Cloud Node' : 'Follower';
         const displayName = isGDrive ? '☁️ Google Drive' : (w.name || w.id);
+        const clickFn = isGDrive ? 'openGDriveModal()' : 'openClusterSyncModal()';
+        const titleText = isGDrive ? 'Google Drive Cloud Storage — Click to view settings' : `${displayName} — Click to open Fleet Replication`;
 
         pathsHtml += `
           <path d="M270 65 Q${Math.round((270 + x) / 2)} 115 ${x} ${y - 12}" fill="none" stroke="${strokeColor}" stroke-width="2" stroke-dasharray="4 4" opacity="0.8"/>
         `;
 
         nodesHtml += `
-          <g transform="translate(${x}, ${y})">
+          <g transform="translate(${x}, ${y})" class="topo-node-item" style="cursor: pointer;" onclick="${clickFn}" title="${escapeHtml(titleText)}">
             <circle r="20" fill="#FFFFFF" stroke="${strokeColor}" stroke-width="${isGDrive ? '2.5' : '2'}"/>
             <circle r="3" fill="${w.healthy ? '#34C759' : '#FF3B30'}"/>
-            <text y="32" text-anchor="middle" fill="#1D1D1F" font-size="11" font-weight="${isGDrive ? '600' : '500'}">${displayName}</text>
+            <text y="32" text-anchor="middle" fill="#1D1D1F" font-size="11" font-weight="${isGDrive ? '600' : '500'}">${escapeHtml(displayName)}</text>
             <text y="44" text-anchor="middle" fill="${isGDrive ? 'var(--accent)' : '#86868B'}" font-size="9" font-family="monospace">${w.rtt_ms !== null ? w.rtt_ms + 'ms' : 'off'} · ${roleLabel}</text>
           </g>
         `;
@@ -2316,10 +2319,22 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       }
     }
 
+    let listAbortController = null;
+    let listRequestId = 0;
+
     // Object Explorer: True Lazy Load with SWR Client-Side Cache
     async function loadDirectory(path = currentPath, append = false, addToHistory = true) {
-      if (isLoading) return;
+      if (append && isLoading) return;
+
+      if (!append) {
+        if (listAbortController) {
+          try { listAbortController.abort(); } catch (e) {}
+        }
+        listAbortController = new AbortController();
+        isLoading = false;
+      }
       isLoading = true;
+      const currentReqId = ++listRequestId;
 
       if (!append) {
         currentPath = path;
@@ -2366,14 +2381,17 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       }
 
       try {
-        let query = `?limit=${PAGE_LIMIT}&offset=${currentOffset}`;
+        const fetchOffset = append ? currentOffset : 0;
+        let query = `?limit=${PAGE_LIMIT}&offset=${fetchOffset}`;
         if (currentPath) query += `&path=${encodeURIComponent(currentPath)}`;
 
-        const res = await api(`/api/list${query}`);
+        const res = await api(`/api/list${query}`, { signal: listAbortController ? listAbortController.signal : undefined });
+        if (currentReqId !== listRequestId) return;
         if (!res.ok) {
           return;
         }
         const data = await res.json();
+        if (currentReqId !== listRequestId) return;
 
         currentTotalCount = data.total_count || 0;
         currentTotalBytes = data.total_bytes || 0;
@@ -2409,9 +2427,12 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
           : `Showing all ${currentTotalCount.toLocaleString()} items`;
 
       } catch (e) {
+        if (e.name === 'AbortError') return;
         console.error('List error:', e);
       } finally {
-        isLoading = false;
+        if (currentReqId === listRequestId) {
+          isLoading = false;
+        }
       }
     }
 
@@ -2482,6 +2503,14 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
             <span class="node-dot-item ${hasRn === true ? 'present' : ''}"><span class="mini-dot ${rnDotClass}"></span>rn</span>
             <span class="node-dot-item ${hasGd === true ? 'present' : ''}"><span class="mini-dot ${gdDotClass}"></span>gd</span>
             <span class="ratio-badge ${ratioClass}">${ratioText}</span>
+          </div>
+        `;
+      } else {
+        nodeMapHtml = `
+          <div class="node-badges-cluster dir-replica-cell" onclick="event.stopPropagation(); openItemSync('${escapeJs(item.path)}', true, event)" title="点击查看并同步此文件夹到集群节点">
+            <span class="ratio-badge full" style="font-size:0.72rem; cursor:pointer; display:inline-flex; align-items:center; gap:5px; padding: 2px 8px;">
+              <span class="mini-dot main"></span>Cluster Replicas
+            </span>
           </div>
         `;
       }
