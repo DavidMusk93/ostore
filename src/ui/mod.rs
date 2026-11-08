@@ -899,6 +899,239 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       background: #F2F2F7 !important;
     }
 
+    .mobile-row-meta {
+      display: none;
+    }
+    .btn-text-short {
+      display: none;
+    }
+    .btn-text-full {
+      display: inline;
+    }
+
+    @media (max-width: 768px) {
+      .topology-wrap {
+        padding: 10px;
+        gap: 10px;
+      }
+      .topo-canvas-container {
+        min-height: 140px;
+        max-height: 165px;
+      }
+      .topo-cards-grid {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 8px;
+      }
+      .topo-card {
+        padding: 8px 10px;
+      }
+      .topo-card-title {
+        font-size: 0.76rem;
+      }
+      .topo-card-badge {
+        font-size: 0.65rem;
+        padding: 1px 5px;
+      }
+      .topo-card-meta {
+        font-size: 0.68rem;
+      }
+
+      .spectrum-panel {
+        padding: 10px 12px;
+      }
+      .spectrum-legend {
+        gap: 8px 12px;
+        font-size: 0.71rem;
+      }
+
+      .btn-text-short {
+        display: inline;
+      }
+      .btn-text-full {
+        display: none;
+      }
+
+      .explorer-bar {
+        padding: 10px 12px;
+        gap: 8px;
+        flex-direction: column;
+        align-items: stretch;
+      }
+      .breadcrumbs-wrap {
+        width: 100%;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        overflow-x: auto;
+        white-space: nowrap;
+        scrollbar-width: none;
+        -webkit-overflow-scrolling: touch;
+      }
+      .breadcrumbs-wrap::-webkit-scrollbar {
+        display: none;
+      }
+      .breadcrumbs {
+        flex: 1;
+        min-width: 0;
+        overflow-x: auto;
+        white-space: nowrap;
+        scrollbar-width: none;
+      }
+      .breadcrumbs::-webkit-scrollbar {
+        display: none;
+      }
+      .folder-stat-badge {
+        flex-shrink: 0;
+        font-size: 0.72rem;
+        padding: 0 8px;
+        height: 28px;
+      }
+      .explorer-actions {
+        width: 100%;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        align-items: center;
+      }
+      .explorer-actions .search-input {
+        width: 100%;
+        flex: 1 1 100%;
+        height: 34px;
+        font-size: 16px;
+        margin-bottom: 2px;
+      }
+      .explorer-actions .btn {
+        flex: 1 1 auto;
+        justify-content: center;
+        padding: 0 8px;
+        font-size: 0.74rem;
+        height: 32px;
+        gap: 4px;
+      }
+
+      /* Phone Friendly Explorer Table */
+      .table-viewport {
+        max-height: 65vh;
+        overflow-x: hidden;
+      }
+      .file-table {
+        min-width: 100%;
+        width: 100%;
+        display: block;
+      }
+      .file-table thead {
+        display: none;
+      }
+      .file-table tbody {
+        display: block;
+        width: 100%;
+      }
+      .file-row {
+        display: flex;
+        align-items: center;
+        padding: 10px 10px;
+        gap: 8px;
+        height: auto;
+        min-height: 54px;
+        border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+      }
+      .file-row td {
+        padding: 0;
+        white-space: normal;
+        overflow: visible;
+        border: none;
+      }
+      .file-row .td-select {
+        flex-shrink: 0;
+        width: 26px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .file-row .td-name {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+      }
+      .file-row .td-name .name-cell {
+        font-size: 0.88rem;
+        font-weight: 500;
+        gap: 8px;
+      }
+      .mobile-row-meta {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        margin-top: 3px;
+        font-size: 0.71rem;
+        color: var(--ink-secondary);
+        flex-wrap: wrap;
+      }
+      .mobile-badges-cluster {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        height: 20px;
+        padding: 0 6px;
+        border-radius: var(--radius-pill);
+        background: #FFFFFF;
+        border: 1px solid var(--card-border);
+        box-shadow: var(--shadow-sm);
+        cursor: pointer;
+        font-family: var(--font-mono);
+        font-size: 0.68rem;
+        white-space: nowrap;
+      }
+      .file-row .td-size,
+      .file-row .td-mtime,
+      .file-row .td-replica {
+        display: none;
+      }
+      .file-row .td-actions {
+        flex-shrink: 0;
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+      }
+      .file-row .td-actions .row-actions {
+        opacity: 1;
+        gap: 2px;
+      }
+      .file-row .td-actions .icon-btn {
+        width: 32px;
+        height: 32px;
+      }
+      .file-row.parent-dir-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 10px 12px;
+        min-height: 46px;
+      }
+      .file-row.parent-dir-row td.td-name {
+        flex: 1;
+      }
+      .batch-action-bar {
+        max-width: calc(100vw - 20px);
+        padding: 8px 12px;
+        gap: 8px;
+        bottom: 16px;
+        font-size: 0.76rem;
+      }
+    }
+
+    @media (max-width: 440px) {
+      .topo-cards-grid {
+        grid-template-columns: 1fr;
+      }
+      .explorer-actions .btn {
+        padding: 0 6px;
+        font-size: 0.71rem;
+      }
+    }
+
     .media-box {
       max-width: 90vw;
       max-height: 85vh;
@@ -1071,15 +1304,25 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
           </div>
           <span class="folder-stat-badge" id="folderStatBadge">0 items · 0 B</span>
         </div>
-        <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+        <div class="explorer-actions" style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
           <input type="text" class="search-input" id="searchBox" placeholder="Filter objects..." oninput="onFilter()">
           <button class="btn" id="btnSyncFolder" onclick="openCurrentFolderSync()" title="Sync all files in current folder to cluster nodes">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
-            <span>Sync Current Directory</span>
+            <span class="btn-text-full">Sync Current Directory</span>
+            <span class="btn-text-short">Sync</span>
           </button>
-          <button class="btn" onclick="openMkdir()">New Folder</button>
-          <button class="btn" onclick="triggerFolderUploadInput()" title="Upload entire folder tree">Upload Folder</button>
-          <button class="btn btn-primary" onclick="triggerFileInput()">Upload File</button>
+          <button class="btn" onclick="openMkdir()">
+            <span class="btn-text-full">New Folder</span>
+            <span class="btn-text-short">Folder</span>
+          </button>
+          <button class="btn" onclick="triggerFolderUploadInput()" title="Upload entire folder tree">
+            <span class="btn-text-full">Upload Folder</span>
+            <span class="btn-text-short">Upload Dir</span>
+          </button>
+          <button class="btn btn-primary" onclick="triggerFileInput()">
+            <span class="btn-text-full">Upload File</span>
+            <span class="btn-text-short">Upload</span>
+          </button>
           <input type="file" id="fileInput" multiple style="display: none;" onchange="handleFileSelect(event)">
           <input type="file" id="folderInput" webkitdirectory directory multiple style="display: none;" onchange="handleFolderSelect(event)">
         </div>
@@ -1873,6 +2116,10 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
 
     function showLogin() {
       closeAllModals();
+      if (window._topoPollTimer) {
+        clearInterval(window._topoPollTimer);
+        window._topoPollTimer = null;
+      }
       if (eventSource) {
         eventSource.close();
         eventSource = null;
@@ -1891,6 +2138,11 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       initSSE();
       loadTopology();
       checkGDriveStatus();
+
+      if (window._topoPollTimer) clearInterval(window._topoPollTimer);
+      window._topoPollTimer = setInterval(() => {
+        if (!document.hidden) loadTopology();
+      }, 12000);
 
       const searchParams = new URLSearchParams(window.location.search);
       let initialPath = searchParams.get('path');
@@ -2086,10 +2338,23 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       eventSource.addEventListener('object.updated', e => onObjectEvent(JSON.parse(e.data), 'updated'));
       eventSource.addEventListener('object.deleted', e => onObjectEvent(JSON.parse(e.data), 'deleted'));
       eventSource.addEventListener('object.moved', e => onObjectEvent(JSON.parse(e.data), 'moved'));
-      eventSource.addEventListener('stream.reset', () => loadDirectory(currentPath, false));
+      eventSource.addEventListener('stream.reset', () => {
+        loadDirectory(currentPath, false);
+        scheduleTopologyReload(100);
+      });
+    }
+
+    let topologyDebounceTimer = null;
+    let lastRenderedDistKey = '';
+    function scheduleTopologyReload(delay = 400) {
+      if (topologyDebounceTimer) clearTimeout(topologyDebounceTimer);
+      topologyDebounceTimer = setTimeout(() => {
+        loadTopology();
+      }, delay);
     }
 
     function onObjectEvent(data, kind) {
+      scheduleTopologyReload();
       const p = data.path;
       replicaMapCache.delete(p);
       const parent = p.includes('/') ? p.substring(0, p.lastIndexOf('/')) : '';
@@ -2181,26 +2446,55 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
           `;
         }).join('');
 
-        const totalBytes = topo.distributions.reduce((acc, d) => acc + d.total_bytes, 0) || 1;
-        const totalObj = topo.distributions.reduce((acc, d) => acc + d.object_count, 0);
-        document.getElementById('spectrumSummaryText').textContent = `${totalObj} objects (${formatBytes(totalBytes)})`;
-        document.getElementById('clusterCapacityText').textContent = `Total: ${formatBytes(topo.total_disk_bytes)} (Free: ${formatBytes(topo.available_disk_bytes)})`;
+        const distributions = topo.distributions || [];
+        const totalBytes = distributions.reduce((acc, d) => acc + d.total_bytes, 0);
+        const totalObj = distributions.reduce((acc, d) => acc + d.object_count, 0);
+        const summaryTextEl = document.getElementById('spectrumSummaryText');
+        if (summaryTextEl) {
+          summaryTextEl.textContent = totalObj > 0
+            ? `${totalObj.toLocaleString()} objects (${formatBytes(totalBytes)})`
+            : '0 objects (0 B)';
+        }
+        const capEl = document.getElementById('clusterCapacityText');
+        if (capEl) {
+          capEl.textContent = `Total: ${formatBytes(topo.total_disk_bytes)} (Free: ${formatBytes(topo.available_disk_bytes)})`;
+        }
 
-        const colors = ['#0071E3', '#34C759', '#FF9500', '#AF52DE', '#5856D6', '#FF2D55'];
+        const distKey = JSON.stringify(distributions);
+        if (distKey === lastRenderedDistKey) {
+          return;
+        }
+        lastRenderedDistKey = distKey;
+
+        const colors = ['#0071E3', '#34C759', '#FF9500', '#AF52DE', '#5856D6', '#FF2D55', '#30B0C7', '#FF6482'];
         const bar = document.getElementById('spectrumBar');
         const legend = document.getElementById('spectrumLegend');
 
-        bar.innerHTML = topo.distributions.map((d, i) => {
-          const pct = ((d.total_bytes / totalBytes) * 100).toFixed(1);
-          return `<div class="spectrum-segment" style="width: ${pct}%; background: ${colors[i % colors.length]}; cursor: pointer;" onclick="navigate('${escapeJs(d.prefix)}')" title="Navigate to /${escapeHtml(d.prefix)}: ${formatBytes(d.total_bytes)} (${pct}%)"></div>`;
-        }).join('');
+        if (distributions.length === 0 || (totalObj === 0 && totalBytes === 0)) {
+          if (bar) bar.innerHTML = '<div style="width: 100%; height: 100%; background: rgba(0, 0, 0, 0.05); border-radius: var(--radius-pill);"></div>';
+          if (legend) legend.innerHTML = '<div style="color: var(--ink-secondary); font-size: 0.74rem; font-style: italic;">No objects stored yet</div>';
+        } else {
+          if (bar) {
+            bar.innerHTML = distributions.map((d, i) => {
+              const rawPct = totalBytes > 0 ? (d.total_bytes / totalBytes) * 100 : (100 / distributions.length);
+              const pct = Math.max(rawPct, 1.2).toFixed(1);
+              const label = d.prefix ? `/${d.prefix}` : '/ (root files)';
+              return `<div class="spectrum-segment" style="width: ${pct}%; background: ${colors[i % colors.length]}; cursor: pointer;" onclick="navigate('${escapeJs(d.prefix)}')" title="Navigate to ${escapeHtml(label)}: ${formatBytes(d.total_bytes)} (${(totalBytes > 0 ? (d.total_bytes / totalBytes * 100) : 0).toFixed(1)}%)"></div>`;
+            }).join('');
+          }
 
-        legend.innerHTML = topo.distributions.map((d, i) => `
-          <div class="spectrum-legend-item" style="cursor: pointer;" onclick="navigate('${escapeJs(d.prefix)}')" title="Navigate to /${escapeHtml(d.prefix)}">
-            <span class="legend-dot" style="background: ${colors[i % colors.length]};"></span>
-            <span>/${escapeHtml(d.prefix)} — ${formatBytes(d.total_bytes)} (${d.object_count} obj · ${d.replica_factor}x Synced)</span>
-          </div>
-        `).join('');
+          if (legend) {
+            legend.innerHTML = distributions.map((d, i) => {
+              const label = d.prefix ? `/${escapeHtml(d.prefix)}` : '/ (root files)';
+              return `
+                <div class="spectrum-legend-item" style="cursor: pointer;" onclick="navigate('${escapeJs(d.prefix)}')" title="Navigate to ${escapeHtml(label)}">
+                  <span class="legend-dot" style="background: ${colors[i % colors.length]};"></span>
+                  <span>${label} — ${formatBytes(d.total_bytes)} (${d.object_count.toLocaleString()} obj · ${d.replica_factor}x Synced)</span>
+                </div>
+              `;
+            }).join('');
+          }
+        }
 
       } catch (e) {
         console.error('Topology error:', e);
@@ -2517,14 +2811,14 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
         if (currentPath && !q) {
           const parentRowHtml = `
             <tr class="file-row parent-dir-row" onclick="navigateUp()" style="cursor: pointer; background: #FAFBFD;">
-              <td style="text-align: center;"></td>
-              <td colspan="4">
+              <td class="td-select" style="text-align: center;"></td>
+              <td colspan="4" class="td-name">
                 <div class="name-cell" style="color: var(--accent); font-weight: 600;">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="16" height="16"><polyline points="15 18 9 12 15 6"></polyline></svg>
                   <span>.. (Parent Directory)</span>
                 </div>
               </td>
-              <td style="text-align: right;">
+              <td class="td-actions" style="text-align: right;">
                 <button class="btn btn-sm" onclick="event.stopPropagation(); navigateUp()" style="padding: 2px 10px; font-size: 0.72rem;">Up</button>
               </td>
             </tr>
@@ -2643,13 +2937,17 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       }
 
       const isChecked = selectedRowPaths.has(item.path);
+      const mobileNodeMapHtml = nodeMapHtml
+        .replace(/dir-replica-cell/g, 'mobile-dir-replica')
+        .replace(/node-badges-cluster/g, 'mobile-badges-cluster')
+        .replace(/id="badge-/g, 'id="mobile-badge-');
 
       return `
         <tr class="file-row" id="row-${escapeId(item.path)}">
-          <td style="text-align: center;">
+          <td class="td-select" style="text-align: center;">
             <input type="checkbox" class="row-select-cb" data-path="${escapeHtml(item.path)}" data-is-dir="${isDir}" ${isChecked ? 'checked' : ''} onchange="onRowSelectionChange(event)" onclick="event.stopPropagation()">
           </td>
-          <td>
+          <td class="td-name">
             <div class="name-cell" onclick="${isDir ? `navigate('${escapeJs(item.path)}')` : `openMediaPreview('${escapeJs(item.path)}', ${item.size || 0}, '${escapeJs(item.sha256 || '')}')`}">
               ${isDir
                 ? `<svg viewBox="0 0 24 24" fill="#0071E3"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>`
@@ -2657,11 +2955,18 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
               }
               <span>${escapeHtml(item.name)}</span>
             </div>
+            <div class="mobile-row-meta">
+              <span>${isDir ? (item.size > 0 ? formatBytes(item.size) : `${item.item_count || 0} items`) : formatBytes(item.size)}</span>
+              <span>·</span>
+              <span>${timeAgo(item.mtime) || formatDate(item.mtime)}</span>
+              <span>·</span>
+              <span>${mobileNodeMapHtml}</span>
+            </div>
           </td>
-          <td>${sizeDisplayHtml}</td>
-          <td class="meta-mono">${formatDate(item.mtime)}</td>
-          <td>${nodeMapHtml}</td>
-          <td>${actionsHtml}</td>
+          <td class="td-size">${sizeDisplayHtml}</td>
+          <td class="td-mtime meta-mono">${formatDate(item.mtime)}</td>
+          <td class="td-replica">${nodeMapHtml}</td>
+          <td class="td-actions">${actionsHtml}</td>
         </tr>
       `;
     }
@@ -2735,6 +3040,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       if (res.ok) {
         showToast('Renamed successfully');
         loadDirectory(currentPath, false);
+        scheduleTopologyReload(100);
       } else {
         alert('Rename failed');
       }
@@ -3273,6 +3579,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
         dirCache.delete(path);
         showToast('Deleted successfully');
         loadDirectory(currentPath, false);
+        scheduleTopologyReload(100);
       }
     }
 
@@ -3289,6 +3596,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
         dirCache.delete(currentPath);
         showToast('Folder created');
         loadDirectory(currentPath, false);
+        scheduleTopologyReload(100);
       }
     }
 
@@ -3304,6 +3612,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       showToast('Uploads completed');
       e.target.value = '';
       loadDirectory(currentPath, false);
+      scheduleTopologyReload(100);
     }
 
     function triggerFolderUploadInput() { document.getElementById('folderInput').click(); }
@@ -3320,6 +3629,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       showToast('Folder tree uploaded successfully');
       e.target.value = '';
       loadDirectory(currentPath, false);
+      scheduleTopologyReload(100);
     }
 
     function timeAgo(date) {

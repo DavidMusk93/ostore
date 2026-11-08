@@ -159,6 +159,47 @@ pub async fn get_topology(State(st): State<AppState>) -> Result<Json<Value>, Api
         }
         None => {
             let (total, avail) = crate::metrics::disk_space(&st.root).unwrap_or((0, 0));
+            let mut distributions = Vec::new();
+            let mut root_files_count = 0usize;
+            let mut root_files_bytes = 0u64;
+            if let Ok(mut rd) = tokio::fs::read_dir(&st.root).await {
+                while let Ok(Some(entry)) = rd.next_entry().await {
+                    let fname = entry.file_name().to_string_lossy().to_string();
+                    if fname == crate::paths::META_DIR || fname.contains(crate::TMP_MARKER) {
+                        continue;
+                    }
+                    if let Ok(ft) = entry.file_type().await {
+                        if ft.is_dir() {
+                            let (bytes, count) = st.dir_size_cache.get_or_compute(&entry.path()).await;
+                            distributions.push(json!({
+                                "prefix": fname,
+                                "object_count": count,
+                                "total_bytes": bytes,
+                                "replica_factor": 1,
+                            }));
+                        } else if ft.is_file() {
+                            root_files_count += 1;
+                            if let Ok(m) = entry.metadata().await {
+                                root_files_bytes = root_files_bytes.saturating_add(m.len());
+                            }
+                        }
+                    }
+                }
+            }
+            if root_files_count > 0 {
+                distributions.push(json!({
+                    "prefix": "",
+                    "object_count": root_files_count,
+                    "total_bytes": root_files_bytes,
+                    "replica_factor": 1,
+                }));
+            }
+            distributions.sort_by(|a, b| {
+                let bytes_a = a["total_bytes"].as_u64().unwrap_or(0);
+                let bytes_b = b["total_bytes"].as_u64().unwrap_or(0);
+                bytes_b.cmp(&bytes_a)
+            });
+
             Ok(Json(json!({
                 "control_plane": {
                     "id": "local",
@@ -175,7 +216,7 @@ pub async fn get_topology(State(st): State<AppState>) -> Result<Json<Value>, Api
                 "workers": [],
                 "total_disk_bytes": total,
                 "available_disk_bytes": avail,
-                "distributions": [],
+                "distributions": distributions,
                 "replicate_prefixes": []
             })))
         }

@@ -133,9 +133,8 @@ def run_regression_test():
 
         # 2f. Click Data Distribution Spectrum Legend Item
         print("Testing click on Spectrum Legend item...", flush=True)
-        legend_items = page.query_selector_all(".spectrum-legend-item")
-        if legend_items:
-            legend_items[0].click()
+        if page.query_selector(".spectrum-legend-item"):
+            page.click(".spectrum-legend-item")
             page.wait_for_timeout(1200)
             crumb_text = page.inner_text("#breadcrumbs")
             print(f"Spectrum legend item navigated to: {crumb_text}", flush=True)

@@ -4,7 +4,7 @@
 //! periodic node health/disk monitoring, automatic replication on write,
 //! and on-demand cluster synchronization.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -635,7 +635,27 @@ impl ClusterManager {
             }
         }
 
+        let worker_prefixes = self.probe_worker_prefixes(&cfg.nodes).await;
+        let calc_replica_factor = |fname: &str| -> usize {
+            let worker_replicas = workers
+                .iter()
+                .filter(|w| {
+                    if !w.healthy {
+                        return false;
+                    }
+                    if let Some(set) = worker_prefixes.get(&w.id) {
+                        set.contains(fname)
+                    } else {
+                        self.should_replicate(fname)
+                    }
+                })
+                .count();
+            1 + worker_replicas
+        };
+
         let mut distributions = Vec::new();
+        let mut root_files_count = 0usize;
+        let mut root_files_bytes = 0u64;
         if let Ok(mut rd) = tokio::fs::read_dir(&self.root).await {
             while let Ok(Some(entry)) = rd.next_entry().await {
                 let fname = entry.file_name().to_string_lossy().to_string();
@@ -645,20 +665,30 @@ impl ClusterManager {
                 if let Ok(ft) = entry.file_type().await {
                     if ft.is_dir() {
                         let (count, bytes) = self.scan_dir_summary(&entry.path()).await;
-                        let replica_factor = if self.should_replicate(&fname) {
-                            1 + workers.iter().filter(|w| w.healthy).count()
-                        } else {
-                            1
-                        };
+                        let replica_factor = calc_replica_factor(&fname);
                         distributions.push(PrefixDistribution {
                             prefix: fname,
                             object_count: count,
                             total_bytes: bytes,
                             replica_factor,
                         });
+                    } else if ft.is_file() {
+                        root_files_count += 1;
+                        if let Ok(m) = entry.metadata().await {
+                            root_files_bytes = root_files_bytes.saturating_add(m.len());
+                        }
                     }
                 }
             }
+        }
+        if root_files_count > 0 {
+            let replica_factor = calc_replica_factor("");
+            distributions.push(PrefixDistribution {
+                prefix: "".to_string(),
+                object_count: root_files_count,
+                total_bytes: root_files_bytes,
+                replica_factor,
+            });
         }
         distributions.sort_by(|a, b| b.total_bytes.cmp(&a.total_bytes));
 
@@ -673,6 +703,77 @@ impl ClusterManager {
 
         *self.cached_topology.write().await = Some((Instant::now(), topo.clone()));
         topo
+    }
+
+    /// Invalidate cached cluster topology so the next query recomputes distributions and status.
+    pub async fn invalidate_topology_cache(&self) {
+        *self.cached_topology.write().await = None;
+    }
+
+    /// Query healthy remote nodes for their top-level entries and root files.
+    async fn probe_worker_prefixes(&self, nodes: &[NodeConfig]) -> HashMap<String, HashSet<String>> {
+        let mut tasks = Vec::new();
+        let gdrive_client = self.gdrive.read().await.clone();
+        let client = self.client.clone();
+
+        for node in nodes {
+            if node.is_local {
+                continue;
+            }
+            let node = node.clone();
+            let client = client.clone();
+            let gdrive = gdrive_client.clone();
+
+            tasks.push(tokio::spawn(async move {
+                let mut prefixes = HashSet::new();
+                if node.node_type.as_deref() == Some("gdrive") || node.id == "gdrive" {
+                    if let Some(gdrive) = gdrive {
+                        if let Ok(items) = gdrive.list_dir("").await {
+                            for item in items {
+                                if !item.is_dir {
+                                    prefixes.insert("".to_string());
+                                }
+                                prefixes.insert(item.name);
+                            }
+                        }
+                    }
+                } else if !node.url.is_empty() {
+                    let base = node.url.trim_end_matches('/');
+                    let list_url = format!("{base}/api/list?limit=500");
+                    let mut req = client.get(&list_url).timeout(Duration::from_millis(2000));
+                    if !node.token.is_empty() {
+                        req = req.header("Authorization", format!("Bearer {}", node.token));
+                    }
+                    if let Ok(resp) = req.send().await {
+                        if resp.status().is_success() {
+                            if let Ok(val) = resp.json::<serde_json::Value>().await {
+                                if let Some(entries) = val.get("entries").and_then(|v| v.as_array()) {
+                                    for e in entries {
+                                        if let Some(t) = e.get("type").and_then(|v| v.as_str()) {
+                                            if t == "file" {
+                                                prefixes.insert("".to_string());
+                                            }
+                                        }
+                                        if let Some(name) = e.get("name").and_then(|v| v.as_str()) {
+                                            prefixes.insert(name.to_string());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                (node.id, prefixes)
+            }));
+        }
+
+        let mut results = HashMap::new();
+        for t in tasks {
+            if let Ok((id, set)) = t.await {
+                results.insert(id, set);
+            }
+        }
+        results
     }
 
     async fn scan_dir_summary(&self, dir: &Path) -> (usize, u64) {
@@ -801,6 +902,7 @@ impl ClusterManager {
                 }
             }
         }
+        self.invalidate_topology_cache().await;
     }
 
     /// Replicate a delete to remote nodes.
@@ -833,6 +935,7 @@ impl ClusterManager {
                     tracing::warn!(node = %node.id, path = %rel_path, error = %e, "delete replication error");
                 }
             }
+            self.invalidate_topology_cache().await;
         });
     }
 

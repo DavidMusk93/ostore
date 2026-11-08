@@ -272,6 +272,14 @@ impl AppState {
         self.metrics.event_published(kind);
         self.webhooks.deliver(ev);
     }
+
+    /// Invalidate directory size cache ancestors and cluster topology cache.
+    pub async fn invalidate_caches(&self, abs: &Path) {
+        self.dir_size_cache.invalidate_ancestors(abs, &self.root).await;
+        if let Some(cluster) = &self.cluster {
+            cluster.invalidate_topology_cache().await;
+        }
+    }
 }
 
 /// Remove temp files left behind by a crash mid-upload. Run once at startup,

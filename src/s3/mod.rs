@@ -297,6 +297,7 @@ async fn put_object(
         let mtime = m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_nanos()).unwrap_or(0);
         st.checksum_cache.insert(&abs, size, mtime, md5.clone()).await;
     }
+    st.invalidate_caches(&abs).await;
 
     st.metrics.s3_puts.fetch_add(1, Ordering::Relaxed);
     let kind = if existed { events::UPDATED } else { events::CREATED };
@@ -345,6 +346,8 @@ async fn delete_object(
     if let Err(e) = tokio::fs::remove_file(&abs).await {
         return xml_error(StatusCode::INTERNAL_SERVER_ERROR, "InternalError", &e.to_string(), uri.path());
     }
+    st.checksum_cache.invalidate(&abs).await;
+    st.invalidate_caches(&abs).await;
     st.metrics.s3_deletes.fetch_add(1, Ordering::Relaxed);
     st.publish(events::DELETED, &rel, false, None, None);
     Response::builder()

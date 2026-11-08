@@ -1,2 +1,4 @@
 /target
 .tmp/
+# Screenshots written by tests/ui_test_runner.py
+tests/*.png
