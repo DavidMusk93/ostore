@@ -54,6 +54,37 @@ pub struct ObjectEvent {
     pub ts: DateTime<Utc>,
 }
 
+/// Server-side subscriber filter (`GET /api/events?prefix=`).
+///
+/// The default filter matches everything. A prefix filter matches an event
+/// whose `path` starts with the prefix, or an `object.moved` whose `from`
+/// starts with it (so a subscriber sees objects leaving its subtree). It is
+/// a plain string prefix: `a/b` also matches `a/bc/x`; pass `a/b/` to scope
+/// to one directory.
+#[derive(Clone, Debug, Default)]
+pub struct EventFilter {
+    prefix: Option<String>,
+}
+
+impl EventFilter {
+    /// Filter on a root-relative path prefix. Leading `/` are stripped; an
+    /// empty prefix matches everything (same as no filter).
+    pub fn prefix(p: &str) -> Self {
+        let p = p.trim_start_matches('/');
+        Self { prefix: (!p.is_empty()).then(|| p.to_string()) }
+    }
+
+    /// True when no prefix is set (every event matches).
+    pub fn is_all(&self) -> bool {
+        self.prefix.is_none()
+    }
+
+    pub fn matches(&self, ev: &ObjectEvent) -> bool {
+        let Some(p) = self.prefix.as_deref() else { return true };
+        ev.path.starts_with(p) || (ev.kind == MOVED && ev.from.as_deref().is_some_and(|f| f.starts_with(p)))
+    }
+}
+
 /// What a new subscriber should be sent before live events.
 pub enum Replay {
     Events(Vec<ObjectEvent>),
@@ -104,6 +135,23 @@ impl EventBus {
     ///   after `id` already fell out of the ring (or `id` is from the future).
     /// - `since = None`: the last `replay` events.
     pub fn subscribe(&self, since: Option<u64>, replay: usize) -> (broadcast::Receiver<ObjectEvent>, Replay) {
+        self.subscribe_filtered(since, replay, &EventFilter::default())
+    }
+
+    /// [`EventBus::subscribe`] with a server-side filter applied to the
+    /// replay. Reset decisions are made against the *unfiltered* ring (the
+    /// cursor is a global event id), then the selection is filtered:
+    /// - `since = Some(id)`: matching events after `id` (possibly none).
+    /// - `since = None`: the last `replay` *matching* retained events.
+    ///
+    /// The returned receiver is unfiltered; callers apply `filter` to live
+    /// events themselves.
+    pub fn subscribe_filtered(
+        &self,
+        since: Option<u64>,
+        replay: usize,
+        filter: &EventFilter,
+    ) -> (broadcast::Receiver<ObjectEvent>, Replay) {
         let ring = self.ring.lock().unwrap_or_else(|p| p.into_inner());
         let rx = self.tx.subscribe();
         let last_id = ring.next_id - 1;
@@ -112,13 +160,15 @@ impl EventBus {
             Some(s) if s == last_id => Replay::Events(Vec::new()),
             Some(s) => match ring.buf.front() {
                 Some(oldest) if s + 1 >= oldest.id => {
-                    Replay::Events(ring.buf.iter().filter(|e| e.id > s).cloned().collect())
+                    Replay::Events(ring.buf.iter().filter(|e| e.id > s && filter.matches(e)).cloned().collect())
                 }
                 _ => Replay::Reset,
             },
             None => {
-                let skip = ring.buf.len().saturating_sub(replay);
-                Replay::Events(ring.buf.iter().skip(skip).cloned().collect())
+                let mut tail: Vec<ObjectEvent> =
+                    ring.buf.iter().rev().filter(|e| filter.matches(e)).take(replay).cloned().collect();
+                tail.reverse();
+                Replay::Events(tail)
             }
         };
         (rx, out)
@@ -197,5 +247,56 @@ mod tests {
         }
         assert!(ids(bus.subscribe(Some(first), 0).1).is_none());
         assert_eq!(bus.ring_len(), RING_CAP);
+    }
+
+    fn moved(from: &str, to: &str) -> ObjectEvent {
+        ObjectEvent { kind: MOVED.to_string(), from: Some(from.to_string()), ..ev(to) }
+    }
+
+    #[test]
+    fn prefix_filter_matches_path_and_moved_from() {
+        let f = EventFilter::prefix("clip/v1/");
+        assert!(f.matches(&ev("clip/v1/trx/a.json")));
+        assert!(!f.matches(&ev("videos/a.mp4")));
+        assert!(!f.matches(&ev("clip/v10/a.json")));
+        assert!(f.matches(&moved("clip/v1/a.json", "trash/a.json")), "move out of the prefix");
+        assert!(f.matches(&moved("tmp/a.json", "clip/v1/a.json")), "move into the prefix");
+        assert!(!f.matches(&moved("tmp/a", "tmp/b")));
+        // `from` only counts for object.moved.
+        let odd = ObjectEvent { from: Some("clip/v1/x".to_string()), ..ev("other") };
+        assert!(!f.matches(&odd));
+        // Leading slash tolerated; empty prefix means no filter.
+        assert!(EventFilter::prefix("/clip/v1/").matches(&ev("clip/v1/a")));
+        assert!(EventFilter::prefix("").is_all());
+        assert!(EventFilter::prefix("/").is_all());
+        assert!(EventFilter::default().matches(&ev("anything")));
+    }
+
+    #[test]
+    fn filtered_replay_caps_matching_events_and_resets_on_global_cursor() {
+        let bus = EventBus::new();
+        let f = EventFilter::prefix("keep/");
+        let k1 = bus.publish(ev("keep/1")).id;
+        let d1 = bus.publish(ev("drop/1")).id;
+        let k2 = bus.publish(ev("keep/2")).id;
+        for i in 0..5 {
+            bus.publish(ev(&format!("drop/x{i}")));
+        }
+        // replay=N counts matching events, not ring entries.
+        assert_eq!(ids(bus.subscribe_filtered(None, 2, &f).1), Some(vec![k1, k2]));
+        assert_eq!(ids(bus.subscribe_filtered(None, 1, &f).1), Some(vec![k2]));
+        assert_eq!(ids(bus.subscribe_filtered(None, 0, &f).1), Some(vec![]));
+        // Cursor selection, then filter: may legitimately be empty.
+        assert_eq!(ids(bus.subscribe_filtered(Some(k1), 0, &f).1), Some(vec![k2]));
+        assert_eq!(ids(bus.subscribe_filtered(Some(d1), 0, &f).1), Some(vec![k2]));
+        assert_eq!(ids(bus.subscribe_filtered(Some(k2), 0, &f).1), Some(vec![]));
+        // Reset decisions use the unfiltered ring.
+        assert!(ids(bus.subscribe_filtered(Some(k1 - 10), 0, &f).1).is_none());
+        assert!(ids(bus.subscribe_filtered(Some(bus.last_id() + 1), 0, &f).1).is_none());
+        // Default filter == unfiltered subscribe.
+        assert_eq!(
+            ids(bus.subscribe_filtered(None, 3, &EventFilter::default()).1),
+            ids(bus.subscribe(None, 3).1)
+        );
     }
 }

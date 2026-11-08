@@ -950,3 +950,426 @@ async fn cluster_sync_status_and_dir_status_standalone() {
 }
 
 
+// ---------------------------------------------------------------------------
+// GET /api/events?prefix= — server-side prefix filter
+// ---------------------------------------------------------------------------
+
+/// Assert no SSE body frame arrives within `ms` (the stream stays open).
+async fn assert_no_sse_frame(body: &mut Body, ms: u64) {
+    let r = tokio::time::timeout(std::time::Duration::from_millis(ms), body.frame()).await;
+    if let Ok(Some(Ok(frame))) = &r {
+        panic!("unexpected SSE frame: {:?}", frame.data_ref().map(|d| String::from_utf8_lossy(d).into_owned()));
+    }
+    assert!(r.is_err(), "SSE stream ended or errored: {r:?}");
+}
+
+/// Read SSE frames from a body until `pred` matches the accumulated text (5s cap).
+async fn read_body_until(body: &mut Body, acc: &mut String, pred: impl Fn(&str) -> bool) {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !pred(acc) {
+        let frame = tokio::time::timeout_at(deadline, body.frame())
+            .await
+            .expect("timed out waiting for SSE frame")
+            .expect("stream ended")
+            .expect("frame error");
+        if let Some(data) = frame.data_ref() {
+            acc.push_str(&String::from_utf8_lossy(data));
+        }
+    }
+}
+
+#[tokio::test]
+async fn sse_prefix_filters_replay() {
+    let f = fixture();
+    put_file(&f.app, "clip/v1/a.json", b"a").await;
+    put_file(&f.app, "videos/big.mp4", b"v").await;
+    put_file(&f.app, "clip/v1/b.json", b"b").await;
+
+    let resp = f.app.clone().oneshot(req("GET", "/api/events?prefix=clip/v1/")).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let acc = read_sse_until(resp, |a| a.contains("clip/v1/b.json")).await;
+    assert!(acc.contains("clip/v1/a.json"));
+    assert!(!acc.contains("videos/big.mp4"), "non-matching event replayed: {acc}");
+    assert_eq!(acc.matches("event: object.created").count(), 2, "{acc}");
+
+    // replay=N counts matching events: the newest matching one only.
+    let resp = f.app.clone().oneshot(req("GET", "/api/events?prefix=clip/v1/&replay=1")).await.unwrap();
+    let mut body = resp.into_body();
+    let mut acc = String::new();
+    read_body_until(&mut body, &mut acc, |a| a.contains("clip/v1/b.json")).await;
+    assert!(!acc.contains("clip/v1/a.json") && !acc.contains("videos/"), "{acc}");
+    assert_no_sse_frame(&mut body, 200).await;
+}
+
+#[tokio::test]
+async fn sse_prefix_filters_live_stream() {
+    let f = fixture();
+    let resp = f.app.clone().oneshot(req("GET", "/api/events?prefix=clip/v1/&replay=0")).await.unwrap();
+    let mut body = resp.into_body();
+    put_file(&f.app, "videos/live.mp4", b"x").await;
+    put_file(&f.app, "clip/v10/near-miss.json", b"x").await;
+    put_file(&f.app, "clip/v1/live.json", b"y").await;
+    let mut acc = String::new();
+    read_body_until(&mut body, &mut acc, |a| a.contains("clip/v1/live.json")).await;
+    assert!(!acc.contains("videos/live.mp4"), "{acc}");
+    assert!(!acc.contains("near-miss"), "{acc}");
+    assert_eq!(acc.matches("event: ").count(), 1, "{acc}");
+    assert_eq!(f.state.metrics.sse_filtered.load(std::sync::atomic::Ordering::Relaxed), 2);
+}
+
+#[tokio::test]
+async fn sse_prefix_matching_nothing_writes_nothing() {
+    let f = fixture();
+    put_file(&f.app, "a/1.bin", b"1").await;
+    put_file(&f.app, "b/2.bin", b"2").await;
+    let resp = f.app.clone().oneshot(req("GET", "/api/events?prefix=nothing/here/")).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let mut body = resp.into_body();
+    // Nothing replayed (ring has 2 events, none match) ...
+    assert_no_sse_frame(&mut body, 300).await;
+    // ... and nothing live either.
+    put_file(&f.app, "a/3.bin", b"3").await;
+    f.app.clone().oneshot(req_json("POST", "/api/mkdir", json!({"path": "c/d"}))).await.unwrap();
+    assert_no_sse_frame(&mut body, 300).await;
+}
+
+#[tokio::test]
+async fn sse_prefix_matches_moved_by_from_and_mkdir_by_path() {
+    let f = fixture();
+    put_file(&f.app, "clip/v1/m.json", b"m").await;
+    let resp = f.app.clone().oneshot(req("GET", "/api/events?prefix=clip/v1/&replay=0")).await.unwrap();
+    let mut body = resp.into_body();
+
+    // Move out of the prefix: `path` no longer matches, `from` does.
+    let r = f
+        .app
+        .clone()
+        .oneshot(req_json("POST", "/api/move", json!({"from": "clip/v1/m.json", "to": "trash/m.json"})))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    // A move entirely outside the prefix is filtered.
+    put_file(&f.app, "tmp/x", b"x").await;
+    f.app.clone().oneshot(req_json("POST", "/api/move", json!({"from": "tmp/x", "to": "tmp/y"}))).await.unwrap();
+    // mkdir matches on path.
+    f.app.clone().oneshot(req_json("POST", "/api/mkdir", json!({"path": "clip/v1/sub"}))).await.unwrap();
+
+    let mut acc = String::new();
+    read_body_until(&mut body, &mut acc, |a| a.contains("event: object.mkdir")).await;
+    assert!(acc.contains("event: object.moved"), "{acc}");
+    assert!(acc.contains("\"path\":\"trash/m.json\""), "{acc}");
+    assert!(acc.contains("\"from\":\"clip/v1/m.json\""), "{acc}");
+    assert!(acc.contains("\"path\":\"clip/v1/sub\""), "{acc}");
+    assert!(!acc.contains("tmp/"), "{acc}");
+    assert_eq!(acc.matches("event: ").count(), 2, "{acc}");
+}
+
+#[tokio::test]
+async fn sse_prefix_keeps_global_cursor_semantics() {
+    let f = fixture();
+    put_file(&f.app, "k/1", b"1").await;
+    put_file(&f.app, "o/1", b"1").await;
+    put_file(&f.app, "k/2", b"2").await;
+    let evs = f.state.events.snapshot();
+    let (k1, o1) = (evs[0].id, evs[1].id);
+
+    // since=<non-matching id> is a valid cursor: replay matching events after it.
+    let resp = f.app.clone().oneshot(req("GET", &format!("/api/events?prefix=k/&since={o1}"))).await.unwrap();
+    let mut body = resp.into_body();
+    let mut acc = String::new();
+    read_body_until(&mut body, &mut acc, |a| a.contains("\"path\":\"k/2\"")).await;
+    assert!(!acc.contains("\"path\":\"k/1\""), "{acc}");
+
+    // Last-Event-ID works the same with a filter.
+    let r = Request::builder()
+        .uri("/api/events?prefix=k/")
+        .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+        .header("Last-Event-ID", k1.to_string())
+        .body(Body::empty())
+        .unwrap();
+    let acc = read_sse_until(f.app.clone().oneshot(r).await.unwrap(), |a| a.contains("\"path\":\"k/2\"")).await;
+    assert!(!acc.contains("\"path\":\"k/1\"") && !acc.contains("o/1"), "{acc}");
+
+    // Stale and future cursors reset, judged against the unfiltered ring.
+    let resp = f.app.clone().oneshot(req("GET", "/api/events?prefix=k/&since=5")).await.unwrap();
+    let acc = read_sse_until(resp, |a| a.contains("stream.reset")).await;
+    assert!(!acc.contains("k/2"));
+    let future = f.state.events.last_id() + 10;
+    let resp = f.app.clone().oneshot(req("GET", &format!("/api/events?prefix=k/&since={future}"))).await.unwrap();
+    read_sse_until(resp, |a| a.contains("stream.reset")).await;
+
+    // A cursor at the newest (non-matching) id replays nothing, no reset.
+    put_file(&f.app, "o/2", b"2").await;
+    let last = f.state.events.last_id();
+    let resp = f.app.clone().oneshot(req("GET", &format!("/api/events?prefix=k/&since={last}"))).await.unwrap();
+    let mut body = resp.into_body();
+    assert_no_sse_frame(&mut body, 200).await;
+}
+
+#[tokio::test]
+async fn sse_without_prefix_is_unchanged() {
+    let f = fixture();
+    put_file(&f.app, "clip/v1/a.json", b"a").await;
+    put_file(&f.app, "videos/b.mp4", b"b").await;
+    for uri in ["/api/events", "/api/events?prefix="] {
+        let resp = f.app.clone().oneshot(req("GET", uri)).await.unwrap();
+        let acc = read_sse_until(resp, |a| a.contains("videos/b.mp4")).await;
+        assert!(acc.contains("clip/v1/a.json"), "{uri}: {acc}");
+    }
+    // Live, unfiltered.
+    let resp = f.app.clone().oneshot(req("GET", "/api/events?replay=0")).await.unwrap();
+    let mut body = resp.into_body();
+    put_file(&f.app, "x/1", b"1").await;
+    put_file(&f.app, "clip/v1/2", b"2").await;
+    let mut acc = String::new();
+    read_body_until(&mut body, &mut acc, |a| a.contains("clip/v1/2")).await;
+    assert!(acc.contains("\"path\":\"x/1\""), "{acc}");
+    assert_eq!(f.state.metrics.sse_filtered.load(std::sync::atomic::Ordering::Relaxed), 0);
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/batch
+// ---------------------------------------------------------------------------
+
+fn b64(data: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(data)
+}
+
+fn md5_hex(data: &[u8]) -> String {
+    use md5::Digest;
+    hex::encode(md5::Md5::digest(data))
+}
+
+fn sha256_hex(data: &[u8]) -> String {
+    use sha2::Digest;
+    hex::encode(sha2::Sha256::digest(data))
+}
+
+async fn post_batch(app: &Router, objects: Value) -> axum::response::Response {
+    app.clone().oneshot(req_json("POST", "/api/batch", json!({ "objects": objects }))).await.unwrap()
+}
+
+/// Every file under the fixture root (excluding the `.ostore` meta dir).
+fn files_on_disk(root: &std::path::Path) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).unwrap().flatten() {
+            let p = e.path();
+            if e.file_name() == ".ostore" {
+                continue;
+            }
+            if p.is_dir() {
+                stack.push(p);
+            } else {
+                out.push(p.strip_prefix(root).unwrap().to_string_lossy().into_owned());
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+#[tokio::test]
+async fn batch_writes_objects_events_and_refreshes_cache() {
+    let f = fixture();
+    let old = b"old contents";
+    put_file(&f.app, "cv/trx/exists.json", old).await;
+    // Prime the checksum cache with the old content.
+    let st = body_json(f.app.clone().oneshot(req("GET", "/api/stat?path=cv/trx/exists.json&checksums=1")).await.unwrap()).await;
+    assert_eq!(st["md5"], md5_hex(old));
+    let ring_before = f.state.events.snapshot().len();
+
+    let new_obj = br#"{"v":1}"#;
+    let upd_obj = br#"{"v":2,"note":"updated"}"#;
+    let resp = post_batch(
+        &f.app,
+        json!([
+            {"path": "cv/trx/host-a/0000000000000042.json", "data_b64": b64(new_obj), "content_type": "application/json"},
+            {"path": "cv/trx/exists.json", "data_b64": b64(upd_obj)},
+        ]),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let j = body_json(resp).await;
+    assert_eq!(j["failed"], json!([]));
+    let w = j["written"].as_array().unwrap();
+    assert_eq!(w.len(), 2);
+    assert_eq!(w[0]["path"], "cv/trx/host-a/0000000000000042.json");
+    assert_eq!(w[0]["size"], new_obj.len());
+    assert_eq!(w[0]["md5"], md5_hex(new_obj));
+    assert_eq!(w[0]["sha256"], sha256_hex(new_obj));
+    assert_eq!(w[0]["created"], true);
+    assert_eq!(w[1]["path"], "cv/trx/exists.json");
+    assert_eq!(w[1]["md5"], md5_hex(upd_obj));
+    assert_eq!(w[1]["sha256"], sha256_hex(upd_obj));
+    assert_eq!(w[1]["created"], false);
+
+    // Bytes on disk, no temp files left behind.
+    let root = f._root.path();
+    assert_eq!(std::fs::read(root.join("cv/trx/host-a/0000000000000042.json")).unwrap(), new_obj);
+    assert_eq!(std::fs::read(root.join("cv/trx/exists.json")).unwrap(), upd_obj);
+    assert!(files_on_disk(root).iter().all(|p| !p.contains(ostore::TMP_MARKER)));
+
+    // One event per object, in request order, exactly like PUT.
+    let evs = f.state.events.snapshot();
+    assert_eq!(evs.len(), ring_before + 2);
+    let (a, b) = (&evs[ring_before], &evs[ring_before + 1]);
+    assert_eq!((a.kind.as_str(), a.path.as_str(), a.size), ("object.created", "cv/trx/host-a/0000000000000042.json", Some(new_obj.len() as u64)));
+    assert_eq!((b.kind.as_str(), b.path.as_str(), b.size), ("object.updated", "cv/trx/exists.json", Some(upd_obj.len() as u64)));
+    assert!(a.id < b.id);
+
+    // Checksum cache reflects the new content, not the primed old entry.
+    let st = body_json(f.app.clone().oneshot(req("GET", "/api/stat?path=cv/trx/exists.json&checksums=1")).await.unwrap()).await;
+    assert_eq!(st["md5"], md5_hex(upd_obj));
+    assert_eq!(st["sha256"], sha256_hex(upd_obj));
+
+    // Upload + batch metrics.
+    let m = &f.state.metrics;
+    use std::sync::atomic::Ordering::Relaxed;
+    assert_eq!(m.objects_written.load(Relaxed), 3);
+    assert_eq!(m.upload_bytes.load(Relaxed), (old.len() + new_obj.len() + upd_obj.len()) as u64);
+    assert_eq!(m.batch_ok.load(Relaxed), 1);
+    assert_eq!(m.batch_objects_written.load(Relaxed), 2);
+    let text = String::from_utf8(body_bytes(f.app.clone().oneshot(req("GET", "/api/metrics")).await.unwrap()).await.to_vec()).unwrap();
+    assert!(text.contains("ostore_batch_requests_total{result=\"ok\"} 1"), "{text}");
+    assert!(text.contains("ostore_batch_objects_total{result=\"written\"} 2"));
+}
+
+#[tokio::test]
+async fn batch_is_visible_to_prefix_sse_subscriber() {
+    let f = fixture();
+    let resp = f.app.clone().oneshot(req("GET", "/api/events?prefix=cv/&replay=0")).await.unwrap();
+    let mut body = resp.into_body();
+    let r = post_batch(
+        &f.app,
+        json!([
+            {"path": "cv/1.json", "data_b64": b64(b"1")},
+            {"path": "other/2.json", "data_b64": b64(b"2")},
+            {"path": "cv/3.json", "data_b64": b64(b"3")},
+        ]),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let mut acc = String::new();
+    read_body_until(&mut body, &mut acc, |a| a.contains("cv/3.json")).await;
+    assert_eq!(acc.matches("event: object.created").count(), 2, "{acc}");
+    assert!(acc.find("cv/1.json").unwrap() < acc.find("cv/3.json").unwrap());
+    assert!(!acc.contains("other/2.json"));
+}
+
+/// A rejected batch: 400 with `code`, nothing written, no events.
+async fn assert_batch_rejected(f: &Fixture, objects: Value, code: &str) {
+    let files_before = files_on_disk(f._root.path());
+    let events_before = f.state.events.snapshot().len();
+    let resp = post_batch(&f.app, objects).await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let j = body_json(resp).await;
+    assert_eq!(j["code"], code, "{j}");
+    assert_eq!(files_on_disk(f._root.path()), files_before, "rejected batch touched the disk");
+    assert_eq!(f.state.events.snapshot().len(), events_before, "rejected batch published events");
+}
+
+#[tokio::test]
+async fn batch_validation_errors_write_nothing() {
+    let f = fixture();
+    let ok = json!({"path": "v/ok.json", "data_b64": b64(b"ok")});
+    // The invalid object comes last, so a non-atomic validator would already
+    // have written the valid ones.
+    for bad_path in ["", "/", "/etc/passwd", "../escape", "a/../../b", ".ostore/webhooks.json"] {
+        assert_batch_rejected(&f, json!([ok.clone(), {"path": bad_path, "data_b64": b64(b"x")}]), "BAD_PATH").await;
+    }
+    assert_batch_rejected(&f, json!([ok.clone(), {"path": "v/b.json", "data_b64": "%%% not base64"}]), "BAD_BASE64").await;
+    let too_many: Vec<Value> = (0..257).map(|i| json!({"path": format!("v/{i}"), "data_b64": b64(b"x")})).collect();
+    assert_batch_rejected(&f, json!(too_many), "TOO_MANY_OBJECTS").await;
+    let half = b64(&vec![b'h'; 8 * 1024 * 1024]);
+    assert_batch_rejected(
+        &f,
+        json!([{"path": "v/h1", "data_b64": half}, {"path": "v/h2", "data_b64": half}, {"path": "v/h3", "data_b64": b64(b"!")}]),
+        "BODY_TOO_LARGE",
+    )
+    .await;
+
+    // Malformed JSON, and a raw body over the route's transport limit.
+    let r = Request::builder()
+        .method("POST")
+        .uri("/api/batch")
+        .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+        .body(Body::from("{\"objects\":"))
+        .unwrap();
+    let resp = f.app.clone().oneshot(r).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(body_json(resp).await["code"], "BAD_JSON");
+    let r = Request::builder()
+        .method("POST")
+        .uri("/api/batch")
+        .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+        .body(Body::from(vec![b' '; 26 * 1024 * 1024]))
+        .unwrap();
+    let resp = f.app.clone().oneshot(r).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(body_json(resp).await["code"], "BODY_TOO_LARGE");
+
+    assert!(files_on_disk(f._root.path()).is_empty());
+    assert_eq!(f.state.metrics.batch_rejected.load(std::sync::atomic::Ordering::Relaxed), 11);
+}
+
+#[tokio::test]
+async fn batch_reports_per_object_failures_and_continues() {
+    let f = fixture();
+    f.app.clone().oneshot(req_json("POST", "/api/mkdir", json!({"path": "p/adir"}))).await.unwrap();
+    put_file(&f.app, "p/afile", b"f").await;
+    let resp = post_batch(
+        &f.app,
+        json!([
+            {"path": "p/adir", "data_b64": b64(b"target is a directory")},
+            {"path": "p/good.json", "data_b64": b64(b"good")},
+            {"path": "p/afile/child", "data_b64": b64(b"parent is a file")},
+            {"path": "p/good2.json", "data_b64": b64(b"good2")},
+        ]),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let j = body_json(resp).await;
+    let written: Vec<&str> = j["written"].as_array().unwrap().iter().map(|w| w["path"].as_str().unwrap()).collect();
+    assert_eq!(written, ["p/good.json", "p/good2.json"]);
+    let failed = j["failed"].as_array().unwrap();
+    assert_eq!(failed.len(), 2, "{j}");
+    assert_eq!(failed[0]["path"], "p/adir");
+    assert!(failed[0]["error"].as_str().unwrap().starts_with("IS_A_DIR"), "{j}");
+    assert_eq!(failed[1]["path"], "p/afile/child");
+    assert!(failed[1]["error"].is_string());
+    assert!(f._root.path().join("p/adir").is_dir());
+    assert_eq!(std::fs::read(f._root.path().join("p/afile")).unwrap(), b"f");
+    assert_eq!(std::fs::read(f._root.path().join("p/good2.json")).unwrap(), b"good2");
+    // Only the successful objects produced events.
+    let created: Vec<String> = f.state.events.snapshot().iter().filter(|e| e.kind == "object.created").map(|e| e.path.clone()).collect();
+    assert_eq!(created, ["p/afile", "p/good.json", "p/good2.json"]);
+    assert_eq!(f.state.metrics.batch_objects_failed.load(std::sync::atomic::Ordering::Relaxed), 2);
+}
+
+#[tokio::test]
+async fn batch_accepts_exactly_256_objects() {
+    let f = fixture();
+    let objs: Vec<Value> = (0..256).map(|i| json!({"path": format!("cap/{i:04}.json"), "data_b64": b64(format!("{i}").as_bytes())})).collect();
+    let resp = post_batch(&f.app, json!(objs)).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let j = body_json(resp).await;
+    assert_eq!(j["written"].as_array().unwrap().len(), 256);
+    assert_eq!(j["failed"], json!([]));
+    assert_eq!(std::fs::read_dir(f._root.path().join("cap")).unwrap().count(), 256);
+    assert_eq!(f.state.events.snapshot().len(), 256);
+}
+
+#[tokio::test]
+async fn batch_accepts_full_16_mib_body_past_default_limit() {
+    let f = fixture();
+    let half = vec![b'z'; 8 * 1024 * 1024];
+    let resp = post_batch(&f.app, json!([{"path": "big/a", "data_b64": b64(&half)}, {"path": "big/b", "data_b64": b64(&half)}])).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let j = body_json(resp).await;
+    assert_eq!(j["written"][1]["size"], half.len());
+    assert_eq!(j["written"][1]["md5"], md5_hex(&half));
+    assert_eq!(std::fs::metadata(f._root.path().join("big/b")).unwrap().len(), half.len() as u64);
+}

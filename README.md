@@ -85,12 +85,13 @@ are rejected with `400 BAD_PATH`.
 | GET | `/api/stat?path=&checksums=` | Metadata for one object. |
 | PUT | `/api/files/{path}` | Raw-body streaming upload to an exact path. |
 | POST | `/api/upload?path=<dir>` | multipart/form-data upload (browser FormData). |
+| POST | `/api/batch` | `{"objects":[{"path","data_b64","content_type"?}]}` — write ≤256 small objects (≤16 MiB decoded) in one request (see [Batch writes](#batch-writes)). |
 | GET | `/api/files/{path}` | Download; supports `Range`. |
 | GET | `/api/thumb/{path}?w=` | JPEG thumbnail of an image (see [Thumbnails](#thumbnails)). |
 | DELETE | `/api/files/{path}?recursive=` | Delete file, or dir if empty (or `recursive=1`). |
 | POST | `/api/mkdir` | `{"path"}` — mkdir -p, idempotent. |
 | POST | `/api/move` | `{"from","to"}` — rename/move. |
-| GET | `/api/events?since=&replay=` | SSE stream; resumable by event id (see [Events](#events)). |
+| GET | `/api/events?since=&replay=&prefix=` | SSE stream; resumable by event id, optionally filtered to a path prefix (see [Events](#events)). |
 | POST | `/api/webhooks` | `{"url","events"?}` — register webhook. |
 | GET | `/api/webhooks` | List webhook registrations. |
 | DELETE | `/api/webhooks/{id}` | Remove a registration. |
@@ -149,8 +150,16 @@ curl -X DELETE -H "$AUTH" "$T/api/files/archive?recursive=1"
 # resume after a disconnect with ?since=<last id seen>, live-only with ?replay=0
 curl -N -H "$AUTH" "$T/api/events"
 curl -N -H "$AUTH" "$T/api/events?since=1792807221000123"
+# Only events under one prefix (replay + live), e.g. a sync log:
+curl -N -H "$AUTH" "$T/api/events?prefix=clipvault/sync/v1/&replay=0"
 # ... or from a browser where headers are impossible:
 #   new EventSource('/api/events?token=change-me')
+
+# Batch-write small objects in one round trip (base64 payloads)
+curl -X POST -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"objects":[{"path":"clipvault/sync/v1/trx/host-a/0000000000000042.json","data_b64":"eyJ2IjoxfQ=="}]}' \
+  "$T/api/batch"
+# {"written":[{"path":"clipvault/...0042.json","size":7,"md5":"...","sha256":"...","created":true}],"failed":[]}
 
 # Webhooks: register / list / delete (persisted in <root>/.ostore/webhooks.json)
 curl -X POST -H "$AUTH" -H 'Content-Type: application/json' \
@@ -240,6 +249,18 @@ Cursor rules for `GET /api/events` (the last 1024 events are retained):
 | no cursor | The last `?replay=N` events (default 100; `0` = live only) |
 | cursor older than the ring, or from a previous process | One `stream.reset` frame |
 
+`?prefix=<path>` (root-relative, no leading `/`, e.g. `clipvault/sync/v1/`)
+filters server-side: only events whose `path` starts with the prefix — or
+`object.moved` events whose `from` starts with it — are written, in both the
+replay and the live stream; `object.mkdir` matches on `path`. It is a plain
+string prefix (`a/b` also matches `a/bc/…`; end with `/` to scope to one
+directory). Cursors remain global event ids and the reset rules above are
+evaluated against the unfiltered ring; filtering happens after that
+selection, so a filtered stream may replay fewer (or zero) frames, and
+`?replay=N` counts matching events. Unrelated traffic still ages events out
+of the shared 1024-event ring, so a long-disconnected filtered client can
+still get `stream.reset`.
+
 Browsers send `Last-Event-ID` automatically when `EventSource` reconnects, so
 a reconnect never re-delivers old events. On `stream.reset` (also sent when
 a subscriber falls behind the live broadcast) a client must re-list what it
@@ -258,6 +279,34 @@ handlers. On failure
 it retries 3 times with backoff (1s, 5s, 15s), then drops that delivery — the
 registration itself is kept. Registrations persist across restarts in
 `<root>/.ostore/webhooks.json`.
+
+## Batch writes
+
+`POST /api/batch` writes a burst of small objects in one request:
+
+```json
+{"objects":[{"path":"clipvault/sync/v1/trx/host-a/0000000000000042.json","data_b64":"eyJ2IjoxfQ==","content_type":"application/json"}]}
+```
+
+```json
+{"written":[{"path":"clipvault/sync/v1/trx/host-a/0000000000000042.json","size":7,"md5":"…","sha256":"…","created":true}],"failed":[]}
+```
+
+- Limits: at most 256 objects and 16 MiB of decoded payload per request
+  (the route accepts request bodies up to ~25 MiB, above the 2 MB default).
+- The whole request is validated before anything is written; a violation is
+  `400` with code `TOO_MANY_OBJECTS`, `BODY_TOO_LARGE`, `BAD_PATH` (resolved
+  exactly like `PUT /api/files/{path}`, root rejected), `BAD_BASE64`
+  (standard, padded alphabet) or `BAD_JSON`, and nothing is written.
+- Objects are committed in request order with the same code path as `PUT`:
+  atomic temp file + fsync + rename, checksum cache refresh, upload metrics,
+  and one `object.created` / `object.updated` event each. `created` says
+  whether the path was new.
+- A per-object failure after validation (e.g. the target is a directory)
+  goes into `failed` as `{"path","error"}`; the others are still written
+  and the response is `200`.
+- `content_type` is accepted and ignored — as with `PUT`, the served type is
+  detected from the path/content on read.
 
 ## Thumbnails
 
@@ -290,6 +339,9 @@ text format. Scrape config: `authorization: {credentials: <token>}`.
 | `ostore_event_last_id`, `ostore_event_ring_len` | gauge | Event cursor head / retained events |
 | `ostore_sse_subscribers` | gauge | Open SSE streams |
 | `ostore_sse_resets_total` | counter | `stream.reset` frames (gaps, lagging clients) |
+| `ostore_sse_filtered_total` | counter | Live events withheld by subscribers' `?prefix=` filters |
+| `ostore_batch_requests_total{result=ok\|rejected}` | counter | `POST /api/batch` requests accepted / rejected with 400 |
+| `ostore_batch_objects_total{result=written\|failed}` | counter | Objects in accepted batches by outcome |
 | `ostore_webhook_deliveries_total{result=ok\|retry\|dropped}` | counter | Webhook outcomes |
 | `ostore_webhook_deliveries_in_flight`, `ostore_webhooks_registered` | gauge | Webhook load |
 | `ostore_root_disk_total_bytes` / `ostore_root_disk_available_bytes` | gauge | Space under `OSTORE_ROOT` |

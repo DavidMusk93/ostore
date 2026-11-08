@@ -8,6 +8,19 @@
 //! yields one `stream.reset` frame — the client must re-list. A subscriber
 //! that lags behind the live broadcast gets the same frame.
 //!
+//! Optional server-side filter:
+//!   ?prefix=<path>      root-relative path prefix (no leading `/`), e.g.
+//!                       `clipvault/sync/v1/`. Only events whose `path`
+//!                       starts with it — or `object.moved` events whose
+//!                       `from` starts with it — are written, both in the
+//!                       replay and on the live stream. Plain string prefix:
+//!                       `a/b` also matches `a/bc`; end with `/` to scope to
+//!                       one directory. Absent/empty = every event.
+//! Cursors stay global event ids and reset decisions are evaluated against
+//! the unfiltered ring; the filter is applied after that selection, so a
+//! filtered stream may replay fewer (or zero) frames. With `?replay=<n>` the
+//! cap counts matching events.
+//!
 //! Frame format:
 //!   id: <id>
 //!   event: <type>
@@ -27,13 +40,15 @@ use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 
 use crate::AppState;
-use crate::events::{DEFAULT_REPLAY, ObjectEvent, RING_CAP, Replay, STREAM_RESET};
+use crate::events::{DEFAULT_REPLAY, EventFilter, ObjectEvent, RING_CAP, Replay, STREAM_RESET};
 use crate::metrics::Metrics;
 
 #[derive(Deserialize, Default)]
 pub struct EventsQuery {
     since: Option<u64>,
     replay: Option<usize>,
+    /// Root-relative path prefix; see the module docs.
+    prefix: Option<String>,
 }
 
 fn to_sse(ev: &ObjectEvent) -> Event {
@@ -60,7 +75,11 @@ pub async fn sse(
             .and_then(|v| v.trim().parse::<u64>().ok())
     });
     let replay_n = q.replay.unwrap_or(DEFAULT_REPLAY).min(RING_CAP);
-    let (rx, replay) = st.events.subscribe(since, replay_n);
+    let filter = q.prefix.as_deref().map(EventFilter::prefix).unwrap_or_default();
+    if !filter.is_all() {
+        tracing::debug!(prefix = q.prefix.as_deref().unwrap_or(""), ?since, "SSE subscriber with prefix filter");
+    }
+    let (rx, replay) = st.events.subscribe_filtered(since, replay_n, &filter);
 
     let head: Vec<Result<Event, Infallible>> = match replay {
         Replay::Events(evs) => evs.iter().map(|ev| Ok(to_sse(ev))).collect(),
@@ -70,8 +89,16 @@ pub async fn sse(
     let metrics = st.metrics.clone();
     let live = BroadcastStream::new(rx).filter_map(move |r| {
         let metrics = metrics.clone();
+        let keep = match &r {
+            Ok(ev) => filter.matches(ev),
+            Err(_) => true,
+        };
         async move {
             match r {
+                Ok(_) if !keep => {
+                    metrics.sse_filtered.fetch_add(1, Ordering::Relaxed);
+                    None
+                }
                 Ok(ev) => Some(Ok(to_sse(&ev))),
                 Err(BroadcastStreamRecvError::Lagged(n)) => {
                     tracing::warn!(skipped = n, "SSE subscriber lagged, sending stream.reset");

@@ -98,6 +98,45 @@ fn etag_of(meta: &std::fs::Metadata) -> String {
     format!("W/\"{:x}-{:x}\"", meta.len(), mtime)
 }
 
+/// Result of [`write_object`]: `(size, md5_hex, sha256_hex, existed_before)`.
+pub(crate) type WriteOutcome = (u64, String, String, bool);
+
+/// Commit one object at an exact path with full `PUT` semantics, shared by
+/// `PUT /api/files/{*path}` and `POST /api/batch` so both produce identical
+/// side effects: refuse a directory target (409 `IS_A_DIR`), create parents,
+/// write atomically via [`stream_to_disk`] (temp file + fsync + rename, upload
+/// metrics), refresh `checksum_cache`, invalidate dir-size/topology caches,
+/// publish `object.created` / `object.updated`, and start cluster replication.
+/// `abs`/`rel` must come from [`paths::resolve_nonroot`].
+pub(crate) async fn write_object<S, E>(st: &AppState, abs: &std::path::Path, rel: &str, stream: S) -> Result<WriteOutcome, ApiError>
+where
+    S: futures::Stream<Item = Result<Bytes, E>> + Unpin,
+    E: std::fmt::Display,
+{
+    if tokio::fs::metadata(abs).await.map(|m| m.is_dir()).unwrap_or(false) {
+        return Err(ApiError::conflict("IS_A_DIR", format!("{rel} is a directory")));
+    }
+    if let Some(parent) = abs.parent() {
+        tokio::fs::create_dir_all(parent).await.map_err(ApiError::internal)?;
+    }
+    let existed = tokio::fs::metadata(abs).await.is_ok();
+    let (size, md5, sha256) = stream_to_disk(st, abs, stream).await?;
+    if let Ok(m) = tokio::fs::metadata(abs).await {
+        let mtime = m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_nanos()).unwrap_or(0);
+        st.checksum_cache.insert_both(abs, size, mtime, md5.clone(), sha256.clone()).await;
+    } else {
+        st.checksum_cache.invalidate(abs).await;
+    }
+    st.invalidate_caches(abs).await;
+    let kind = if existed { events::UPDATED } else { events::CREATED };
+    st.publish(kind, rel, false, Some(size), None);
+    if let Some(cluster) = &st.cluster {
+        cluster.clone().replicate_put_bg(rel.to_string(), abs.to_path_buf());
+    }
+    tracing::info!(kind, path = %rel, size, "object written");
+    Ok((size, md5, sha256, existed))
+}
+
 /// PUT /api/files/{*path} — raw-body streaming upload to an exact path.
 pub async fn put_file(
     State(st): State<AppState>,
@@ -105,26 +144,7 @@ pub async fn put_file(
     body: Body,
 ) -> Result<Json<Value>, ApiError> {
     let (abs, rel) = paths::resolve_nonroot(&st.root, &path)?;
-    if tokio::fs::metadata(&abs).await.map(|m| m.is_dir()).unwrap_or(false) {
-        return Err(ApiError::conflict("IS_A_DIR", format!("{rel} is a directory")));
-    }
-    if let Some(parent) = abs.parent() {
-        tokio::fs::create_dir_all(parent).await.map_err(ApiError::internal)?;
-    }
-    let existed = tokio::fs::metadata(&abs).await.is_ok();
-    let stream = body.into_data_stream();
-    let (size, md5, sha256) = stream_to_disk(&st, &abs, stream).await?;
-    if let Ok(m) = tokio::fs::metadata(&abs).await {
-        let mtime = m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_nanos()).unwrap_or(0);
-        st.checksum_cache.insert(&abs, size, mtime, md5.clone()).await;
-    }
-    st.invalidate_caches(&abs).await;
-    let kind = if existed { events::UPDATED } else { events::CREATED };
-    st.publish(kind, &rel, false, Some(size), None);
-    if let Some(cluster) = &st.cluster {
-        cluster.clone().replicate_put_bg(rel.clone(), abs.clone());
-    }
-    tracing::info!(kind, path = %rel, size, "object written");
+    let (size, md5, sha256, _) = write_object(&st, &abs, &rel, body.into_data_stream()).await?;
     Ok(Json(json!({ "path": rel, "size": size, "md5": md5, "sha256": sha256 })))
 }
 

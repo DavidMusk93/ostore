@@ -2,6 +2,7 @@
 
 pub mod archive;
 pub mod auth_routes;
+pub mod batch;
 pub mod cluster;
 pub mod events;
 pub mod files;
@@ -49,6 +50,9 @@ pub fn build_router(state: AppState) -> Router {
         // default 2 MB extractor limit would reject them.
         .route("/thumb/{*path}", get(thumb::thumb))
         .route("/upload", post(files::upload_multipart).layer(DefaultBodyLimit::disable()))
+        // Batch of small objects as base64 JSON: its own limit (16 MiB decoded
+        // => ~21.3 MiB base64 + framing), well above the 2 MB default.
+        .route("/batch", post(batch::batch_put).layer(DefaultBodyLimit::max(batch::MAX_BODY_BYTES)))
         .route("/mkdir", post(files::mkdir))
         .route("/move", post(files::mv))
         .route("/events", get(events::sse))

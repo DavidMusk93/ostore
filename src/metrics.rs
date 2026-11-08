@@ -85,6 +85,15 @@ pub struct Metrics {
     events: [AtomicU64; ALL_KINDS.len()],
     pub sse_subscribers: AtomicI64,
     pub sse_resets: AtomicU64,
+    /// Live events suppressed by a subscriber's `?prefix=` filter.
+    pub sse_filtered: AtomicU64,
+    /// `POST /api/batch` requests accepted (validation passed).
+    pub batch_ok: AtomicU64,
+    /// `POST /api/batch` requests rejected with 400 (nothing written).
+    pub batch_rejected: AtomicU64,
+    /// Objects written / failed inside accepted batches.
+    pub batch_objects_written: AtomicU64,
+    pub batch_objects_failed: AtomicU64,
     pub webhook_ok: AtomicU64,
     pub webhook_retries: AtomicU64,
     pub webhook_dropped: AtomicU64,
@@ -143,6 +152,11 @@ impl Metrics {
             events: Default::default(),
             sse_subscribers: AtomicI64::new(0),
             sse_resets: AtomicU64::new(0),
+            sse_filtered: AtomicU64::new(0),
+            batch_ok: AtomicU64::new(0),
+            batch_rejected: AtomicU64::new(0),
+            batch_objects_written: AtomicU64::new(0),
+            batch_objects_failed: AtomicU64::new(0),
             webhook_ok: AtomicU64::new(0),
             webhook_retries: AtomicU64::new(0),
             webhook_dropped: AtomicU64::new(0),
@@ -503,6 +517,16 @@ impl Metrics {
         gauge(o, "ostore_event_ring_len", "Events retained for replay/resume.", st.events.ring_len() as i64);
         gauge(o, "ostore_sse_subscribers", "Open SSE connections.", self.sse_subscribers.load(Ordering::Relaxed));
         counter(o, "ostore_sse_resets_total", "stream.reset frames sent (cursor gap or lagging subscriber).", self.sse_resets.load(Ordering::Relaxed));
+        counter(o, "ostore_sse_filtered_total", "Live events not sent to a subscriber because of its ?prefix= filter.", self.sse_filtered.load(Ordering::Relaxed));
+
+        let _ = writeln!(o, "# HELP ostore_batch_requests_total POST /api/batch requests by outcome.");
+        let _ = writeln!(o, "# TYPE ostore_batch_requests_total counter");
+        let _ = writeln!(o, "ostore_batch_requests_total{{result=\"ok\"}} {}", self.batch_ok.load(Ordering::Relaxed));
+        let _ = writeln!(o, "ostore_batch_requests_total{{result=\"rejected\"}} {}", self.batch_rejected.load(Ordering::Relaxed));
+        let _ = writeln!(o, "# HELP ostore_batch_objects_total Objects in accepted batches by outcome.");
+        let _ = writeln!(o, "# TYPE ostore_batch_objects_total counter");
+        let _ = writeln!(o, "ostore_batch_objects_total{{result=\"written\"}} {}", self.batch_objects_written.load(Ordering::Relaxed));
+        let _ = writeln!(o, "ostore_batch_objects_total{{result=\"failed\"}} {}", self.batch_objects_failed.load(Ordering::Relaxed));
 
         let _ = writeln!(o, "# HELP ostore_webhook_deliveries_total Webhook delivery outcomes.");
         let _ = writeln!(o, "# TYPE ostore_webhook_deliveries_total counter");
