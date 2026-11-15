@@ -45,13 +45,14 @@ pub struct GDriveFileMeta {
 
 #[derive(Clone)]
 pub struct GDriveClient {
-    pub config: GDriveConfig,
+    pub config: Arc<RwLock<GDriveConfig>>,
     client: reqwest::Client,
     token_cache: Arc<RwLock<Option<(String, Instant)>>>,
     folder_id_cache: Arc<RwLock<HashMap<String, String>>>,
     metadata_cache: Arc<RwLock<HashMap<String, (Instant, GDriveFileMeta)>>>,
     dir_listing_cache: Arc<RwLock<HashMap<String, (Instant, Vec<GDriveFileMeta>)>>>,
     upload_semaphore: Arc<Semaphore>,
+    auth_error: Arc<RwLock<Option<(String, Instant)>>>,
 }
 
 #[derive(Deserialize)]
@@ -59,6 +60,8 @@ struct TokenResponse {
     access_token: String,
     #[serde(default = "default_expires_in")]
     expires_in: u64,
+    #[serde(default)]
+    refresh_token: Option<String>,
 }
 
 fn default_expires_in() -> u64 {
@@ -109,13 +112,49 @@ impl GDriveClient {
             .unwrap_or_default();
 
         Self {
-            config,
+            config: Arc::new(RwLock::new(config)),
             client,
             token_cache: Arc::new(RwLock::new(None)),
             folder_id_cache: Arc::new(RwLock::new(HashMap::new())),
             metadata_cache: Arc::new(RwLock::new(HashMap::new())),
             dir_listing_cache: Arc::new(RwLock::new(HashMap::new())),
             upload_semaphore: Arc::new(Semaphore::new(2)),
+            auth_error: Arc::new(RwLock::new(None)),
+        }
+    }
+
+    pub async fn get_config(&self) -> GDriveConfig {
+        self.config.read().await.clone()
+    }
+
+    pub async fn get_auth_error(&self) -> Option<String> {
+        self.auth_error.read().await.as_ref().map(|(e, _)| e.clone())
+    }
+
+    pub async fn clear_auth_error(&self) {
+        *self.auth_error.write().await = None;
+    }
+
+    /// Persist rotated refresh token to /etc/ostore-cluster.json so updates survive daemon restarts.
+    pub fn persist_refresh_token_to_cluster_config(new_token: &str) {
+        let path = Path::new("/etc/ostore-cluster.json");
+        if path.exists() {
+            if let Ok(content) = std::fs::read_to_string(path) {
+                if let Ok(mut cluster_cfg) = serde_json::from_str::<crate::cluster::ClusterConfig>(&content) {
+                    let mut updated = false;
+                    for node in &mut cluster_cfg.nodes {
+                        if node.id == "gdrive" || node.node_type.as_deref() == Some("gdrive") {
+                            node.gdrive_refresh_token = Some(new_token.to_string());
+                            updated = true;
+                        }
+                    }
+                    if updated {
+                        if let Ok(json_text) = serde_json::to_string_pretty(&cluster_cfg) {
+                            let _ = std::fs::write(path, json_text);
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -138,21 +177,31 @@ impl GDriveClient {
         }))
     }
 
-    /// Execute an HTTP request closure with exponential backoff & jitter for Google Drive rate limits.
+    /// Execute an HTTP request closure with exponential backoff & jitter for Google Drive rate limits,
+    /// and automatic token injection with 401 Unauthorized token renewal and retry.
     pub async fn execute_with_retry<F>(&self, op_name: &str, make_builder: F) -> Result<reqwest::Response, String>
     where
-        F: Fn() -> reqwest::RequestBuilder,
+        F: Fn(&str) -> reqwest::RequestBuilder,
     {
         let mut attempt = 0;
         let max_attempts = 5;
         loop {
             attempt += 1;
-            let req = make_builder();
+            let token = self.get_access_token().await?;
+            let req = make_builder(&token);
             match req.send().await {
                 Ok(resp) => {
                     let status = resp.status();
                     if status.is_success() || status == reqwest::StatusCode::NOT_FOUND {
                         return Ok(resp);
+                    }
+
+                    if status == reqwest::StatusCode::UNAUTHORIZED && attempt < max_attempts {
+                        // Access token expired or invalidated; purge cache and retry with fresh token
+                        *self.token_cache.write().await = None;
+                        tracing::warn!(op = op_name, attempt, "Google Drive 401 Unauthorized; refreshed access token and retrying");
+                        tokio::time::sleep(Duration::from_millis(300)).await;
+                        continue;
                     }
 
                     let is_rate_limited = status == reqwest::StatusCode::TOO_MANY_REQUESTS;
@@ -210,8 +259,20 @@ impl GDriveClient {
         }
     }
 
-    /// Retrieve valid OAuth2 access token with automatic refresh and caching.
+    /// Retrieve valid OAuth2 access token with automatic refresh, caching, circuit breaking, and rotation tracking.
     pub async fn get_access_token(&self) -> Result<String, String> {
+        // Circuit breaker: check if recent permanent auth error occurred (e.g. invalid_grant)
+        {
+            let err_lock = self.auth_error.read().await;
+            if let Some((err, ts)) = &*err_lock {
+                if ts.elapsed() < Duration::from_secs(30)
+                    && (err.contains("invalid_grant") || err.contains("expired or revoked"))
+                {
+                    return Err(err.clone());
+                }
+            }
+        }
+
         {
             let lock = self.token_cache.read().await;
             if let Some((token, expires_at)) = &*lock {
@@ -229,10 +290,11 @@ impl GDriveClient {
             }
         }
 
+        let cfg = self.config.read().await.clone();
         let params = [
-            ("client_id", self.config.client_id.as_str()),
-            ("client_secret", self.config.client_secret.as_str()),
-            ("refresh_token", self.config.refresh_token.as_str()),
+            ("client_id", cfg.client_id.as_str()),
+            ("client_secret", cfg.client_secret.as_str()),
+            ("refresh_token", cfg.refresh_token.as_str()),
             ("grant_type", "refresh_token"),
         ];
 
@@ -247,13 +309,29 @@ impl GDriveClient {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            return Err(format!("OAuth token refresh failed HTTP {status}: {body}"));
+            let err_msg = format!("OAuth token refresh failed HTTP {status}: {body}");
+            tracing::warn!(status = %status, body = %body, "Google Drive OAuth token refresh failed");
+            *self.auth_error.write().await = Some((err_msg.clone(), Instant::now()));
+            return Err(err_msg);
         }
 
         let token_resp: TokenResponse = resp
             .json()
             .await
             .map_err(|e| format!("failed to decode OAuth token JSON: {e}"))?;
+
+        // If Google issued a rotated refresh token, update in memory and persist to cluster config!
+        if let Some(new_rt) = &token_resp.refresh_token {
+            if !new_rt.is_empty() && new_rt != &cfg.refresh_token {
+                tracing::info!("Google OAuth issued updated refresh token; persisting to cluster config");
+                let mut cfg_lock = self.config.write().await;
+                cfg_lock.refresh_token = new_rt.clone();
+                Self::persist_refresh_token_to_cluster_config(new_rt);
+            }
+        }
+
+        // Successfully refreshed: clear any prior auth errors
+        *self.auth_error.write().await = None;
 
         let expires_in_sec = token_resp.expires_in.saturating_sub(120).max(60);
         let expires_at = Instant::now() + Duration::from_secs(expires_in_sec);
@@ -264,10 +342,9 @@ impl GDriveClient {
 
     /// Fetch Google Drive account storage quota. Returns (total_bytes, available_bytes).
     pub async fn get_storage_quota(&self) -> Result<(u64, u64), String> {
-        let token = self.get_access_token().await?;
         let url = format!("{GDRIVE_API_BASE}/about?fields=storageQuota");
         let resp = self
-            .execute_with_retry("get_storage_quota", || {
+            .execute_with_retry("get_storage_quota", |token| {
                 self.client.get(&url).header("Authorization", format!("Bearer {token}"))
             })
             .await?;
@@ -293,9 +370,10 @@ impl GDriveClient {
 
     /// Recursively resolve or create folder hierarchy on Google Drive.
     pub async fn ensure_folder_path(&self, rel_dir: &str) -> Result<String, String> {
+        let root_folder_id = self.config.read().await.root_folder_id.clone();
         let rel_dir = rel_dir.trim_matches('/');
         if rel_dir.is_empty() {
-            return Ok(self.config.root_folder_id.clone());
+            return Ok(root_folder_id);
         }
 
         {
@@ -306,7 +384,7 @@ impl GDriveClient {
         }
 
         let parts: Vec<&str> = rel_dir.split('/').filter(|p| !p.is_empty()).collect();
-        let mut current_parent_id = self.config.root_folder_id.clone();
+        let mut current_parent_id = root_folder_id;
         let mut current_path = String::new();
 
         for part in parts {
@@ -324,7 +402,6 @@ impl GDriveClient {
             }
 
             // Look up part in current_parent_id
-            let token = self.get_access_token().await?;
             let escaped_name = part.replace('\'', "\\'");
             let q = format!(
                 "'{current_parent_id}' in parents and name = '{escaped_name}' and mimeType = '{FOLDER_MIME_TYPE}' and trashed = false"
@@ -332,7 +409,7 @@ impl GDriveClient {
             let url = format!("{GDRIVE_API_BASE}/files?q={}&fields=files(id,name)&pageSize=1", urlencoding::encode(&q));
 
             let resp = self
-                .execute_with_retry("folder query", || {
+                .execute_with_retry("folder query", |token| {
                     self.client.get(&url).header("Authorization", format!("Bearer {token}"))
                 })
                 .await?;
@@ -350,7 +427,7 @@ impl GDriveClient {
                         "parents": [current_parent_id]
                     });
                     let create_resp = self
-                        .execute_with_retry("create folder", || {
+                        .execute_with_retry("create folder", |token| {
                             self.client
                                 .post(&create_url)
                                 .header("Authorization", format!("Bearer {token}"))
@@ -382,9 +459,10 @@ impl GDriveClient {
 
     /// Read-only folder path lookup without creating folders if missing.
     pub async fn resolve_folder_path(&self, rel_dir: &str) -> Result<Option<String>, String> {
+        let root_folder_id = self.config.read().await.root_folder_id.clone();
         let rel_dir = rel_dir.trim_matches('/');
         if rel_dir.is_empty() {
-            return Ok(Some(self.config.root_folder_id.clone()));
+            return Ok(Some(root_folder_id));
         }
 
         {
@@ -395,7 +473,7 @@ impl GDriveClient {
         }
 
         let parts: Vec<&str> = rel_dir.split('/').filter(|p| !p.is_empty()).collect();
-        let mut current_parent_id = self.config.root_folder_id.clone();
+        let mut current_parent_id = root_folder_id;
         let mut current_path = String::new();
 
         for part in parts {
@@ -412,7 +490,6 @@ impl GDriveClient {
                 }
             }
 
-            let token = self.get_access_token().await?;
             let escaped_name = part.replace('\'', "\\'");
             let q = format!(
                 "'{current_parent_id}' in parents and name = '{escaped_name}' and mimeType = '{FOLDER_MIME_TYPE}' and trashed = false"
@@ -420,7 +497,7 @@ impl GDriveClient {
             let url = format!("{GDRIVE_API_BASE}/files?q={}&fields=files(id,name)&pageSize=1", urlencoding::encode(&q));
 
             let resp = self
-                .execute_with_retry("folder query", || {
+                .execute_with_retry("folder query", |token| {
                     self.client.get(&url).header("Authorization", format!("Bearer {token}"))
                 })
                 .await?;
@@ -462,7 +539,6 @@ impl GDriveClient {
                 return Ok(Vec::new());
             }
         };
-        let token = self.get_access_token().await?;
         let mut results = Vec::new();
         let mut page_token: Option<String> = None;
 
@@ -478,7 +554,7 @@ impl GDriveClient {
             }
 
             let resp = self
-                .execute_with_retry("list_dir", || {
+                .execute_with_retry("list_dir", |token| {
                     self.client.get(&url).header("Authorization", format!("Bearer {token}"))
                 })
                 .await?;
@@ -593,14 +669,12 @@ impl GDriveClient {
             .first_or_octet_stream()
             .to_string();
 
-        let token = self.get_access_token().await?;
-
         let actual_size = file_bytes.len() as u64;
         let meta = if let Some(exist) = existing {
             // Update file content via PATCH
             let url = format!("{GDRIVE_UPLOAD_BASE}/files/{}?uploadType=media&fields=id,name,mimeType,size,md5Checksum,modifiedTime", exist.id);
             let resp = self
-                .execute_with_retry("patch gdrive file", || {
+                .execute_with_retry("patch gdrive file", |token| {
                     self.client
                         .patch(&url)
                         .header("Authorization", format!("Bearer {token}"))
@@ -648,7 +722,7 @@ impl GDriveClient {
 
             let url = format!("{GDRIVE_UPLOAD_BASE}/files?uploadType=multipart&fields=id,name,mimeType,size,md5Checksum,modifiedTime");
             let resp = self
-                .execute_with_retry("multipart gdrive upload", || {
+                .execute_with_retry("multipart gdrive upload", |token| {
                     self.client
                         .post(&url)
                         .header("Authorization", format!("Bearer {token}"))
@@ -699,10 +773,9 @@ impl GDriveClient {
     pub async fn delete_file(&self, rel_path: &str) -> Result<(), String> {
         let rel_path = rel_path.trim_matches('/').to_string();
         if let Some(existing) = self.get_file_metadata(&rel_path).await? {
-            let token = self.get_access_token().await?;
             let url = format!("{GDRIVE_API_BASE}/files/{}", existing.id);
             let resp = self
-                .execute_with_retry("delete gdrive file", || {
+                .execute_with_retry("delete gdrive file", |token| {
                     self.client
                         .delete(&url)
                         .header("Authorization", format!("Bearer {token}"))

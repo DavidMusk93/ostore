@@ -542,6 +542,240 @@ impl Metrics {
         }
         out
     }
+
+    /// Produce structured JSON metrics summary for the Web UI Metrics Panel.
+    pub async fn summary_json(&self, st: &crate::AppState) -> serde_json::Value {
+        let uptime_secs = self.started.elapsed().as_secs();
+        let (proc_cpu_ratio, sys_cpu_ratio) = self.sample_cpu();
+        let proc_cpu_pct = (proc_cpu_ratio * 100.0 * 10.0).round() / 10.0;
+        let host_cpu_pct = (sys_cpu_ratio * 100.0 * 10.0).round() / 10.0;
+
+        let sys_mem = read_system_mem();
+        let (host_mem_total, host_mem_avail, host_mem_used) = sys_mem.unwrap_or((0, 0, 0));
+        let host_mem_pct = if host_mem_total > 0 {
+            ((host_mem_used as f64 / host_mem_total as f64) * 1000.0).round() / 10.0
+        } else {
+            0.0
+        };
+
+        let proc_mem = read_process_mem();
+        let (proc_rss, proc_vms) = proc_mem.unwrap_or((0, 0));
+
+        let disk = disk_space(&st.root);
+        let (disk_total, disk_avail) = disk.unwrap_or((0, 0));
+        let disk_used = disk_total.saturating_sub(disk_avail);
+        let disk_used_pct = if disk_total > 0 {
+            ((disk_used as f64 / disk_total as f64) * 1000.0).round() / 10.0
+        } else {
+            0.0
+        };
+
+        // HTTP status distribution
+        let mut total_reqs: u64 = 0;
+        let mut status_2xx: u64 = 0;
+        let mut status_3xx: u64 = 0;
+        let mut status_4xx: u64 = 0;
+        let mut status_5xx: u64 = 0;
+        if let Ok(m) = self.requests.lock() {
+            for ((_route, _method, status), count) in m.iter() {
+                total_reqs += *count;
+                match *status {
+                    200..=299 => status_2xx += *count,
+                    300..=399 => status_3xx += *count,
+                    400..=499 => status_4xx += *count,
+                    500..=599 => status_5xx += *count,
+                    _ => {}
+                }
+            }
+        }
+
+        // Checksum cache hit ratio
+        let cache_hits = st.checksum_cache.hits.load(Ordering::Relaxed);
+        let cache_misses = st.checksum_cache.misses.load(Ordering::Relaxed);
+        let cache_total = cache_hits + cache_misses;
+        let cache_hit_pct = if cache_total > 0 {
+            ((cache_hits as f64 / cache_total as f64) * 1000.0).round() / 10.0
+        } else {
+            100.0
+        };
+        let cache_entries = st.checksum_cache.len().await;
+
+        // Cluster node statuses
+        let mut cluster_nodes = Vec::new();
+        let mut healthy_nodes_count = 0;
+        let mut total_nodes_count = 0;
+        let mut cluster_has_error = false;
+        let mut cluster_error_msg = None;
+
+        if let Some(cluster) = &st.cluster {
+            let statuses = cluster.get_node_statuses().await;
+            total_nodes_count = statuses.len();
+            for n in statuses {
+                if n.healthy {
+                    healthy_nodes_count += 1;
+                } else {
+                    cluster_has_error = true;
+                    if cluster_error_msg.is_none() {
+                        cluster_error_msg = n.error.clone();
+                    }
+                }
+                cluster_nodes.push(serde_json::json!({
+                    "id": n.id,
+                    "name": n.name,
+                    "is_local": n.is_local,
+                    "healthy": n.healthy,
+                    "rtt_ms": n.rtt_ms,
+                    "disk_total_bytes": n.disk_total_bytes,
+                    "disk_available_bytes": n.disk_available_bytes,
+                    "error": n.error,
+                    "node_type": n.node_type
+                }));
+            }
+        }
+
+        // Overall health assessment
+        let (health_status, status_msg) = if disk_used_pct > 95.0 {
+            ("warning", format!("Host disk critically full ({disk_used_pct}%)"))
+        } else if status_5xx > 10 && status_5xx > total_reqs / 20 {
+            ("degraded", format!("Elevated 5xx server errors ({status_5xx} requests)"))
+        } else if cluster_has_error {
+            ("warning", format!("Cluster node degraded: {}", cluster_error_msg.unwrap_or_else(|| "1 or more nodes offline".to_string())))
+        } else {
+            ("healthy", "All storage nodes and background services operational".to_string())
+        };
+
+        // Node replication stats breakdown
+        let node_repl_stats: BTreeMap<String, serde_json::Value> = if let Ok(m) = self.node_replication_stats.lock() {
+            m.iter()
+                .map(|(k, v)| {
+                    (k.clone(), serde_json::json!({
+                        "success_count": v.success_count,
+                        "failure_count": v.failure_count,
+                        "bytes_replicated": v.bytes_replicated,
+                        "last_latency_ms": v.last_latency_ms
+                    }))
+                })
+                .collect()
+        } else {
+            BTreeMap::new()
+        };
+
+        // Node sync stats breakdown
+        let node_sync_stats: BTreeMap<String, serde_json::Value> = if let Ok(m) = self.node_sync_stats.lock() {
+            m.iter()
+                .map(|(k, v)| {
+                    (k.clone(), serde_json::json!({
+                        "synced_files": v.synced_files,
+                        "skipped_files": v.skipped_files,
+                        "failed_files": v.failed_files,
+                        "bytes_transferred": v.bytes_transferred,
+                        "last_duration_ms": v.last_duration_ms,
+                        "last_speed_bps": v.last_speed_bps
+                    }))
+                })
+                .collect()
+        } else {
+            BTreeMap::new()
+        };
+
+        serde_json::json!({
+            "status": health_status,
+            "status_message": status_msg,
+            "uptime_seconds": uptime_secs,
+            "version": "0.1.0",
+            "system": {
+                "host_cpu_pct": host_cpu_pct,
+                "process_cpu_pct": proc_cpu_pct,
+                "host_mem_total_bytes": host_mem_total,
+                "host_mem_used_bytes": host_mem_used,
+                "host_mem_available_bytes": host_mem_avail,
+                "host_mem_pct": host_mem_pct,
+                "process_rss_bytes": proc_rss,
+                "process_vms_bytes": proc_vms,
+                "disk_total_bytes": disk_total,
+                "disk_available_bytes": disk_avail,
+                "disk_used_bytes": disk_used,
+                "disk_used_pct": disk_used_pct
+            },
+            "cluster": {
+                "nodes": cluster_nodes,
+                "total_nodes": total_nodes_count,
+                "healthy_nodes": healthy_nodes_count,
+                "fleet_sync": {
+                    "in_progress": self.sync_in_progress.load(Ordering::Relaxed) > 0,
+                    "total_synced": self.sync_total_synced.load(Ordering::Relaxed),
+                    "total_skipped": self.sync_total_skipped.load(Ordering::Relaxed),
+                    "total_failed": self.sync_total_failed.load(Ordering::Relaxed),
+                    "total_bytes": self.sync_total_bytes.load(Ordering::Relaxed),
+                    "total_files_checked": self.sync_total_files_checked.load(Ordering::Relaxed),
+                    "last_duration_ms": self.sync_last_duration_ms.load(Ordering::Relaxed),
+                    "last_speed_bps": self.sync_last_speed_bps.load(Ordering::Relaxed),
+                    "last_scan_ms": self.sync_last_scan_ms.load(Ordering::Relaxed),
+                    "last_probe_ms": self.sync_last_probe_ms.load(Ordering::Relaxed),
+                    "last_transfer_ms": self.sync_last_transfer_ms.load(Ordering::Relaxed),
+                    "node_stats": node_sync_stats
+                },
+                "replication": {
+                    "success_total": self.replication_success.load(Ordering::Relaxed),
+                    "failure_total": self.replication_failure.load(Ordering::Relaxed),
+                    "bytes_total": self.replication_bytes.load(Ordering::Relaxed),
+                    "last_latency_ms": self.replication_last_latency_ms.load(Ordering::Relaxed),
+                    "nodes": node_repl_stats
+                }
+            },
+            "traffic": {
+                "http_in_flight": self.http_in_flight.load(Ordering::Relaxed),
+                "uploads_in_flight": self.uploads_in_flight.load(Ordering::Relaxed),
+                "upload_bytes_total": self.upload_bytes.load(Ordering::Relaxed),
+                "download_bytes_total": self.download_bytes.load(Ordering::Relaxed),
+                "objects_written_total": self.objects_written.load(Ordering::Relaxed),
+                "upload_failures_total": self.upload_failures.load(Ordering::Relaxed),
+                "sse_subscribers": self.sse_subscribers.load(Ordering::Relaxed),
+                "sse_resets_total": self.sse_resets.load(Ordering::Relaxed),
+                "sse_filtered_total": self.sse_filtered.load(Ordering::Relaxed),
+                "batch": {
+                    "ok": self.batch_ok.load(Ordering::Relaxed),
+                    "rejected": self.batch_rejected.load(Ordering::Relaxed),
+                    "objects_written": self.batch_objects_written.load(Ordering::Relaxed),
+                    "objects_failed": self.batch_objects_failed.load(Ordering::Relaxed)
+                },
+                "s3": {
+                    "gets": self.s3_gets.load(Ordering::Relaxed),
+                    "heads": self.s3_heads.load(Ordering::Relaxed),
+                    "puts": self.s3_puts.load(Ordering::Relaxed),
+                    "deletes": self.s3_deletes.load(Ordering::Relaxed),
+                    "lists": self.s3_lists.load(Ordering::Relaxed),
+                    "denied": self.s3_denied.load(Ordering::Relaxed),
+                    "bytes": self.s3_bytes.load(Ordering::Relaxed)
+                },
+                "thumbnails": {
+                    "hits": self.thumbs_hit.load(Ordering::Relaxed),
+                    "generated": self.thumbs_generated.load(Ordering::Relaxed),
+                    "failed": self.thumbs_failed.load(Ordering::Relaxed)
+                },
+                "webhooks": {
+                    "ok": self.webhook_ok.load(Ordering::Relaxed),
+                    "retries": self.webhook_retries.load(Ordering::Relaxed),
+                    "dropped": self.webhook_dropped.load(Ordering::Relaxed),
+                    "in_flight": self.webhook_in_flight.load(Ordering::Relaxed),
+                    "registered": st.webhooks.list().len()
+                }
+            },
+            "checksum_cache": {
+                "entries": cache_entries,
+                "hits": cache_hits,
+                "misses": cache_misses,
+                "hit_ratio_pct": cache_hit_pct
+            },
+            "http_requests": {
+                "total": total_reqs,
+                "status_2xx": status_2xx,
+                "status_3xx": status_3xx,
+                "status_4xx": status_4xx,
+                "status_5xx": status_5xx
+            }
+        })
+    }
 }
 
 fn esc(s: &str) -> String {
@@ -677,4 +911,9 @@ pub async fn handler(State(st): State<AppState>) -> impl IntoResponse {
         [(header::CONTENT_TYPE, HeaderValue::from_static("text/plain; version=0.0.4; charset=utf-8"))],
         st.metrics.render(&st).await,
     )
+}
+
+/// GET /api/metrics/summary — structured JSON metrics and health status for UI
+pub async fn summary_handler(State(st): State<AppState>) -> axum::Json<serde_json::Value> {
+    axum::Json(st.metrics.summary_json(&st).await)
 }

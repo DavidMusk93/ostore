@@ -609,6 +609,23 @@ async fn metrics_exposition() {
     assert!(text.contains("ostore_sync_phase_duration_seconds{phase=\"local_scan\"}"));
 }
 
+#[tokio::test]
+async fn metrics_summary_json() {
+    let f = fixture();
+    put_file(&f.app, "summary_test.bin", b"hello world metrics").await;
+    let resp = f.app.clone().oneshot(req("GET", "/api/metrics/summary")).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = body_bytes(resp).await;
+    let val: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(val["status"], "healthy");
+    assert!(val["uptime_seconds"].as_u64().is_some());
+    assert_eq!(val["version"], "0.1.0");
+    assert!(val["system"]["host_cpu_pct"].as_f64().is_some());
+    assert!(val["system"]["disk_total_bytes"].as_u64().is_some());
+    assert!(val["traffic"]["objects_written_total"].as_u64().unwrap() >= 1);
+    assert!(val["checksum_cache"]["hit_ratio_pct"].as_f64().is_some());
+}
+
 #[test]
 fn sweep_removes_stale_tmp_files() {
     let root = tempfile::tempdir().unwrap();

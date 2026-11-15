@@ -104,6 +104,10 @@ impl ChecksumCache {
         let mut lock = self.cache.write().await;
         lock.remove(abs);
     }
+
+    pub async fn len(&self) -> usize {
+        self.cache.read().await.len()
+    }
 }
 
 /// Fast cache of dir_path -> (mtime_nanos, total_bytes, file_count)

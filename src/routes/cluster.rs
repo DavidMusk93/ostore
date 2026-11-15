@@ -420,34 +420,74 @@ fn html_message(title: &str, msg: &str, success: bool) -> axum::response::Respon
 /// GET /api/cluster/gdrive/status — return Google Drive connection status and storage quota.
 pub async fn gdrive_status(State(st): State<AppState>) -> Result<Json<Value>, ApiError> {
     if let Some(cluster) = &st.cluster {
+        let (saved_has_cfg, saved_client_id, saved_root) = {
+            let cluster_cfg = cluster.config.read().unwrap();
+            let node = cluster_cfg.nodes.iter().find(|n| n.id == "gdrive" || n.node_type.as_deref() == Some("gdrive"));
+            match node {
+                Some(n) => (
+                    n.gdrive_client_id.is_some() && n.gdrive_refresh_token.is_some(),
+                    n.gdrive_client_id.clone().unwrap_or_default(),
+                    n.gdrive_root_folder_id.clone().unwrap_or_else(|| "root".to_string()),
+                ),
+                None => (false, String::new(), "root".to_string()),
+            }
+        };
+
         if let Some(gdrive) = cluster.gdrive.read().await.clone() {
+            let cfg = gdrive.get_config().await;
+            let auth_err = gdrive.get_auth_error().await;
+
             match gdrive.get_storage_quota().await {
                 Ok((total, avail)) => {
                     return Ok(Json(json!({
                         "connected": true,
-                        "client_id": mask_str(&gdrive.config.client_id),
-                        "root_folder_id": gdrive.config.root_folder_id,
+                        "configured": true,
+                        "auth_expired": false,
+                        "client_id": mask_str(&cfg.client_id),
+                        "raw_client_id": cfg.client_id,
+                        "root_folder_id": cfg.root_folder_id,
                         "disk_total_bytes": total,
                         "disk_available_bytes": avail,
                         "error": null
                     })));
                 }
                 Err(e) => {
+                    let is_expired = e.contains("invalid_grant")
+                        || e.contains("expired or revoked")
+                        || auth_err.as_ref().map(|a| a.contains("invalid_grant") || a.contains("expired or revoked")).unwrap_or(false);
                     return Ok(Json(json!({
                         "connected": false,
-                        "client_id": mask_str(&gdrive.config.client_id),
-                        "root_folder_id": gdrive.config.root_folder_id,
+                        "configured": true,
+                        "auth_expired": is_expired,
+                        "client_id": mask_str(&cfg.client_id),
+                        "raw_client_id": cfg.client_id,
+                        "root_folder_id": cfg.root_folder_id,
                         "disk_total_bytes": 0,
                         "disk_available_bytes": 0,
                         "error": e
                     })));
                 }
             }
+        } else if saved_has_cfg {
+            return Ok(Json(json!({
+                "connected": false,
+                "configured": true,
+                "auth_expired": true,
+                "client_id": mask_str(&saved_client_id),
+                "raw_client_id": saved_client_id,
+                "root_folder_id": saved_root,
+                "disk_total_bytes": 0,
+                "disk_available_bytes": 0,
+                "error": "Google Drive token expired or revoked. Please re-authorize."
+            })));
         }
     }
     Ok(Json(json!({
         "connected": false,
+        "configured": false,
+        "auth_expired": false,
         "client_id": null,
+        "raw_client_id": "",
         "root_folder_id": "root",
         "disk_total_bytes": 0,
         "disk_available_bytes": 0,
@@ -457,16 +497,42 @@ pub async fn gdrive_status(State(st): State<AppState>) -> Result<Json<Value>, Ap
 
 #[derive(Deserialize)]
 pub struct AuthUrlReq {
-    pub client_id: String,
-    pub client_secret: String,
+    pub client_id: Option<String>,
+    pub client_secret: Option<String>,
     pub redirect_uri: Option<String>,
 }
 
 /// POST /api/cluster/gdrive/auth-url — generate Google OAuth authorization URL.
 pub async fn gdrive_auth_url(
-    State(_st): State<AppState>,
+    State(st): State<AppState>,
     Json(req): Json<AuthUrlReq>,
 ) -> Result<Json<Value>, ApiError> {
+    let mut client_id = req.client_id.unwrap_or_default().trim().to_string();
+    let mut client_secret = req.client_secret.unwrap_or_default().trim().to_string();
+
+    // Fall back to saved cluster config credentials if empty
+    if client_id.is_empty() || client_secret.is_empty() {
+        if let Some(cluster) = &st.cluster {
+            let cluster_cfg = cluster.config.read().unwrap();
+            if let Some(node) = cluster_cfg.nodes.iter().find(|n| n.id == "gdrive" || n.node_type.as_deref() == Some("gdrive")) {
+                if client_id.is_empty() {
+                    if let Some(cid) = &node.gdrive_client_id {
+                        client_id = cid.clone();
+                    }
+                }
+                if client_secret.is_empty() {
+                    if let Some(sec) = &node.gdrive_client_secret {
+                        client_secret = sec.clone();
+                    }
+                }
+            }
+        }
+    }
+
+    if client_id.is_empty() || client_secret.is_empty() {
+        return Err(ApiError::bad_request("MISSING_CREDENTIALS", "Client ID and Client Secret are required"));
+    }
+
     let now = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0);
     let state = format!("{:x}{:x}", now, std::process::id());
     let redirect = req
@@ -474,7 +540,7 @@ pub async fn gdrive_auth_url(
         .unwrap_or_else(|| "https://xyz69.top/ostore/api/cluster/gdrive/callback".to_string());
 
     tracing::info!(
-        client_id = %mask_str(&req.client_id),
+        client_id = %mask_str(&client_id),
         redirect = %redirect,
         state = %state,
         "generating gdrive oauth url"
@@ -486,8 +552,8 @@ pub async fn gdrive_auth_url(
         lock.insert(
             state.clone(),
             (
-                req.client_id.clone(),
-                req.client_secret.clone(),
+                client_id.clone(),
+                client_secret.clone(),
                 redirect.clone(),
                 std::time::Instant::now(),
             ),
@@ -496,7 +562,7 @@ pub async fn gdrive_auth_url(
 
     let url = format!(
         "https://accounts.google.com/o/oauth2/v2/auth?client_id={}&redirect_uri={}&response_type=code&scope=https://www.googleapis.com/auth/drive&access_type=offline&prompt=consent&state={}",
-        urlencoding::encode(&req.client_id),
+        urlencoding::encode(&client_id),
         urlencoding::encode(&redirect),
         urlencoding::encode(&state)
     );
@@ -587,11 +653,21 @@ pub async fn gdrive_callback(
     };
 
     if let Some(cluster) = &st.cluster {
+        let existing_root = {
+            let cluster_cfg = cluster.config.read().unwrap();
+            cluster_cfg
+                .nodes
+                .iter()
+                .find(|n| n.id == "gdrive" || n.node_type.as_deref() == Some("gdrive"))
+                .and_then(|n| n.gdrive_root_folder_id.clone())
+                .unwrap_or_else(|| "root".to_string())
+        };
+
         let cfg = crate::cluster::gdrive::GDriveConfig {
             client_id,
             client_secret,
             refresh_token: refresh_token.to_string(),
-            root_folder_id: "root".to_string(),
+            root_folder_id: existing_root,
         };
         if let Err(e) = cluster.update_and_persist_gdrive(cfg).await {
             tracing::error!(error = %e, "update_and_persist_gdrive failed");

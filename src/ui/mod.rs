@@ -1242,6 +1242,12 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
         <button class="btn" onclick="signOut()" title="Sign out current session">
           <span>Sign Out</span>
         </button>
+        <button class="btn" id="metricsHeaderBtn" onclick="openMetricsModal()" title="View System Telemetry & Health Metrics">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M18 20V10M12 20V4M6 20v-6"/>
+          </svg>
+          <span id="metricsHeaderLabel">Metrics</span>
+        </button>
         <button class="btn" id="gdriveHeaderBtn" onclick="openGDriveModal()" title="Google Drive Cloud Storage Node">
           <svg width="14" height="14" viewBox="0 0 87.3 78">
             <path d="m6.6 66.85 3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3l13.75-23.8h-27.5c0 1.55.4 3.1 1.2 4.5z" fill="#0066da"/>
@@ -1625,6 +1631,28 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
         <button class="icon-btn" onclick="closeGDriveModal()">✕</button>
       </div>
 
+      <!-- Auth Expired Alert Card -->
+      <div id="gdriveExpiredBanner" style="display: none; background: rgba(255, 59, 48, 0.08); border: 1px solid rgba(255, 59, 48, 0.3); border-radius: 12px; padding: 14px 16px; margin-bottom: 16px;">
+        <div style="display: flex; align-items: center; gap: 8px; color: #FF3B30; font-weight: 600; font-size: 0.88rem;">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+          Google Drive 授权已失效 / 令牌已过期
+        </div>
+        <div style="font-size: 0.76rem; line-height: 1.55; color: var(--ink); margin-top: 8px;">
+          <strong>为什么会自动失效？</strong> Google Cloud Console 默认将 OAuth 同意屏幕设为<strong>「测试中 (Testing)」</strong>状态，此状态下 Google 会强制使刷新令牌在 <strong>7 天后自动作废</strong>。<br>
+          <strong>一劳永逸解决方案（1分钟操作，永久有效）：</strong>
+          <ol style="margin: 6px 0 0 18px; padding: 0;">
+            <li>打开 <a href="https://console.cloud.google.com/apis/credentials/consent" target="_blank" style="color:var(--accent); text-decoration:underline; font-weight:500;">Google Cloud OAuth 同意屏幕</a>。</li>
+            <li>点击「<strong>发布应用 (Publish app)</strong>」将状态切换为「<strong>正式版 (In production)</strong>」（个人自用无需 Google 审核，发布后令牌<strong>永不过期</strong>！）。</li>
+            <li>点击下方「一键重新授权」即可立即恢复云端同步。</li>
+          </ol>
+        </div>
+        <div style="margin-top: 12px; display: flex; gap: 8px; justify-content: flex-end;">
+          <button class="btn btn-primary" onclick="reauthGDrive()" style="font-size: 0.78rem; height: 30px; padding: 0 14px;">
+            一键重新授权 Google Drive
+          </button>
+        </div>
+      </div>
+
       <!-- Connected State Banner -->
       <div id="gdriveConnectedCard" style="display: none; background: rgba(52, 199, 89, 0.08); border: 1px solid rgba(52, 199, 89, 0.25); border-radius: 12px; padding: 14px 16px; margin-bottom: 16px;">
         <div style="display: flex; justify-content: space-between; align-items: center;">
@@ -1741,6 +1769,461 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
             </div>
           </div>
         </details>
+      </div>
+    </div>
+  </div>
+
+  <!-- Metrics & System Health Modal -->
+  <div class="backdrop" id="metricsModal" onclick="if(event.target === this) closeMetricsModal()">
+    <div class="dialog-box" style="max-width: 880px; width: 95vw; max-height: min(92vh, 880px); overflow-y: auto; padding: 22px 24px;">
+      <!-- Modal Header -->
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-shrink: 0; flex-wrap: wrap; gap: 10px;">
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <div style="width: 34px; height: 34px; border-radius: 9px; background: rgba(0, 113, 227, 0.1); display: flex; align-items: center; justify-content: center; color: var(--accent);">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M18 20V10M12 20V4M6 20v-6"/>
+            </svg>
+          </div>
+          <div>
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <h3 style="margin: 0; font-size: 1.1rem; font-weight: 600;">System Telemetry &amp; Health</h3>
+              <span id="metricHealthBadge" class="ratio-badge" style="background: rgba(52, 199, 89, 0.12); color: #34C759; border: 1px solid rgba(52, 199, 89, 0.3); font-weight: 600; padding: 2px 8px; font-size: 0.72rem;">
+                Healthy
+              </span>
+            </div>
+            <div style="font-size: 0.74rem; color: var(--ink-secondary); margin-top: 2px;" id="metricUptimeText">
+              Uptime: -- · ostore v0.1.0
+            </div>
+          </div>
+        </div>
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <button class="btn" id="metricAutoRefreshBtn" onclick="toggleMetricsAutoRefresh()" style="font-size: 0.74rem; height: 28px; padding: 0 10px;">
+            <span class="status-dot" id="metricRefreshDot" style="width:6px; height:6px;"></span>
+            <span id="metricRefreshLabel">Live 3s</span>
+          </button>
+          <button class="btn" onclick="loadMetricsSummary(false)" title="Refresh metrics" style="height: 28px; width: 28px; padding: 0; justify-content: center;">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+          </button>
+          <button class="icon-btn" onclick="closeMetricsModal()">✕</button>
+        </div>
+      </div>
+
+      <!-- Navigation Tabs -->
+      <div style="display: flex; border-bottom: 1px solid var(--card-border); margin-bottom: 16px; gap: 16px; overflow-x: auto;">
+        <button id="tabMOverviewBtn" onclick="switchMetricsTab('overview')" style="border:none; background:none; padding: 8px 0; font-size: 0.82rem; font-weight:600; color: var(--accent); border-bottom: 2px solid var(--accent); cursor: pointer; white-space: nowrap;">
+          Overview &amp; Health
+        </button>
+        <button id="tabMSystemBtn" onclick="switchMetricsTab('system')" style="border:none; background:none; padding: 8px 0; font-size: 0.82rem; font-weight:500; color: var(--ink-secondary); border-bottom: 2px solid transparent; cursor: pointer; white-space: nowrap;">
+          Host &amp; Process
+        </button>
+        <button id="tabMClusterBtn" onclick="switchMetricsTab('cluster')" style="border:none; background:none; padding: 8px 0; font-size: 0.82rem; font-weight:500; color: var(--ink-secondary); border-bottom: 2px solid transparent; cursor: pointer; white-space: nowrap;">
+          Cluster &amp; Replication
+        </button>
+        <button id="tabMTrafficBtn" onclick="switchMetricsTab('traffic')" style="border:none; background:none; padding: 8px 0; font-size: 0.82rem; font-weight:500; color: var(--ink-secondary); border-bottom: 2px solid transparent; cursor: pointer; white-space: nowrap;">
+          Traffic &amp; API
+        </button>
+      </div>
+
+      <!-- Pane 1: Overview & Health -->
+      <div id="paneMOverview">
+        <!-- Health Status Message Banner -->
+        <div id="metricStatusBanner" style="background: rgba(52, 199, 89, 0.08); border: 1px solid rgba(52, 199, 89, 0.25); border-radius: 12px; padding: 12px 16px; margin-bottom: 16px; display: flex; align-items: center; justify-content: space-between;">
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <span class="status-dot" id="metricStatusDot"></span>
+            <div>
+              <strong style="font-size: 0.84rem; color: #1D1D1F;" id="metricStatusTitle">All Systems Operational</strong>
+              <div style="font-size: 0.74rem; color: var(--ink-secondary); margin-top: 2px;" id="metricStatusDesc">All storage nodes, local disk, and background daemons are running healthily.</div>
+            </div>
+          </div>
+          <span style="font-size: 0.74rem; font-family: var(--font-mono); color: var(--ink-secondary);" id="metricLastSampleTime">Just now</span>
+        </div>
+
+        <!-- 4 Vital Stat KPI Cards -->
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; margin-bottom: 16px;">
+          <!-- CPU Card -->
+          <div style="background: #FFFFFF; border: 1px solid var(--card-border); border-radius: 12px; padding: 12px 14px; box-shadow: var(--shadow-sm);">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+              <span style="font-size: 0.72rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--ink-secondary);">CPU Usage</span>
+              <span style="font-size: 0.72rem; font-family: var(--font-mono); color: var(--accent);" id="mCpuProcess">Proc: 0.0%</span>
+            </div>
+            <div style="font-size: 1.4rem; font-weight: 700; color: var(--ink); letter-spacing: -0.02em;" id="mCpuHost">--%</div>
+            <div style="background: rgba(0,0,0,0.06); height: 6px; border-radius: 980px; margin-top: 8px; overflow: hidden;">
+              <div id="mCpuBar" style="background: var(--accent); height: 100%; width: 0%; transition: width 0.3s ease;"></div>
+            </div>
+            <div style="font-size: 0.7rem; color: var(--ink-secondary); margin-top: 6px;" id="mCpuSub">Host CPU load ratio</div>
+          </div>
+
+          <!-- Memory Card -->
+          <div style="background: #FFFFFF; border: 1px solid var(--card-border); border-radius: 12px; padding: 12px 14px; box-shadow: var(--shadow-sm);">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+              <span style="font-size: 0.72rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--ink-secondary);">Memory (RAM)</span>
+              <span style="font-size: 0.72rem; font-family: var(--font-mono); color: var(--accent);" id="mMemProcess">RSS: --</span>
+            </div>
+            <div style="font-size: 1.4rem; font-weight: 700; color: var(--ink); letter-spacing: -0.02em;" id="mMemPct">--%</div>
+            <div style="background: rgba(0,0,0,0.06); height: 6px; border-radius: 980px; margin-top: 8px; overflow: hidden;">
+              <div id="mMemBar" style="background: #5856D6; height: 100%; width: 0%; transition: width 0.3s ease;"></div>
+            </div>
+            <div style="font-size: 0.7rem; color: var(--ink-secondary); margin-top: 6px;" id="mMemSub">-- used / -- total</div>
+          </div>
+
+          <!-- Root Disk Storage Card -->
+          <div style="background: #FFFFFF; border: 1px solid var(--card-border); border-radius: 12px; padding: 12px 14px; box-shadow: var(--shadow-sm);">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+              <span style="font-size: 0.72rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--ink-secondary);">Disk Storage</span>
+              <span style="font-size: 0.72rem; font-family: var(--font-mono); color: var(--success);" id="mDiskAvail">-- Free</span>
+            </div>
+            <div style="font-size: 1.4rem; font-weight: 700; color: var(--ink); letter-spacing: -0.02em;" id="mDiskPct">--%</div>
+            <div style="background: rgba(0,0,0,0.06); height: 6px; border-radius: 980px; margin-top: 8px; overflow: hidden;">
+              <div id="mDiskBar" style="background: var(--success); height: 100%; width: 0%; transition: width 0.3s ease;"></div>
+            </div>
+            <div style="font-size: 0.7rem; color: var(--ink-secondary); margin-top: 6px;" id="mDiskSub">-- used / -- total</div>
+          </div>
+
+          <!-- Multi-Node Fleet Card -->
+          <div style="background: #FFFFFF; border: 1px solid var(--card-border); border-radius: 12px; padding: 12px 14px; box-shadow: var(--shadow-sm);">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+              <span style="font-size: 0.72rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--ink-secondary);">Cluster Fleet</span>
+              <span class="ratio-badge full" id="mClusterHealthTag">--</span>
+            </div>
+            <div style="font-size: 1.4rem; font-weight: 700; color: var(--ink); letter-spacing: -0.02em;" id="mClusterHealthyCount">-- / --</div>
+            <div style="background: rgba(0,0,0,0.06); height: 6px; border-radius: 980px; margin-top: 8px; overflow: hidden;">
+              <div id="mClusterBar" style="background: #FF9500; height: 100%; width: 100%; transition: width 0.3s ease;"></div>
+            </div>
+            <div style="font-size: 0.7rem; color: var(--ink-secondary); margin-top: 6px;" id="mClusterSub">Write Replication: 100% OK</div>
+          </div>
+        </div>
+
+        <!-- Interactive HTTP Status Breakdown Bar -->
+        <div style="background: #FFFFFF; border: 1px solid var(--card-border); border-radius: 12px; padding: 14px 16px; margin-bottom: 16px; box-shadow: var(--shadow-sm);">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+            <div>
+              <strong style="font-size: 0.84rem; color: var(--ink);">HTTP Request Outcomes &amp; Status Distribution</strong>
+              <div style="font-size: 0.72rem; color: var(--ink-secondary); margin-top: 2px;">Cumulative requests served across all API endpoints</div>
+            </div>
+            <span style="font-size: 0.8rem; font-family: var(--font-mono); font-weight: 600; color: var(--accent);" id="mHttpTotalReqs">0 total reqs</span>
+          </div>
+          <!-- Stacked Segmented Bar -->
+          <div style="display: flex; height: 18px; border-radius: 6px; overflow: hidden; background: rgba(0,0,0,0.05); margin-bottom: 10px;" id="mHttpStatusStackedBar">
+            <div id="mBar2xx" style="background: #34C759; width: 100%; transition: width 0.3s ease;" title="2xx Success"></div>
+            <div id="mBar3xx" style="background: #0071E3; width: 0%; transition: width 0.3s ease;" title="3xx Redirect"></div>
+            <div id="mBar4xx" style="background: #FF9500; width: 0%; transition: width 0.3s ease;" title="4xx Client Error"></div>
+            <div id="mBar5xx" style="background: #FF3B30; width: 0%; transition: width 0.3s ease;" title="5xx Server Error"></div>
+          </div>
+          <!-- Legend -->
+          <div style="display: flex; gap: 16px; flex-wrap: wrap; font-size: 0.74rem;">
+            <div style="display: flex; align-items: center; gap: 6px;">
+              <span style="width: 8px; height: 8px; border-radius: 2px; background: #34C759;"></span>
+              <span style="color: var(--ink-secondary);">2xx Success:</span>
+              <strong style="font-family: var(--font-mono);" id="mLeg2xx">0 (100%)</strong>
+            </div>
+            <div style="display: flex; align-items: center; gap: 6px;">
+              <span style="width: 8px; height: 8px; border-radius: 2px; background: #0071E3;"></span>
+              <span style="color: var(--ink-secondary);">3xx Redirect:</span>
+              <strong style="font-family: var(--font-mono);" id="mLeg3xx">0 (0%)</strong>
+            </div>
+            <div style="display: flex; align-items: center; gap: 6px;">
+              <span style="width: 8px; height: 8px; border-radius: 2px; background: #FF9500;"></span>
+              <span style="color: var(--ink-secondary);">4xx Client Error:</span>
+              <strong style="font-family: var(--font-mono);" id="mLeg4xx">0 (0%)</strong>
+            </div>
+            <div style="display: flex; align-items: center; gap: 6px;">
+              <span style="width: 8px; height: 8px; border-radius: 2px; background: #FF3B30;"></span>
+              <span style="color: var(--ink-secondary);">5xx Server Error:</span>
+              <strong style="font-family: var(--font-mono);" id="mLeg5xx">0 (0%)</strong>
+            </div>
+          </div>
+        </div>
+
+        <!-- Checksum Cache Efficiency Card -->
+        <div style="background: #FFFFFF; border: 1px solid var(--card-border); border-radius: 12px; padding: 14px 16px; box-shadow: var(--shadow-sm);">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+            <div>
+              <strong style="font-size: 0.84rem; color: var(--ink);">Dual-Hash Checksum Cache Efficiency</strong>
+              <div style="font-size: 0.72rem; color: var(--ink-secondary); margin-top: 2px;">In-memory MD5+SHA-256 cache avoids repetitive disk I/O streaming</div>
+            </div>
+            <span class="ratio-badge full" id="mCacheHitRatioBadge">100% Hit Ratio</span>
+          </div>
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-top: 10px;">
+            <div style="background: rgba(0,0,0,0.02); border-radius: 8px; padding: 8px 10px;">
+              <div style="font-size: 0.7rem; color: var(--ink-secondary);">Cache Hits</div>
+              <strong style="font-size: 1.1rem; color: var(--success); font-family: var(--font-mono);" id="mCacheHits">0</strong>
+            </div>
+            <div style="background: rgba(0,0,0,0.02); border-radius: 8px; padding: 8px 10px;">
+              <div style="font-size: 0.7rem; color: var(--ink-secondary);">Cache Misses</div>
+              <strong style="font-size: 1.1rem; color: var(--warning); font-family: var(--font-mono);" id="mCacheMisses">0</strong>
+            </div>
+            <div style="background: rgba(0,0,0,0.02); border-radius: 8px; padding: 8px 10px;">
+              <div style="font-size: 0.7rem; color: var(--ink-secondary);">Cached Entries</div>
+              <strong style="font-size: 1.1rem; color: var(--accent); font-family: var(--font-mono);" id="mCacheEntries">0</strong>
+            </div>
+            <div style="background: rgba(0,0,0,0.02); border-radius: 8px; padding: 8px 10px;">
+              <div style="font-size: 0.7rem; color: var(--ink-secondary);">Saved Disk Reads</div>
+              <strong style="font-size: 1.1rem; color: #5856D6; font-family: var(--font-mono);" id="mCacheSavedReads">0</strong>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Pane 2: Host & Process -->
+      <div id="paneMSystem" style="display: none;">
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px;">
+          <!-- CPU Resource Breakdown -->
+          <div style="background: #FFFFFF; border: 1px solid var(--card-border); border-radius: 12px; padding: 14px 16px; box-shadow: var(--shadow-sm);">
+            <strong style="font-size: 0.84rem; color: var(--ink);">CPU Consumption Profile</strong>
+            <div style="margin-top: 12px; display: flex; flex-direction: column; gap: 8px; font-size: 0.76rem;">
+              <div style="display: flex; justify-content: space-between;">
+                <span style="color: var(--ink-secondary);">Process CPU Ratio:</span>
+                <strong style="font-family: var(--font-mono);" id="mSysProcCpu">--%</strong>
+              </div>
+              <div style="display: flex; justify-content: space-between;">
+                <span style="color: var(--ink-secondary);">Host Total CPU Ratio:</span>
+                <strong style="font-family: var(--font-mono);" id="mSysHostCpu">--%</strong>
+              </div>
+              <div style="display: flex; justify-content: space-between;">
+                <span style="color: var(--ink-secondary);">CPU Safety Governor:</span>
+                <span class="ratio-badge full" style="font-size: 0.68rem; padding: 1px 6px;">Active (&lt; 75%)</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Memory Breakdown -->
+          <div style="background: #FFFFFF; border: 1px solid var(--card-border); border-radius: 12px; padding: 14px 16px; box-shadow: var(--shadow-sm);">
+            <strong style="font-size: 0.84rem; color: var(--ink);">Memory Allocation (RSS / VMS)</strong>
+            <div style="margin-top: 12px; display: flex; flex-direction: column; gap: 8px; font-size: 0.76rem;">
+              <div style="display: flex; justify-content: space-between;">
+                <span style="color: var(--ink-secondary);">Process Resident (RSS):</span>
+                <strong style="font-family: var(--font-mono); color: var(--accent);" id="mSysProcRss">-- MB</strong>
+              </div>
+              <div style="display: flex; justify-content: space-between;">
+                <span style="color: var(--ink-secondary);">Process Virtual (VMS):</span>
+                <strong style="font-family: var(--font-mono);" id="mSysProcVms">-- MB</strong>
+              </div>
+              <div style="display: flex; justify-content: space-between;">
+                <span style="color: var(--ink-secondary);">Host RAM Available:</span>
+                <strong style="font-family: var(--font-mono); color: var(--success);" id="mSysHostAvailMem">-- GB</strong>
+              </div>
+              <div style="display: flex; justify-content: space-between;">
+                <span style="color: var(--ink-secondary);">Host Total Physical:</span>
+                <strong style="font-family: var(--font-mono);" id="mSysHostTotalMem">-- GB</strong>
+              </div>
+            </div>
+          </div>
+
+          <!-- Disk Storage Breakdown -->
+          <div style="background: #FFFFFF; border: 1px solid var(--card-border); border-radius: 12px; padding: 14px 16px; box-shadow: var(--shadow-sm);">
+            <strong style="font-size: 0.84rem; color: var(--ink);">Local Storage Filesystem</strong>
+            <div style="margin-top: 12px; display: flex; flex-direction: column; gap: 8px; font-size: 0.76rem;">
+              <div style="display: flex; justify-content: space-between;">
+                <span style="color: var(--ink-secondary);">Filesystem Capacity:</span>
+                <strong style="font-family: var(--font-mono);" id="mSysDiskTotal">-- GB</strong>
+              </div>
+              <div style="display: flex; justify-content: space-between;">
+                <span style="color: var(--ink-secondary);">Filesystem Available:</span>
+                <strong style="font-family: var(--font-mono); color: var(--success);" id="mSysDiskAvail">-- GB</strong>
+              </div>
+              <div style="display: flex; justify-content: space-between;">
+                <span style="color: var(--ink-secondary);">Filesystem Used:</span>
+                <strong style="font-family: var(--font-mono);" id="mSysDiskUsed">-- GB (--%)</strong>
+              </div>
+            </div>
+          </div>
+
+          <!-- Daemon Runtime & Sweeps -->
+          <div style="background: #FFFFFF; border: 1px solid var(--card-border); border-radius: 12px; padding: 14px 16px; box-shadow: var(--shadow-sm);">
+            <strong style="font-size: 0.84rem; color: var(--ink);">Daemon Runtime &amp; Sweeps</strong>
+            <div style="margin-top: 12px; display: flex; flex-direction: column; gap: 8px; font-size: 0.76rem;">
+              <div style="display: flex; justify-content: space-between;">
+                <span style="color: var(--ink-secondary);">Process Uptime:</span>
+                <strong style="font-family: var(--font-mono);" id="mSysUptime">--</strong>
+              </div>
+              <div style="display: flex; justify-content: space-between;">
+                <span style="color: var(--ink-secondary);">Temporary Files Swept:</span>
+                <strong style="font-family: var(--font-mono);" id="mSysTmpSwept">0 files</strong>
+              </div>
+              <div style="display: flex; justify-content: space-between;">
+                <span style="color: var(--ink-secondary);">Grafana Server State:</span>
+                <span class="ratio-badge full" style="background: rgba(0,0,0,0.06); color: var(--ink-secondary); font-size: 0.68rem; padding: 1px 6px;">Uninstalled (Zero Overhead)</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Pane 3: Cluster & Replication -->
+      <div id="paneMCluster" style="display: none;">
+        <!-- Multi-node Cards -->
+        <div style="font-size: 0.75rem; font-weight: 600; text-transform: uppercase; color: var(--ink-secondary); margin-bottom: 8px; letter-spacing: 0.04em;">
+          Cluster Fleet Node Topology &amp; Latency
+        </div>
+        <div id="mClusterNodesList" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin-bottom: 16px;">
+          <!-- Rendered dynamically -->
+        </div>
+
+        <!-- Write-time Replication Telemetry -->
+        <div style="background: #FFFFFF; border: 1px solid var(--card-border); border-radius: 12px; padding: 14px 16px; margin-bottom: 16px; box-shadow: var(--shadow-sm);">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+            <div>
+              <strong style="font-size: 0.84rem; color: var(--ink);">Real-time Write Replication Telemetry</strong>
+              <div style="font-size: 0.72rem; color: var(--ink-secondary); margin-top: 2px;">Synchronous background fanout to cluster followers on object write</div>
+            </div>
+            <span style="font-size: 0.74rem; font-family: var(--font-mono);" id="mReplLatency">Last latency: -- ms</span>
+          </div>
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px;">
+            <div style="background: rgba(52,199,89,0.06); border: 1px solid rgba(52,199,89,0.2); border-radius: 8px; padding: 8px 10px;">
+              <div style="font-size: 0.7rem; color: var(--ink-secondary);">Successful Writes</div>
+              <strong style="font-size: 1.15rem; color: var(--success); font-family: var(--font-mono);" id="mReplSuccess">0</strong>
+            </div>
+            <div style="background: rgba(255,59,48,0.06); border: 1px solid rgba(255,59,48,0.2); border-radius: 8px; padding: 8px 10px;">
+              <div style="font-size: 0.7rem; color: var(--ink-secondary);">Failed Writes</div>
+              <strong style="font-size: 1.15rem; color: var(--danger); font-family: var(--font-mono);" id="mReplFailure">0</strong>
+            </div>
+            <div style="background: rgba(0,113,227,0.06); border: 1px solid rgba(0,113,227,0.2); border-radius: 8px; padding: 8px 10px;">
+              <div style="font-size: 0.7rem; color: var(--ink-secondary);">Payload Replicated</div>
+              <strong style="font-size: 1.15rem; color: var(--accent); font-family: var(--font-mono);" id="mReplBytes">0 MB</strong>
+            </div>
+          </div>
+        </div>
+
+        <!-- Sync Phase Cost Breakdown -->
+        <div style="background: #FFFFFF; border: 1px solid var(--card-border); border-radius: 12px; padding: 14px 16px; box-shadow: var(--shadow-sm);">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+            <div>
+              <strong style="font-size: 0.84rem; color: var(--ink);">Fleet Synchronization Phase Cost Breakdown</strong>
+              <div style="font-size: 0.72rem; color: var(--ink-secondary); margin-top: 2px;">Latency spent across Local Scan, Remote Probe &amp; Data Transfer</div>
+            </div>
+            <span style="font-size: 0.76rem; font-family: var(--font-mono); color: var(--ink);" id="mSyncLastDuration">Last sync: -- ms</span>
+          </div>
+          <!-- Segmented Phase Bar -->
+          <div style="display: flex; height: 16px; border-radius: 6px; overflow: hidden; background: rgba(0,0,0,0.06); margin: 10px 0 8px 0;">
+            <div id="mPhaseScanBar" style="background: #0071E3; width: 33%; transition: width 0.3s ease;" title="Local Scan"></div>
+            <div id="mPhaseProbeBar" style="background: #FF9500; width: 33%; transition: width 0.3s ease;" title="Remote Fleet Probe"></div>
+            <div id="mPhaseTransferBar" style="background: #34C759; width: 34%; transition: width 0.3s ease;" title="Data Transfer"></div>
+          </div>
+          <div style="display: flex; justify-content: space-between; font-size: 0.72rem; color: var(--ink-secondary); flex-wrap: wrap; gap: 8px;">
+            <div style="display: flex; align-items: center; gap: 6px;">
+              <span style="width: 8px; height: 8px; border-radius: 2px; background: #0071E3;"></span>
+              <span>Local Scan: <strong style="font-family: var(--font-mono); color: var(--ink);" id="mPhaseScanText">-- ms</strong></span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 6px;">
+              <span style="width: 8px; height: 8px; border-radius: 2px; background: #FF9500;"></span>
+              <span>Remote Probe: <strong style="font-family: var(--font-mono); color: var(--ink);" id="mPhaseProbeText">-- ms</strong></span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 6px;">
+              <span style="width: 8px; height: 8px; border-radius: 2px; background: #34C759;"></span>
+              <span>Data Transfer: <strong style="font-family: var(--font-mono); color: var(--ink);" id="mPhaseTransferText">-- ms</strong></span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Pane 4: Traffic & API -->
+      <div id="paneMTraffic" style="display: none;">
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px;">
+          <!-- Storage Data Throughput -->
+          <div style="background: #FFFFFF; border: 1px solid var(--card-border); border-radius: 12px; padding: 14px 16px; box-shadow: var(--shadow-sm);">
+            <strong style="font-size: 0.84rem; color: var(--ink);">Data Volume &amp; In-Flight Streams</strong>
+            <div style="margin-top: 12px; display: flex; flex-direction: column; gap: 8px; font-size: 0.76rem;">
+              <div style="display: flex; justify-content: space-between;">
+                <span style="color: var(--ink-secondary);">Upload Payload Total:</span>
+                <strong style="font-family: var(--font-mono); color: var(--accent);" id="mTrfUploadBytes">-- MB</strong>
+              </div>
+              <div style="display: flex; justify-content: space-between;">
+                <span style="color: var(--ink-secondary);">Download Payload Total:</span>
+                <strong style="font-family: var(--font-mono); color: var(--success);" id="mTrfDownloadBytes">-- MB</strong>
+              </div>
+              <div style="display: flex; justify-content: space-between;">
+                <span style="color: var(--ink-secondary);">In-Flight HTTP Requests:</span>
+                <strong style="font-family: var(--font-mono);" id="mTrfHttpInFlight">0</strong>
+              </div>
+              <div style="display: flex; justify-content: space-between;">
+                <span style="color: var(--ink-secondary);">In-Flight Upload Streams:</span>
+                <strong style="font-family: var(--font-mono);" id="mTrfUploadsInFlight">0</strong>
+              </div>
+              <div style="display: flex; justify-content: space-between;">
+                <span style="color: var(--ink-secondary);">Active SSE Subscribers:</span>
+                <strong style="font-family: var(--font-mono); color: var(--accent);" id="mTrfSseSubs">0</strong>
+              </div>
+            </div>
+          </div>
+
+          <!-- S3 API Telemetry -->
+          <div style="background: #FFFFFF; border: 1px solid var(--card-border); border-radius: 12px; padding: 14px 16px; box-shadow: var(--shadow-sm);">
+            <strong style="font-size: 0.84rem; color: var(--ink);">S3 Surface API Telemetry</strong>
+            <div style="margin-top: 12px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 0.76rem;">
+              <div style="display: flex; justify-content: space-between; background: rgba(0,0,0,0.02); padding: 5px 8px; border-radius: 6px;">
+                <span style="color: var(--ink-secondary);">GET:</span>
+                <strong style="font-family: var(--font-mono);" id="mS3Gets">0</strong>
+              </div>
+              <div style="display: flex; justify-content: space-between; background: rgba(0,0,0,0.02); padding: 5px 8px; border-radius: 6px;">
+                <span style="color: var(--ink-secondary);">PUT:</span>
+                <strong style="font-family: var(--font-mono);" id="mS3Puts">0</strong>
+              </div>
+              <div style="display: flex; justify-content: space-between; background: rgba(0,0,0,0.02); padding: 5px 8px; border-radius: 6px;">
+                <span style="color: var(--ink-secondary);">HEAD:</span>
+                <strong style="font-family: var(--font-mono);" id="mS3Heads">0</strong>
+              </div>
+              <div style="display: flex; justify-content: space-between; background: rgba(0,0,0,0.02); padding: 5px 8px; border-radius: 6px;">
+                <span style="color: var(--ink-secondary);">DELETE:</span>
+                <strong style="font-family: var(--font-mono);" id="mS3Deletes">0</strong>
+              </div>
+              <div style="display: flex; justify-content: space-between; background: rgba(0,0,0,0.02); padding: 5px 8px; border-radius: 6px;">
+                <span style="color: var(--ink-secondary);">LIST:</span>
+                <strong style="font-family: var(--font-mono);" id="mS3Lists">0</strong>
+              </div>
+              <div style="display: flex; justify-content: space-between; background: rgba(0,0,0,0.02); padding: 5px 8px; border-radius: 6px;">
+                <span style="color: var(--ink-secondary);">Denied:</span>
+                <strong style="font-family: var(--font-mono); color: var(--danger);" id="mS3Denied">0</strong>
+              </div>
+            </div>
+            <div style="font-size: 0.72rem; color: var(--ink-secondary); margin-top: 8px;" id="mS3BytesTotal">S3 Streamed: 0 MB</div>
+          </div>
+
+          <!-- Batch & Thumbnails -->
+          <div style="background: #FFFFFF; border: 1px solid var(--card-border); border-radius: 12px; padding: 14px 16px; box-shadow: var(--shadow-sm);">
+            <strong style="font-size: 0.84rem; color: var(--ink);">Batch Writes &amp; Thumbnails</strong>
+            <div style="margin-top: 12px; display: flex; flex-direction: column; gap: 8px; font-size: 0.76rem;">
+              <div style="display: flex; justify-content: space-between;">
+                <span style="color: var(--ink-secondary);">Batch Requests Accepted:</span>
+                <strong style="font-family: var(--font-mono); color: var(--success);" id="mBatchOk">0</strong>
+              </div>
+              <div style="display: flex; justify-content: space-between;">
+                <span style="color: var(--ink-secondary);">Batch Objects Written:</span>
+                <strong style="font-family: var(--font-mono);" id="mBatchObjsWritten">0</strong>
+              </div>
+              <div style="display: flex; justify-content: space-between;">
+                <span style="color: var(--ink-secondary);">Thumbnails Cached / Hit:</span>
+                <strong style="font-family: var(--font-mono); color: var(--accent);" id="mThumbsHit">0</strong>
+              </div>
+              <div style="display: flex; justify-content: space-between;">
+                <span style="color: var(--ink-secondary);">Thumbnails Generated:</span>
+                <strong style="font-family: var(--font-mono);" id="mThumbsGen">0</strong>
+              </div>
+            </div>
+          </div>
+
+          <!-- Webhooks -->
+          <div style="background: #FFFFFF; border: 1px solid var(--card-border); border-radius: 12px; padding: 14px 16px; box-shadow: var(--shadow-sm);">
+            <strong style="font-size: 0.84rem; color: var(--ink);">Webhooks Delivery Status</strong>
+            <div style="margin-top: 12px; display: flex; flex-direction: column; gap: 8px; font-size: 0.76rem;">
+              <div style="display: flex; justify-content: space-between;">
+                <span style="color: var(--ink-secondary);">Registered Webhooks:</span>
+                <strong style="font-family: var(--font-mono);" id="mWhRegistered">0</strong>
+              </div>
+              <div style="display: flex; justify-content: space-between;">
+                <span style="color: var(--ink-secondary);">Delivered Successfully:</span>
+                <strong style="font-family: var(--font-mono); color: var(--success);" id="mWhOk">0</strong>
+              </div>
+              <div style="display: flex; justify-content: space-between;">
+                <span style="color: var(--ink-secondary);">Retries Attempted:</span>
+                <strong style="font-family: var(--font-mono);" id="mWhRetries">0</strong>
+              </div>
+              <div style="display: flex; justify-content: space-between;">
+                <span style="color: var(--ink-secondary);">Dropped Deliveries:</span>
+                <strong style="font-family: var(--font-mono); color: var(--danger);" id="mWhDropped">0</strong>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -2161,6 +2644,443 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
       document.getElementById('mediaModal').style.display = 'none';
       const gdModal = document.getElementById('gdriveModal');
       if (gdModal) gdModal.style.display = 'none';
+      closeMetricsModal();
+    }
+
+    // Metrics Panel Architecture
+    let metricsAutoRefresh = true;
+
+    function openMetricsModal() {
+      document.getElementById('metricsModal').style.display = 'flex';
+      loadMetricsSummary(false);
+      startMetricsTimer();
+    }
+
+    function closeMetricsModal() {
+      const el = document.getElementById('metricsModal');
+      if (el) el.style.display = 'none';
+      stopMetricsTimer();
+    }
+
+    function startMetricsTimer() {
+      stopMetricsTimer();
+      if (!metricsAutoRefresh) return;
+      window._metricsTimer = setInterval(() => {
+        const m = document.getElementById('metricsModal');
+        if (m && m.style.display !== 'none' && !document.hidden) {
+          loadMetricsSummary(true);
+        }
+      }, 3000);
+    }
+
+    function stopMetricsTimer() {
+      if (window._metricsTimer) {
+        clearInterval(window._metricsTimer);
+        window._metricsTimer = null;
+      }
+    }
+
+    function toggleMetricsAutoRefresh() {
+      metricsAutoRefresh = !metricsAutoRefresh;
+      const dot = document.getElementById('metricRefreshDot');
+      const label = document.getElementById('metricRefreshLabel');
+      if (metricsAutoRefresh) {
+        if (dot) {
+          dot.style.background = 'var(--success)';
+          dot.style.boxShadow = '0 0 6px rgba(52,199,89,0.5)';
+        }
+        if (label) label.textContent = 'Live 3s';
+        startMetricsTimer();
+      } else {
+        if (dot) {
+          dot.style.background = 'var(--ink-secondary)';
+          dot.style.boxShadow = 'none';
+        }
+        if (label) label.textContent = 'Paused';
+        stopMetricsTimer();
+      }
+    }
+
+    function switchMetricsTab(tab) {
+      const tabs = ['overview', 'system', 'cluster', 'traffic'];
+      tabs.forEach(t => {
+        const pane = document.getElementById('paneM' + t.charAt(0).toUpperCase() + t.slice(1));
+        const btn = document.getElementById('tabM' + t.charAt(0).toUpperCase() + t.slice(1) + 'Btn');
+        if (!pane || !btn) return;
+        if (t === tab) {
+          pane.style.display = 'block';
+          btn.style.color = 'var(--accent)';
+          btn.style.fontWeight = '600';
+          btn.style.borderBottom = '2px solid var(--accent)';
+        } else {
+          pane.style.display = 'none';
+          btn.style.color = 'var(--ink-secondary)';
+          btn.style.fontWeight = '500';
+          btn.style.borderBottom = '2px solid transparent';
+        }
+      });
+    }
+
+    function formatDurationSecs(secs) {
+      if (!secs || secs < 0) return '0s';
+      const d = Math.floor(secs / 86400);
+      const h = Math.floor((secs % 86400) / 3600);
+      const m = Math.floor((secs % 3600) / 60);
+      const s = Math.floor(secs % 60);
+      if (d > 0) return `${d}d ${h}h ${m}m`;
+      if (h > 0) return `${h}h ${m}m ${s}s`;
+      if (m > 0) return `${m}m ${s}s`;
+      return `${s}s`;
+    }
+
+    async function loadMetricsSummary(isAuto) {
+      try {
+        const res = await api('/api/metrics/summary');
+        if (!res.ok) return;
+        const d = await res.json();
+        renderMetricsSummary(d);
+      } catch (e) {
+        if (!isAuto) showToast('Failed to load metrics: ' + (e.error || e.message));
+      }
+    }
+
+    function renderMetricsSummary(d) {
+      if (!d) return;
+
+      // Header & Uptime
+      const badge = document.getElementById('metricHealthBadge');
+      const uptime = document.getElementById('metricUptimeText');
+      const banner = document.getElementById('metricStatusBanner');
+      const sTitle = document.getElementById('metricStatusTitle');
+      const sDesc = document.getElementById('metricStatusDesc');
+      const sDot = document.getElementById('metricStatusDot');
+
+      if (uptime) uptime.textContent = `Uptime: ${formatDurationSecs(d.uptime_seconds)} · ostore v${d.version || '0.1.0'}`;
+      const nowTime = new Date().toLocaleTimeString();
+      const lastSample = document.getElementById('metricLastSampleTime');
+      if (lastSample) lastSample.textContent = `Updated ${nowTime}`;
+
+      // Health evaluation
+      if (d.status === 'healthy') {
+        if (badge) {
+          badge.className = 'ratio-badge full';
+          badge.style.background = 'rgba(52, 199, 89, 0.12)';
+          badge.style.color = '#34C759';
+          badge.style.borderColor = 'rgba(52, 199, 89, 0.3)';
+          badge.textContent = 'Healthy';
+        }
+        if (banner) {
+          banner.style.background = 'rgba(52, 199, 89, 0.08)';
+          banner.style.borderColor = 'rgba(52, 199, 89, 0.25)';
+        }
+        if (sDot) {
+          sDot.style.background = 'var(--success)';
+          sDot.style.boxShadow = '0 0 6px rgba(52, 199, 89, 0.5)';
+        }
+        if (sTitle) sTitle.textContent = 'All Systems Operational & Healthy';
+        if (sDesc) sDesc.textContent = d.status_message || 'Daemon uptime, root disk, and multi-node replication are running normally.';
+      } else if (d.status === 'warning') {
+        if (badge) {
+          badge.className = 'ratio-badge partial';
+          badge.style.background = 'rgba(255, 149, 0, 0.12)';
+          badge.style.color = '#FF9500';
+          badge.style.borderColor = 'rgba(255, 149, 0, 0.3)';
+          badge.textContent = 'Warning';
+        }
+        if (banner) {
+          banner.style.background = 'rgba(255, 149, 0, 0.08)';
+          banner.style.borderColor = 'rgba(255, 149, 0, 0.3)';
+        }
+        if (sDot) {
+          sDot.style.background = '#FF9500';
+          sDot.style.boxShadow = '0 0 6px rgba(255, 149, 0, 0.5)';
+        }
+        if (sTitle) sTitle.textContent = 'System Attention Required';
+        if (sDesc) sDesc.textContent = d.status_message;
+      } else {
+        if (badge) {
+          badge.className = 'ratio-badge';
+          badge.style.background = 'rgba(255, 59, 48, 0.12)';
+          badge.style.color = '#FF3B30';
+          badge.style.borderColor = 'rgba(255, 59, 48, 0.3)';
+          badge.textContent = 'Degraded';
+        }
+        if (banner) {
+          banner.style.background = 'rgba(255, 59, 48, 0.08)';
+          banner.style.borderColor = 'rgba(255, 59, 48, 0.3)';
+        }
+        if (sDot) {
+          sDot.style.background = '#FF3B30';
+          sDot.style.boxShadow = '0 0 6px rgba(255, 59, 48, 0.5)';
+        }
+        if (sTitle) sTitle.textContent = 'System Degraded';
+        if (sDesc) sDesc.textContent = d.status_message;
+      }
+
+      // Top KPI Cards
+      const sys = d.system || {};
+      const hostCpu = sys.host_cpu_pct || 0;
+      const procCpu = sys.process_cpu_pct || 0;
+      const elHostCpu = document.getElementById('mCpuHost');
+      const elProcCpu = document.getElementById('mCpuProcess');
+      const elCpuBar = document.getElementById('mCpuBar');
+      if (elHostCpu) elHostCpu.textContent = `${hostCpu}%`;
+      if (elProcCpu) elProcCpu.textContent = `Proc: ${procCpu}%`;
+      if (elCpuBar) {
+        elCpuBar.style.width = `${Math.min(hostCpu, 100)}%`;
+        elCpuBar.style.background = hostCpu > 80 ? 'var(--danger)' : (hostCpu > 50 ? 'var(--warning)' : 'var(--accent)');
+      }
+
+      const memTotal = sys.host_mem_total_bytes || 0;
+      const memUsed = sys.host_mem_used_bytes || 0;
+      const memPct = sys.host_mem_pct || 0;
+      const procRss = sys.process_rss_bytes || 0;
+      const elMemPct = document.getElementById('mMemPct');
+      const elMemProc = document.getElementById('mMemProcess');
+      const elMemBar = document.getElementById('mMemBar');
+      const elMemSub = document.getElementById('mMemSub');
+      if (elMemPct) elMemPct.textContent = `${memPct}%`;
+      if (elMemProc) elMemProc.textContent = `RSS: ${formatBytes(procRss)}`;
+      if (elMemBar) {
+        elMemBar.style.width = `${Math.min(memPct, 100)}%`;
+        elMemBar.style.background = memPct > 85 ? 'var(--danger)' : '#5856D6';
+      }
+      if (elMemSub) elMemSub.textContent = `${formatBytes(memUsed)} used / ${formatBytes(memTotal)} total`;
+
+      const diskTotal = sys.disk_total_bytes || 0;
+      const diskUsed = sys.disk_used_bytes || 0;
+      const diskAvail = sys.disk_available_bytes || 0;
+      const diskPct = sys.disk_used_pct || 0;
+      const elDiskPct = document.getElementById('mDiskPct');
+      const elDiskAvail = document.getElementById('mDiskAvail');
+      const elDiskBar = document.getElementById('mDiskBar');
+      const elDiskSub = document.getElementById('mDiskSub');
+      if (elDiskPct) elDiskPct.textContent = `${diskPct}%`;
+      if (elDiskAvail) elDiskAvail.textContent = `${formatBytes(diskAvail)} Free`;
+      if (elDiskBar) {
+        elDiskBar.style.width = `${Math.min(diskPct, 100)}%`;
+        elDiskBar.style.background = diskPct > 90 ? 'var(--danger)' : 'var(--success)';
+      }
+      if (elDiskSub) elDiskSub.textContent = `${formatBytes(diskUsed)} used / ${formatBytes(diskTotal)} total`;
+
+      // Cluster Fleet summary
+      const cluster = d.cluster || {};
+      const totNodes = cluster.total_nodes || 0;
+      const hlthNodes = cluster.healthy_nodes || 0;
+      const elClusterCount = document.getElementById('mClusterHealthyCount');
+      const elClusterTag = document.getElementById('mClusterHealthTag');
+      const elClusterSub = document.getElementById('mClusterSub');
+      const elClusterBar = document.getElementById('mClusterBar');
+      if (elClusterCount) elClusterCount.textContent = `${hlthNodes} / ${totNodes}`;
+      if (elClusterTag) {
+        if (hlthNodes === totNodes && totNodes > 0) {
+          elClusterTag.textContent = 'All Nodes Online';
+          elClusterTag.className = 'ratio-badge full';
+        } else {
+          elClusterTag.textContent = `${totNodes - hlthNodes} Offline/Degraded`;
+          elClusterTag.className = 'ratio-badge partial';
+        }
+      }
+      const repl = cluster.replication || {};
+      const replSuccess = repl.success_total || 0;
+      const replFail = repl.failure_total || 0;
+      const replPct = (replSuccess + replFail > 0) ? ((replSuccess / (replSuccess + replFail)) * 100).toFixed(1) : 100;
+      if (elClusterSub) elClusterSub.textContent = `Write Replication: ${replPct}% OK (${replSuccess} writes)`;
+      if (elClusterBar) {
+        elClusterBar.style.width = totNodes > 0 ? `${(hlthNodes / totNodes) * 100}%` : '100%';
+        elClusterBar.style.background = hlthNodes === totNodes ? 'var(--success)' : 'var(--warning)';
+      }
+
+      // HTTP Status Breakdown
+      const httpReqs = d.http_requests || {};
+      const totalH = httpReqs.total || 0;
+      const s2xx = httpReqs.status_2xx || 0;
+      const s3xx = httpReqs.status_3xx || 0;
+      const s4xx = httpReqs.status_4xx || 0;
+      const s5xx = httpReqs.status_5xx || 0;
+
+      const elTotalReqs = document.getElementById('mHttpTotalReqs');
+      if (elTotalReqs) elTotalReqs.textContent = `${totalH.toLocaleString()} total reqs`;
+
+      const p2xx = totalH > 0 ? (s2xx / totalH) * 100 : 100;
+      const p3xx = totalH > 0 ? (s3xx / totalH) * 100 : 0;
+      const p4xx = totalH > 0 ? (s4xx / totalH) * 100 : 0;
+      const p5xx = totalH > 0 ? (s5xx / totalH) * 100 : 0;
+
+      const b2 = document.getElementById('mBar2xx');
+      const b3 = document.getElementById('mBar3xx');
+      const b4 = document.getElementById('mBar4xx');
+      const b5 = document.getElementById('mBar5xx');
+      if (b2) { b2.style.width = `${p2xx}%`; b2.title = `2xx Success: ${s2xx} (${p2xx.toFixed(1)}%)`; }
+      if (b3) { b3.style.width = `${p3xx}%`; b3.title = `3xx Redirect: ${s3xx} (${p3xx.toFixed(1)}%)`; }
+      if (b4) { b4.style.width = `${p4xx}%`; b4.title = `4xx Client Error: ${s4xx} (${p4xx.toFixed(1)}%)`; }
+      if (b5) { b5.style.width = `${p5xx}%`; b5.title = `5xx Server Error: ${s5xx} (${p5xx.toFixed(1)}%)`; }
+
+      const l2 = document.getElementById('mLeg2xx');
+      const l3 = document.getElementById('mLeg3xx');
+      const l4 = document.getElementById('mLeg4xx');
+      const l5 = document.getElementById('mLeg5xx');
+      if (l2) l2.textContent = `${s2xx} (${p2xx.toFixed(1)}%)`;
+      if (l3) l3.textContent = `${s3xx} (${p3xx.toFixed(1)}%)`;
+      if (l4) l4.textContent = `${s4xx} (${p4xx.toFixed(1)}%)`;
+      if (l5) l5.textContent = `${s5xx} (${p5xx.toFixed(1)}%)`;
+
+      // Checksum Cache
+      const cache = d.checksum_cache || {};
+      const elCacheBadge = document.getElementById('mCacheHitRatioBadge');
+      const elCacheHits = document.getElementById('mCacheHits');
+      const elCacheMisses = document.getElementById('mCacheMisses');
+      const elCacheEntries = document.getElementById('mCacheEntries');
+      const elCacheSaved = document.getElementById('mCacheSavedReads');
+      if (elCacheBadge) elCacheBadge.textContent = `${cache.hit_ratio_pct || 100}% Hit Ratio`;
+      if (elCacheHits) elCacheHits.textContent = (cache.hits || 0).toLocaleString();
+      if (elCacheMisses) elCacheMisses.textContent = (cache.misses || 0).toLocaleString();
+      if (elCacheEntries) elCacheEntries.textContent = (cache.entries || 0).toLocaleString();
+      if (elCacheSaved) elCacheSaved.textContent = (cache.hits || 0).toLocaleString();
+
+      // Pane 2: System Details
+      const sProcCpu = document.getElementById('mSysProcCpu');
+      const sHostCpu = document.getElementById('mSysHostCpu');
+      const sProcRss = document.getElementById('mSysProcRss');
+      const sProcVms = document.getElementById('mSysProcVms');
+      const sHostAvail = document.getElementById('mSysHostAvailMem');
+      const sHostTotal = document.getElementById('mSysHostTotalMem');
+      const sDiskTotal = document.getElementById('mSysDiskTotal');
+      const sDiskAvail = document.getElementById('mSysDiskAvail');
+      const sDiskUsed = document.getElementById('mSysDiskUsed');
+      const sUptime = document.getElementById('mSysUptime');
+      const sTmpSwept = document.getElementById('mSysTmpSwept');
+
+      if (sProcCpu) sProcCpu.textContent = `${procCpu}%`;
+      if (sHostCpu) sHostCpu.textContent = `${hostCpu}%`;
+      if (sProcRss) sProcRss.textContent = formatBytes(procRss);
+      if (sProcVms) sProcVms.textContent = formatBytes(sys.process_vms_bytes || 0);
+      if (sHostAvail) sHostAvail.textContent = formatBytes(sys.host_mem_available_bytes || 0);
+      if (sHostTotal) sHostTotal.textContent = formatBytes(memTotal);
+      if (sDiskTotal) sDiskTotal.textContent = formatBytes(diskTotal);
+      if (sDiskAvail) sDiskAvail.textContent = formatBytes(diskAvail);
+      if (sDiskUsed) sDiskUsed.textContent = `${formatBytes(diskUsed)} (${diskPct}%)`;
+      if (sUptime) sUptime.textContent = formatDurationSecs(d.uptime_seconds);
+      const trf = d.traffic || {};
+      if (sTmpSwept) sTmpSwept.textContent = `${(trf.tmp_files_swept || 0)} files cleaned`;
+
+      // Pane 3: Cluster Nodes & Sync Phase Costs
+      const nodesList = document.getElementById('mClusterNodesList');
+      if (nodesList && cluster.nodes) {
+        nodesList.innerHTML = cluster.nodes.map(n => {
+          const isGDrive = n.node_type === 'gdrive' || n.id === 'gdrive';
+          const rttText = n.is_local ? 'Local (0ms)' : (n.rtt_ms !== null ? `${n.rtt_ms}ms RTT` : 'Timeout');
+          const statusColor = n.healthy ? 'var(--success)' : 'var(--danger)';
+          const role = n.is_local ? 'Control Plane' : (isGDrive ? 'Cloud Node' : 'Follower Node');
+          const diskInfo = n.disk_total_bytes > 0 ? `${formatBytes(n.disk_total_bytes - n.disk_available_bytes)} / ${formatBytes(n.disk_total_bytes)}` : '--';
+          return `
+            <div style="background: #FFFFFF; border: 1px solid var(--card-border); border-radius: 10px; padding: 10px 12px; box-shadow: var(--shadow-sm);">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                <div style="display: flex; align-items: center; gap: 6px;">
+                  <span class="status-dot" style="background: ${statusColor}; box-shadow: 0 0 6px ${n.healthy ? 'rgba(52,199,89,0.4)' : 'rgba(255,59,48,0.4)'};"></span>
+                  <strong style="font-size: 0.8rem; color: var(--ink);">${escapeHtml(n.name || n.id)}</strong>
+                </div>
+                <span class="ratio-badge" style="font-size: 0.68rem; padding: 1px 6px;">${rttText}</span>
+              </div>
+              <div style="font-size: 0.7rem; color: var(--ink-secondary); margin-bottom: 6px;">${role}</div>
+              <div style="font-size: 0.72rem; font-family: var(--font-mono); color: var(--ink-secondary);">
+                Disk: ${diskInfo}
+              </div>
+              ${n.error ? `<div style="font-size: 0.68rem; color: var(--danger); margin-top: 4px; line-height: 1.3;">⚠️ ${escapeHtml(n.error)}</div>` : ''}
+            </div>
+          `;
+        }).join('');
+      }
+
+      // Replication stats
+      const elReplSucc = document.getElementById('mReplSuccess');
+      const elReplFail = document.getElementById('mReplFailure');
+      const elReplBytes = document.getElementById('mReplBytes');
+      const elReplLat = document.getElementById('mReplLatency');
+      if (elReplSucc) elReplSucc.textContent = replSuccess.toLocaleString();
+      if (elReplFail) elReplFail.textContent = replFail.toLocaleString();
+      if (elReplBytes) elReplBytes.textContent = formatBytes(repl.bytes_total || 0);
+      if (elReplLat) elReplLat.textContent = `Last latency: ${repl.last_latency_ms || 0} ms`;
+
+      // Sync Phase Costs
+      const syncInfo = cluster.fleet_sync || {};
+      const elSyncDur = document.getElementById('mSyncLastDuration');
+      if (elSyncDur) elSyncDur.textContent = `Last sync: ${(syncInfo.last_duration_ms || 0)} ms (${formatBytes(syncInfo.last_speed_bps || 0)}/s)`;
+
+      const scanMs = syncInfo.last_scan_ms || 0;
+      const probeMs = syncInfo.last_probe_ms || 0;
+      const transMs = syncInfo.last_transfer_ms || 0;
+      const totalPhaseMs = scanMs + probeMs + transMs || 1;
+
+      const pScan = (scanMs / totalPhaseMs) * 100;
+      const pProbe = (probeMs / totalPhaseMs) * 100;
+      const pTrans = (transMs / totalPhaseMs) * 100;
+
+      const bScan = document.getElementById('mPhaseScanBar');
+      const bProbe = document.getElementById('mPhaseProbeBar');
+      const bTrans = document.getElementById('mPhaseTransferBar');
+      if (bScan) { bScan.style.width = `${pScan}%`; bScan.title = `Local Scan: ${scanMs}ms (${pScan.toFixed(1)}%)`; }
+      if (bProbe) { bProbe.style.width = `${pProbe}%`; bProbe.title = `Remote Probe: ${probeMs}ms (${pProbe.toFixed(1)}%)`; }
+      if (bTrans) { bTrans.style.width = `${pTrans}%`; bTrans.title = `Data Transfer: ${transMs}ms (${pTrans.toFixed(1)}%)`; }
+
+      const tScan = document.getElementById('mPhaseScanText');
+      const tProbe = document.getElementById('mPhaseProbeText');
+      const tTrans = document.getElementById('mPhaseTransferText');
+      if (tScan) tScan.textContent = `${scanMs} ms (${pScan.toFixed(0)}%)`;
+      if (tProbe) tProbe.textContent = `${probeMs} ms (${pProbe.toFixed(0)}%)`;
+      if (tTrans) tTrans.textContent = `${transMs} ms (${pTrans.toFixed(0)}%)`;
+
+      // Pane 4: Traffic & API
+      const elUpBytes = document.getElementById('mTrfUploadBytes');
+      const elDownBytes = document.getElementById('mTrfDownloadBytes');
+      const elHttpInFlight = document.getElementById('mTrfHttpInFlight');
+      const elUploadsInFlight = document.getElementById('mTrfUploadsInFlight');
+      const elSseSubs = document.getElementById('mTrfSseSubs');
+      if (elUpBytes) elUpBytes.textContent = formatBytes(trf.upload_bytes_total || 0);
+      if (elDownBytes) elDownBytes.textContent = formatBytes(trf.download_bytes_total || 0);
+      if (elHttpInFlight) elHttpInFlight.textContent = (trf.http_in_flight || 0);
+      if (elUploadsInFlight) elUploadsInFlight.textContent = (trf.uploads_in_flight || 0);
+      if (elSseSubs) elSseSubs.textContent = (trf.sse_subscribers || 0);
+
+      // S3 stats
+      const s3 = trf.s3 || {};
+      const s3g = document.getElementById('mS3Gets');
+      const s3p = document.getElementById('mS3Puts');
+      const s3h = document.getElementById('mS3Heads');
+      const s3d = document.getElementById('mS3Deletes');
+      const s3l = document.getElementById('mS3Lists');
+      const s3den = document.getElementById('mS3Denied');
+      const s3b = document.getElementById('mS3BytesTotal');
+      if (s3g) s3g.textContent = (s3.gets || 0).toLocaleString();
+      if (s3p) s3p.textContent = (s3.puts || 0).toLocaleString();
+      if (s3h) s3h.textContent = (s3.heads || 0).toLocaleString();
+      if (s3d) s3d.textContent = (s3.deletes || 0).toLocaleString();
+      if (s3l) s3l.textContent = (s3.lists || 0).toLocaleString();
+      if (s3den) s3den.textContent = (s3.denied || 0).toLocaleString();
+      if (s3b) s3b.textContent = `S3 Streamed: ${formatBytes(s3.bytes || 0)}`;
+
+      // Batch & Thumbs & Webhooks
+      const batch = trf.batch || {};
+      const thumbs = trf.thumbnails || {};
+      const wh = trf.webhooks || {};
+
+      const bOk = document.getElementById('mBatchOk');
+      const bObjs = document.getElementById('mBatchObjsWritten');
+      const tHit = document.getElementById('mThumbsHit');
+      const tGen = document.getElementById('mThumbsGen');
+      if (bOk) bOk.textContent = (batch.ok || 0).toLocaleString();
+      if (bObjs) bObjs.textContent = (batch.objects_written || 0).toLocaleString();
+      if (tHit) tHit.textContent = (thumbs.hits || 0).toLocaleString();
+      if (tGen) tGen.textContent = (thumbs.generated || 0).toLocaleString();
+
+      const whReg = document.getElementById('mWhRegistered');
+      const whOk = document.getElementById('mWhOk');
+      const whRet = document.getElementById('mWhRetries');
+      const whDrop = document.getElementById('mWhDropped');
+      if (whReg) whReg.textContent = (wh.registered || 0);
+      if (whOk) whOk.textContent = (wh.ok || 0).toLocaleString();
+      if (whRet) whRet.textContent = (wh.retries || 0).toLocaleString();
+      if (whDrop) whDrop.textContent = (wh.dropped || 0).toLocaleString();
     }
 
     function openGDriveModal() {
@@ -2218,11 +3138,12 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
         const tabs = document.getElementById('gdriveConnectTabs');
         const quota = document.getElementById('gdriveQuotaText');
         const clientText = document.getElementById('gdriveClientText');
+        const expiredBanner = document.getElementById('gdriveExpiredBanner');
+        const btn = document.getElementById('gdriveHeaderBtn');
 
         if (data && data.connected) {
           const used = formatBytes(data.disk_total_bytes - data.disk_available_bytes);
           const total = formatBytes(data.disk_total_bytes);
-          const btn = document.getElementById('gdriveHeaderBtn');
           if (btn) {
             btn.style.background = 'rgba(52, 199, 89, 0.12)';
             btn.style.borderColor = 'rgba(52, 199, 89, 0.35)';
@@ -2233,10 +3154,30 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
           }
           if (card) card.style.display = 'block';
           if (tabs) tabs.style.display = 'none';
+          if (expiredBanner) expiredBanner.style.display = 'none';
           if (quota) quota.textContent = `${used} / ${total}`;
           if (clientText) clientText.textContent = `Client: ${data.client_id} · Root: ${data.root_folder_id}`;
+        } else if (data && data.auth_expired) {
+          if (btn) {
+            btn.style.background = 'rgba(255, 59, 48, 0.12)';
+            btn.style.borderColor = 'rgba(255, 59, 48, 0.45)';
+            btn.title = 'Google Drive token expired (invalid_grant). Click to re-authorize.';
+          }
+          if (headerLabel) {
+            headerLabel.innerHTML = `<span class="status-dot" style="background:#FF3B30; box-shadow:0 0 6px rgba(255,59,48,0.5); margin-right:4px;"></span>GDrive (Expired)`;
+          }
+          if (card) card.style.display = 'none';
+          if (tabs) tabs.style.display = 'block';
+          if (expiredBanner) expiredBanner.style.display = 'block';
+
+          // Autofill client_id so user doesn't have to find it
+          if (data.raw_client_id) {
+            const cidO = document.getElementById('gdOAuthClientId');
+            const cidM = document.getElementById('gdManualClientId');
+            if (cidO && !cidO.value) cidO.value = data.raw_client_id;
+            if (cidM && !cidM.value) cidM.value = data.raw_client_id;
+          }
         } else {
-          const btn = document.getElementById('gdriveHeaderBtn');
           if (btn) {
             btn.style.background = '';
             btn.style.borderColor = '';
@@ -2245,9 +3186,30 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
           if (headerLabel) headerLabel.textContent = 'Google Drive';
           if (card) card.style.display = 'none';
           if (tabs) tabs.style.display = 'block';
+          if (expiredBanner) expiredBanner.style.display = 'none';
         }
       } catch (e) {
         console.error('Failed to check GDrive status', e);
+      }
+    }
+
+    async function reauthGDrive() {
+      try {
+        showToast('Redirecting to Google authorization page...');
+        const redirectUri = window.location.origin + getBasePath() + '/api/cluster/gdrive/callback';
+        const res = await api('/api/cluster/gdrive/auth-url', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ redirect_uri: redirectUri })
+        });
+        const data = await res.json();
+        if (data && data.auth_url) {
+          window.location.href = data.auth_url;
+        } else {
+          showToast('Failed to obtain authorization URL: ' + (data.error || 'Unknown error'));
+        }
+      } catch (e) {
+        showToast('Failed to start re-authorization: ' + (e.error || e.message));
       }
     }
 
@@ -2590,6 +3552,7 @@ const UI_HTML: &str = r##"<!DOCTYPE html>
 
     function closeTopModal() {
       const modals = [
+        { id: 'metricsModal', close: typeof closeMetricsModal === 'function' ? closeMetricsModal : null },
         { id: 'mediaModal', close: typeof closeMediaModal === 'function' ? closeMediaModal : null },
         { id: 'fileTopoModal', close: typeof closeFileTopoModal === 'function' ? closeFileTopoModal : null },
         { id: 'clusterSyncModal', close: typeof closeClusterSyncModal === 'function' ? closeClusterSyncModal : null },
