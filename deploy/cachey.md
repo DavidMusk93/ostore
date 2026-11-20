@@ -102,3 +102,26 @@ Practical rules:
 
 `scripts/cachey_check.sh` asserts the stale-read behavior explicitly, so if a
 future change makes overwrites visible, the notice in its output changes.
+
+## 5. Architecture Evaluation & Alternatives (2026-11)
+
+Before deploying `cachey` in front of `ostore`, evaluate whether an external
+cache daemon is actually beneficial for your topology:
+
+- **Same-host local storage (e.g., single VPS with ext4 SSD)**: **Do not deploy
+  `cachey` on the same host.** `ostore` reads directly off local disk, which the
+  Linux kernel Page Cache already caches in RAM with zero extra network hop,
+  zero duplicate disk space, and zero stale-read risk. `ostore` also ships
+  built-in caches (`ChecksumCache`, `DirSizeCache`, `.ostore/thumbs`, HTTP
+  `ETag`/`304`/Gzip, and UI SWR `dirCache`).
+- **Remote edge / cross-region read-through cache**: An external cache makes
+  sense only when readers are separated from `ostore` by high-latency or
+  metered links.
+
+| Project | Lang | API / Transparency | Invalidation | Best Fit |
+|---|---|---|---|---|
+| **Linux Page Cache + ostore built-in** | Kernel / Rust | 100% transparent | Instant (VFS) | Same-host deployment (default, recommended) |
+| **`s2-streamstore/cachey`** (v0.13.5+) | Rust (`foyer`) | Custom `/fetch/<kind>/<key>` + mandatory `Range` + `C0-Bucket` | None (immutable blobs only) | High-throughput range-streaming of immutable blobs from remote S3 |
+| **`aws-samples/sample-s3-hybrid-cache`** | Rust | **Transparent S3 proxy** (works with `awscli`/`boto3`/`rclone`) | ETag / multi-tier | Drop-in remote S3 read-through cache without client changes |
+| **`caddyserver/cache-handler` / `darkweak/souin`** | Go | Transparent HTTP (RFC 9111) inside Caddy | `Cache-Control` / Purge API | Edge HTTP caching in front of Caddy `/ostore/*` |
+| **`foyer-rs/foyer`** | Rust crate | Embedded hybrid RAM+disk library | In-process on `PUT`/`DELETE` | Future in-process read-through cache for remote/GDrive followers |

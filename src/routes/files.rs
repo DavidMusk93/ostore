@@ -75,7 +75,10 @@ where
     .await;
     match written {
         Ok(ok) => {
-            tokio::fs::rename(&tmp, abs).await.map_err(ApiError::internal)?;
+            if let Err(e) = st.dedup.commit_temp(&tmp, abs, ok.0, &ok.2).await {
+                let _ = tokio::fs::remove_file(&tmp).await;
+                return Err(ApiError::internal(e));
+            }
             st.metrics.objects_written.fetch_add(1, Ordering::Relaxed);
             Ok(ok)
         }
@@ -190,7 +193,7 @@ pub async fn upload_multipart(
         let (size, md5, sha256) = stream_to_disk(&st, &abs, stream).await?;
         if let Ok(m) = tokio::fs::metadata(&abs).await {
             let mtime = m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_nanos()).unwrap_or(0);
-            st.checksum_cache.insert(&abs, size, mtime, md5.clone()).await;
+            st.checksum_cache.insert_both(&abs, size, mtime, md5.clone(), sha256.clone()).await;
         }
         st.invalidate_caches(&abs).await;
         let kind = if existed { events::UPDATED } else { events::CREATED };
@@ -347,9 +350,13 @@ pub async fn delete_file(
         }
         st.invalidate_caches(&abs).await;
     } else {
+        let cached_sha = st.checksum_cache.get_cached_sha256(&abs).await;
         st.checksum_cache.invalidate(&abs).await;
         st.invalidate_caches(&abs).await;
         tokio::fs::remove_file(&abs).await.map_err(|e| io_err(e, &rel))?;
+        if let Some(sha) = cached_sha {
+            st.dedup.maybe_gc_hash(&sha).await;
+        }
     }
     st.publish(events::DELETED, &rel, meta.is_dir(), None, None);
     if let Some(cluster) = &st.cluster {

@@ -285,6 +285,7 @@ async fn put_object(
     };
     if declared != sigv4::UNSIGNED_PAYLOAD && declared != sha256 {
         let _ = tokio::fs::remove_file(&abs).await;
+        st.dedup.maybe_gc_hash(&sha256).await;
         return xml_error(
             StatusCode::BAD_REQUEST,
             "XAmzContentSHA256Mismatch",
@@ -295,7 +296,7 @@ async fn put_object(
 
     if let Ok(m) = tokio::fs::metadata(&abs).await {
         let mtime = m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_nanos()).unwrap_or(0);
-        st.checksum_cache.insert(&abs, size, mtime, md5.clone()).await;
+        st.checksum_cache.insert_both(&abs, size, mtime, md5.clone(), sha256.clone()).await;
     }
     st.invalidate_caches(&abs).await;
 
@@ -343,11 +344,15 @@ async fn delete_object(
     if meta.is_dir() {
         return xml_error(StatusCode::CONFLICT, "AccessDenied", "cannot delete a directory without recursive delete", uri.path());
     }
+    let cached_sha = st.checksum_cache.get_cached_sha256(&abs).await;
     if let Err(e) = tokio::fs::remove_file(&abs).await {
         return xml_error(StatusCode::INTERNAL_SERVER_ERROR, "InternalError", &e.to_string(), uri.path());
     }
     st.checksum_cache.invalidate(&abs).await;
     st.invalidate_caches(&abs).await;
+    if let Some(sha) = cached_sha {
+        st.dedup.maybe_gc_hash(&sha).await;
+    }
     st.metrics.s3_deletes.fetch_add(1, Ordering::Relaxed);
     st.publish(events::DELETED, &rel, false, None, None);
     Response::builder()

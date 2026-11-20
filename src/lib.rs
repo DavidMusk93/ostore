@@ -10,6 +10,7 @@ pub mod auth_otp;
 pub mod cluster;
 pub mod config;
 pub mod content_type;
+pub mod dedup;
 pub mod error;
 pub mod events;
 pub mod metrics;
@@ -98,6 +99,13 @@ impl ChecksumCache {
     pub async fn insert_both(&self, abs: &Path, size: u64, mtime: u128, md5: String, sha: String) {
         let mut lock = self.cache.write().await;
         lock.insert(abs.to_path_buf(), (size, mtime, md5, sha));
+    }
+
+    pub async fn get_cached_sha256(&self, abs: &Path) -> Option<String> {
+        let lock = self.cache.read().await;
+        lock.get(abs).and_then(|(_, _, _, sha)| {
+            if sha.is_empty() { None } else { Some(sha.clone()) }
+        })
     }
 
     pub async fn invalidate(&self, abs: &Path) {
@@ -215,6 +223,8 @@ pub struct AppState {
     pub totp: Arc<auth_otp::TotpAuth>,
     /// Active 14-day persistent sessions.
     pub sessions: Arc<auth_otp::SessionStore>,
+    /// Content-addressed hardlink deduplication store (`.ostore/cas/`).
+    pub dedup: Arc<dedup::DedupStore>,
 }
 
 impl AppState {
@@ -242,6 +252,7 @@ impl AppState {
         let metrics = Arc::new(Metrics::new());
         let totp = Arc::new(auth_otp::TotpAuth::load_or_generate(&root)?);
         let sessions = Arc::new(auth_otp::SessionStore::load_or_create(&root));
+        let dedup = Arc::new(dedup::DedupStore::new(root.clone()));
         Ok(Self {
             webhooks: Arc::new(WebhookStore::load(&root, metrics.clone())),
             root,
@@ -258,6 +269,7 @@ impl AppState {
             dir_size_cache: Arc::new(DirSizeCache::new()),
             totp,
             sessions,
+            dedup,
         })
     }
 

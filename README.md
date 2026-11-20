@@ -98,6 +98,9 @@ are rejected with `400 BAD_PATH`.
 | GET | `/api/cluster/nodes` | Multi-node storage cluster fleet status and aggregated capacity. |
 | POST | `/api/cluster/sync?prefix=` | Trigger cluster self-healing and replication sync across nodes. |
 | GET | `/api/metrics` | Prometheus metrics (see [Metrics](#metrics)). |
+| GET | `/api/dedup/stats` | Content-addressed hardlink deduplication stats (`.ostore/cas/`). |
+| POST | `/api/dedup/scan` | Retroactively deduplicate existing identical files under `OSTORE_ROOT`. |
+| POST | `/api/dedup/gc` | Garbage-collect unreferenced CAS entries (`nlink <= 1`). |
 | GET/HEAD | `/{bucket}/{key}` | S3-compatible object read, SigV4-signed (see [S3 read surface](#s3-read-surface)). |
 
 The S3 surface is the only part of the server outside `/api` that is not the

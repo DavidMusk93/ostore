@@ -442,6 +442,12 @@ impl Metrics {
         let _ = writeln!(o, "ostore_checksum_cache_requests_total{{result=\"hit\"}} {}", st.checksum_cache.hits.load(Ordering::Relaxed));
         let _ = writeln!(o, "ostore_checksum_cache_requests_total{{result=\"miss\"}} {}", st.checksum_cache.misses.load(Ordering::Relaxed));
 
+        // Content-Addressed Deduplication Telemetry
+        counter(o, "ostore_dedup_online_hits_total", "Writes deduplicated against an existing CAS blob.", st.dedup.online_hits.load(Ordering::Relaxed));
+        counter(o, "ostore_dedup_online_bytes_saved_total", "Physical bytes saved by online hardlink deduplication.", st.dedup.online_bytes_saved.load(Ordering::Relaxed));
+        counter(o, "ostore_dedup_gc_removed_total", "Unreferenced CAS blobs removed by garbage collection.", st.dedup.gc_removed.load(Ordering::Relaxed));
+        counter(o, "ostore_dedup_gc_bytes_freed_total", "Physical bytes freed by CAS garbage collection.", st.dedup.gc_bytes_freed.load(Ordering::Relaxed));
+
         if let Some(cluster) = &st.cluster {
             let statuses = cluster.get_node_statuses().await;
             let _ = writeln!(o, "# HELP ostore_cluster_node_healthy Health status of cluster node (1 = healthy, 0 = down).");

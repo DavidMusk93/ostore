@@ -76,6 +76,14 @@ async fn main() {
     .await
     .unwrap_or(0);
     state.metrics.tmp_swept.store(swept as u64, std::sync::atomic::Ordering::Relaxed);
+    let gc_report = state.dedup.gc().await;
+    if gc_report.removed > 0 {
+        tracing::info!(
+            removed = gc_report.removed,
+            bytes_freed = gc_report.bytes_freed,
+            "swept orphaned CAS dedup blobs at startup"
+        );
+    }
     let shutdown = state.shutdown.clone();
     if let Some(cluster) = &state.cluster {
         cluster.clone().start_probe_loop(shutdown.clone());

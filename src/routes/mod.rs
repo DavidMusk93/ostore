@@ -4,6 +4,7 @@ pub mod archive;
 pub mod auth_routes;
 pub mod batch;
 pub mod cluster;
+pub mod dedup;
 pub mod events;
 pub mod files;
 pub mod help;
@@ -60,6 +61,9 @@ pub fn build_router(state: AppState) -> Router {
         .route("/webhooks/{id}", delete(webhooks::delete))
         .route("/metrics", get(metrics::handler))
         .route("/metrics/summary", get(metrics::summary_handler))
+        .route("/dedup/stats", get(dedup::stats))
+        .route("/dedup/scan", post(dedup::scan))
+        .route("/dedup/gc", post(dedup::gc))
         .route("/archive", get(archive::download_archive))
         .route("/cluster/nodes", get(cluster::get_nodes))
         .route("/cluster/topology", get(cluster::get_topology))

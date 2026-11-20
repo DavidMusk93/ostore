@@ -1390,3 +1390,77 @@ async fn batch_accepts_full_16_mib_body_past_default_limit() {
     assert_eq!(j["written"][1]["md5"], md5_hex(&half));
     assert_eq!(std::fs::metadata(f._root.path().join("big/b")).unwrap().len(), half.len() as u64);
 }
+
+// ---------------------------------------------------------------------------
+// Content-addressed hardlink deduplication (/api/dedup/*)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn dedup_links_identical_uploads_across_envs_and_gc_reclaims() {
+    let f = fixture();
+    let payload = b"shared clipvault blob across host-a and host-b";
+
+    put_file(&f.app, "backup/hosts/host-a/blobs/abc.bin", payload).await;
+    put_file(&f.app, "backup/hosts/host-b/blobs/abc.bin", payload).await;
+    put_file(&f.app, "sync/v1/attach/abc.bin", payload).await;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let m1 = std::fs::metadata(f._root.path().join("backup/hosts/host-a/blobs/abc.bin")).unwrap();
+        let m2 = std::fs::metadata(f._root.path().join("backup/hosts/host-b/blobs/abc.bin")).unwrap();
+        let m3 = std::fs::metadata(f._root.path().join("sync/v1/attach/abc.bin")).unwrap();
+        assert_eq!(m1.ino(), m2.ino());
+        assert_eq!(m2.ino(), m3.ino());
+        assert_eq!(m1.nlink(), 4); // 3 object paths + 1 CAS anchor
+    }
+
+    let st = body_json(f.app.clone().oneshot(req("GET", "/api/dedup/stats")).await.unwrap()).await;
+    assert_eq!(st["cas_objects"], 1);
+    assert_eq!(st["shared_objects"], 1);
+    assert_eq!(st["extra_references"], 2);
+    assert_eq!(st["reclaimed_bytes"], (payload.len() * 2) as u64);
+    assert_eq!(st["online_hits"], 2);
+
+    // Overwriting one path does NOT corrupt the other hardlinked copies.
+    let updated = b"host-a updated independently";
+    put_file(&f.app, "backup/hosts/host-a/blobs/abc.bin", updated).await;
+    assert_eq!(std::fs::read(f._root.path().join("backup/hosts/host-a/blobs/abc.bin")).unwrap(), updated);
+    assert_eq!(std::fs::read(f._root.path().join("backup/hosts/host-b/blobs/abc.bin")).unwrap(), payload);
+
+    // Deleting remaining copies of the original payload reclaims the CAS blob.
+    let r1 = f.app.clone().oneshot(req("DELETE", "/api/files/backup/hosts/host-b/blobs/abc.bin")).await.unwrap();
+    assert_eq!(r1.status(), StatusCode::OK);
+    let r2 = f.app.clone().oneshot(req("DELETE", "/api/files/sync/v1/attach/abc.bin")).await.unwrap();
+    assert_eq!(r2.status(), StatusCode::OK);
+
+    // Trigger GC (idempotent even if opportunistic delete-time GC already freed it).
+    let gc = body_json(f.app.clone().oneshot(req("POST", "/api/dedup/gc")).await.unwrap()).await;
+    assert!(gc["removed"].as_u64().is_some());
+    let st2 = body_json(f.app.clone().oneshot(req("GET", "/api/dedup/stats")).await.unwrap()).await;
+    assert_eq!(st2["cas_objects"], 1); // only `updated` remains
+    assert_eq!(st2["orphaned_objects"], 0);
+}
+
+#[tokio::test]
+async fn dedup_scan_endpoint_reclaims_preexisting_duplicates() {
+    let f = fixture();
+    let payload = b"preexisting duplicate written outside ostore";
+    let p1 = f._root.path().join("env1/file.bin");
+    let p2 = f._root.path().join("env2/file.bin");
+    std::fs::create_dir_all(p1.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(p2.parent().unwrap()).unwrap();
+    std::fs::write(&p1, payload).unwrap();
+    std::fs::write(&p2, payload).unwrap();
+
+    let scan = body_json(f.app.clone().oneshot(req("POST", "/api/dedup/scan")).await.unwrap()).await;
+    assert_eq!(scan["scanned_files"], 2);
+    assert_eq!(scan["anchored_new"], 1);
+    assert_eq!(scan["deduplicated"], 1);
+    assert_eq!(scan["bytes_saved"], payload.len() as u64);
+
+    // Re-scanning is idempotent.
+    let scan2 = body_json(f.app.clone().oneshot(req("POST", "/api/dedup/scan")).await.unwrap()).await;
+    assert_eq!(scan2["deduplicated"], 0);
+    assert_eq!(scan2["already_linked"], 2);
+}
